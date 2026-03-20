@@ -1,0 +1,52 @@
+version: '3.9'
+
+services:
+  online-api:
+    build:
+      context: .
+      dockerfile: src/backend/online/api/Dockerfile
+    command: ["uv", "run", "python", "src/backend/online/api/main.py", "--host", "0.0.0.0", "--port", "18080", "--tag", "easy"]
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./:/app
+    environment:
+      - QILIN_REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - elasticsearch
+
+  frontend:
+    build:
+      context: ./src/frontend
+      dockerfile: Dockerfile
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    environment:
+      - VITE_API_BASE=http://127.0.0.1:18080
+    ports:
+      - "5173:5173"
+    depends_on:
+      - online-api
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+volumes:
+  redis_data:
+  es_data:

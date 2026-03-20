@@ -1,0 +1,8 @@
+{
+  "scene": "search",
+  "split": "test",
+  "num_queries": 6192,
+  "dim": 128,
+  "dtype": "float32",
+  "req_col": "search_idx"
+}

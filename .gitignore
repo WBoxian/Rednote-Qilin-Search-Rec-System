@@ -1,0 +1,47 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv.python-version
+
+# IDE & editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.gitkeep
+Thumbs.db
+
+# Data & models (large files - only code needed)
+datasets/
+features/
+embeddings/
+image/
+outputs/
+samples/
+
+# Runtime & cache
+.qilin/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+.env.local
+*.log
+
+# Node/frontend build
+node_modules/
+dist/
+*.tsbuildinfo

@@ -1,0 +1,11 @@
+{
+  "scene": "search",
+  "split": "train",
+  "topk": 50,
+  "max_items_per_user": 200,
+  "max_users_per_item": 300,
+  "interest_col": "y_multi",
+  "min_interest": 0.0,
+  "num_rows": 11799,
+  "num_users_with_neighbors": 3039
+}

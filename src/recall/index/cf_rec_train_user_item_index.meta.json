@@ -1,0 +1,9 @@
+{
+  "scene": "rec",
+  "split": "train",
+  "score_col": "y_multi",
+  "min_interest": 0.0,
+  "num_users": 10297,
+  "num_items": 188464,
+  "num_edges": 302322
+}

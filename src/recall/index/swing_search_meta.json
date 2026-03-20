@@ -1,0 +1,14 @@
+{
+  "scene": "search",
+  "split": "train",
+  "topk": 5,
+  "alpha": 1.0,
+  "max_items_per_user": 20,
+  "max_users_per_item": 20,
+  "candidate_topn": 30,
+  "min_common_users": 2,
+  "interest_col": "y_multi",
+  "min_interest": 0.0,
+  "num_item_rows": 320,
+  "num_items_with_neighbors": 241
+}

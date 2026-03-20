@@ -1,0 +1,8 @@
+{
+  "scene": "search",
+  "split": "train",
+  "num_queries": 44024,
+  "dim": 128,
+  "dtype": "float32",
+  "req_col": "search_idx"
+}

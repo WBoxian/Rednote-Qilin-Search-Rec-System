@@ -1,0 +1,14 @@
+{
+  "scene": "rec",
+  "split": "train",
+  "topk": 50,
+  "alpha": 1.0,
+  "max_items_per_user": 200,
+  "max_users_per_item": 200,
+  "candidate_topn": 200,
+  "min_common_users": 2,
+  "interest_col": "y_multi",
+  "min_interest": 0.0,
+  "num_item_rows": 138580,
+  "num_items_with_neighbors": 15324
+}
