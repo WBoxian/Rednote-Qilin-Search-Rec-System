@@ -104,3 +104,50 @@ Qilin/
 - 仓库是否设为 Private
 - GitHub 登陆状态是否有效
 
+
+## ⚙️ 优化 Git 历史（可选）
+
+如果想减小上传体积，可以在推送前进行以下操作：
+
+### 选项 1：垃圾回收（简单，推荐）
+
+```bash
+cd /home/boxian/projects/Qilin
+git gc --aggressive
+du -sh .git
+```
+
+这会压缩 git 对象，可能省去数 GB。
+
+### 选项 2：创建干净仓库（彻底）
+
+只保留最新代码，不含完整历史：
+
+```bash
+cd /home/boxian/projects
+git clone --bare /home/boxian/projects/Qilin Qilin-bare
+cd Qilin-bare
+git config uploadpack.allowAnySHA1InWant true
+du -sh
+```
+
+然后推送：
+
+```bash
+git push --mirror <GITHUB_REPO_URL>
+```
+
+### 选项 3：在 GitHub 上清理（最灵活）
+
+先推送现有仓库，后续可在 GitHub 上执行：
+- Delete 旧提交
+- Create fresh branches
+- Archive old branches
+
+## 🎯 推荐流程
+
+1. ✅ **执行** `git gc --aggressive` 压缩本地仓库
+2. 🔑 **生成** 个人访问令牌或配置 SSH
+3. 🚀 **推送** 到 GitHub（参考上面的 4.3 部分）
+4. ✨ **验证** GitHub 仓库可访问
+
