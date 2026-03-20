@@ -32,3 +32,12 @@ src/frontend/dist/
 .qilin/
 *.log
 *.pid
+# Model indexes and binaries
+src/recall/index/
+src/backend/online/deploy/
+*.bin
+*.faiss
+*.pkl
+*.npy
+*.pth
+*.pt
