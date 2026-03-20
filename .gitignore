@@ -7,41 +7,28 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv.python-version
+.venv
+# Large data directories (only keep code)
+datasets/
+outputs/
+embeddings/
+features/
+image/
+samples/
 
-# IDE & editors
+# IDE and local config
 .vscode/
 .idea/
+.DS_Store
 *.swp
 *.swo
 *~
 
-# OS
-.DS_Store
-.gitkeep
-Thumbs.db
+# Frontend dependencies
+src/frontend/node_modules/
+src/frontend/dist/
 
-# Data & models (large files - only code needed)
-datasets/
-features/
-embeddings/
-image/
-outputs/
-samples/
-
-# Runtime & cache
+# Runtime files
 .qilin/
-*.pyc
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Environment
-.env
-.env.local
 *.log
-
-# Node/frontend build
-node_modules/
-dist/
-*.tsbuildinfo
+*.pid
