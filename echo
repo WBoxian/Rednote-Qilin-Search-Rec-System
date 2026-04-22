@@ -1,0 +1,1 @@
+  git gc --aggressive        # 可选：压缩历史   # 配置凭证后执行:
