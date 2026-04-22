@@ -37,13 +37,14 @@ from tqdm import tqdm
 # 1. 全局配置
 # =============================
 SEED = 42
-BATCH_SIZE = 256
-EPOCHS = 10
-EARLY_STOP = 4
+BATCH_SIZE = 1024           # in-batch neg 模式下每批即有 1023 个负样本，可用较大 batch
+EPOCHS = 3                  # in-batch neg 收敛更快，3 轮通常足够
+EARLY_STOP = 2
 LR = 1e-3
 EMB_DIM = 768              # 文本/图片向量维度
 HIDDEN_DIM = 128           # 双塔输出维度
-MARGIN = 0.5               # Triplet 阈值
+MARGIN = 0.5               # Triplet 阈值（供旧版 loss 兼容）
+INBATCH_TEMPERATURE = 0.07 # in-batch softmax 温度，越小对比越尖锐
 SEQ_MAX_LEN = 20
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -274,11 +275,13 @@ class DSSMDataset(Dataset):
         hard_neg_col=None,
         hard_neg_ratio=HARD_NEG_RATIO,
         num_neg_per_pos=NUM_NEG_PER_POS,
+        use_inbatch_neg: bool = False,
     ):
         """
         df: 当前 split 的样本
         item_meta: note_idx -> item 特征行（确保覆盖负样本）
         item_pool / neg_sampling_probs: 用于负采样的 item 池与概率
+        use_inbatch_neg: 启用 in-batch 负样本模式（batch 内其他正样本充当负样本）
         """
         self.df = df.reset_index(drop=True)
         self.scene = scene
@@ -290,6 +293,7 @@ class DSSMDataset(Dataset):
         self.use_hard_neg = use_hard_neg and hard_neg_col is not None and hard_neg_col in df.columns
         self.hard_neg_ratio = hard_neg_ratio
         self.num_neg_per_pos = max(1, int(num_neg_per_pos))
+        self.use_inbatch_neg = bool(use_inbatch_neg)
 
         # 将高频访问列预先转成 numpy，降低 __getitem__ 的 pandas 开销
         self.user_idx = self.df["user_idx"].to_numpy(np.int64)
@@ -346,22 +350,33 @@ class DSSMDataset(Dataset):
             elif isinstance(raw_hard_ids, list):
                 hard_ids = [int(x) for x in raw_hard_ids[:HARD_NEG_KEEP_TOPK] if int(x) in self.item_meta]
 
-        if self.use_hard_neg and len(hard_ids) > 0:
-            hard_num = max(1, int(round(self.num_neg_per_pos * HARD_EASY_NEG_RATIO[0] / sum(HARD_EASY_NEG_RATIO))))
+        if self.use_inbatch_neg:
+            # In-batch neg 模式：每样本至多 1 条 hard neg，不做随机 easy 采样
+            # batch 内其他正样本 item 在 compute_inbatch_loss 中自动充当负样本
+            if self.use_hard_neg and hard_ids:
+                candidate = int(hard_ids[np.random.randint(len(hard_ids))])
+                neg_items.append(self._fetch_item(candidate))
+                neg_types.append(1)   # 真实 hard neg，追加进 item pool
+            else:
+                neg_items.append(pos_item)   # placeholder，neg_type=0 在 loss 中不追加
+                neg_types.append(0)
         else:
-            hard_num = 0
-        easy_num = self.num_neg_per_pos - hard_num
+            if self.use_hard_neg and len(hard_ids) > 0:
+                hard_num = max(1, int(round(self.num_neg_per_pos * HARD_EASY_NEG_RATIO[0] / sum(HARD_EASY_NEG_RATIO))))
+            else:
+                hard_num = 0
+            easy_num = self.num_neg_per_pos - hard_num
 
-        for _ in range(hard_num):
-            candidate = int(hard_ids[np.random.randint(len(hard_ids))])
-            neg_items.append(self._fetch_item(candidate))
-            neg_types.append(1)
+            for _ in range(hard_num):
+                candidate = int(hard_ids[np.random.randint(len(hard_ids))])
+                neg_items.append(self._fetch_item(candidate))
+                neg_types.append(1)
 
-        for _ in range(easy_num):
-            neg_idx_in_pool = np.random.choice(len(self.item_pool), p=self.neg_sampling_probs_np)
-            neg_note_idx = int(self.item_pool[neg_idx_in_pool])
-            neg_items.append(self._fetch_item(neg_note_idx))
-            neg_types.append(0)
+            for _ in range(easy_num):
+                neg_idx_in_pool = np.random.choice(len(self.item_pool), p=self.neg_sampling_probs_np)
+                neg_note_idx = int(self.item_pool[neg_idx_in_pool])
+                neg_items.append(self._fetch_item(neg_note_idx))
+                neg_types.append(0)
 
         label = self.labels[idx]
         return user_input, pos_item, neg_items, np.asarray(neg_types, dtype=np.int64), label
@@ -490,8 +505,13 @@ class DSSMModel(nn.Module):
 # =============================
 # 6. 训练 & 验证
 # =============================
-def build_item_meta(df: pd.DataFrame, scene: str, item_dense_cols):
-    """从样本构建 note_idx -> 特征字典，供正/负样本使用"""
+def build_item_meta(
+    df: pd.DataFrame,
+    scene: str,
+    item_dense_cols,
+    full_note_ids: list[int] | None = None,
+):
+    """从样本构建 note_idx -> 特征字典，供正/负样本使用；可扩展到全量 note 集合。"""
     cols = ["note_idx", "note_type", "taxonomy1_id_enc", "taxonomy2_id_enc", "taxonomy3_id_enc"] + item_dense_cols
     meta_df = df[cols].drop_duplicates(subset=["note_idx"]).set_index("note_idx")
     meta = {}
@@ -510,6 +530,19 @@ def build_item_meta(df: pd.DataFrame, scene: str, item_dense_cols):
             ),
             "dense_stats": row[item_dense_cols].astype(np.float32).values,
         }
+
+    if full_note_ids:
+        default_dense = np.zeros(len(item_dense_cols), dtype=np.float32)
+        for nid in full_note_ids:
+            key = int(nid)
+            if key in meta:
+                continue
+            meta[key] = {
+                "note_idx": key,
+                "note_type": 0,
+                "taxonomy": np.array([0, 0, 0], dtype=np.int64),
+                "dense_stats": default_dense.copy(),
+            }
     return meta
 
 
@@ -620,6 +653,44 @@ def compute_multineg_loss(
     return 3.0 * easy_loss
 
 
+def compute_inbatch_loss(
+    user_vecs: torch.Tensor,
+    pos_vecs: torch.Tensor,
+    hard_neg_vecs: torch.Tensor,
+    neg_types: torch.Tensor,
+    temperature: float = INBATCH_TEMPERATURE,
+) -> tuple:
+    """
+    In-batch softmax 损失（双塔召回业界标准做法）：
+    - batch 内 B 个正样本 item 互为彼此的负样本，无需额外随机 IO
+    - neg_type==1 的 hard neg 额外追加进 item pool，强化对比
+    返回: (loss, pos_sim, neg_sim_mean_scalar)
+    """
+    B = user_vecs.shape[0]
+    item_pool = pos_vecs  # (B, D)
+
+    # 仅追加真实 hard neg（neg_type==1）
+    has_hard = (neg_types.reshape(B) == 1)
+    if has_hard.any():
+        hard_flat = hard_neg_vecs.reshape(B, -1, user_vecs.shape[1])[:, 0, :]  # (B, D)
+        real_hard = hard_flat[has_hard]  # (M, D)
+        item_pool = torch.cat([item_pool, real_hard], dim=0)  # (B+M, D)
+
+    # 温度缩放的 score matrix：(B, B+M)
+    scores = (user_vecs @ item_pool.T) / temperature
+    labels = torch.arange(B, device=user_vecs.device)
+    loss = F.cross_entropy(scores, labels)
+
+    # 用于日志的 pos/neg sim（未缩放 cosine，与旧版指标一致）
+    with torch.no_grad():
+        raw = user_vecs.detach().float() @ pos_vecs.detach().T.float()  # (B, B)
+        pos_sim = raw.diagonal()  # (B,)
+        off_diag = raw[~torch.eye(B, dtype=torch.bool, device=raw.device)]
+        neg_sim_mean = off_diag.mean().item()
+
+    return loss, pos_sim, neg_sim_mean
+
+
 def evaluate(model, loader):
     """
     计算平均 loss 与 AUC（正样本=click=1 对应 pos_sim，负样本=采样 neg）
@@ -655,25 +726,34 @@ def evaluate(model, loader):
                 flat_neg_txt = i_neg_txt.reshape(-1, EMB_DIM)
                 flat_neg_img = i_neg_img.reshape(-1, EMB_DIM)
                 neg_vec = model.forward_item(flat_neg_data, flat_neg_txt, flat_neg_img).reshape(user_vec.shape[0], -1, HIDDEN_DIM)
-                pos_sim = model.cosine_score(user_vec, pos_vec)
-                neg_sim = F.cosine_similarity(user_vec.unsqueeze(1), neg_vec, dim=2)
-                loss = compute_multineg_loss(
-                    pos_sim=pos_sim,
-                    neg_sim=neg_sim,
-                    neg_types=neg_types,
-                    use_hard_neg=getattr(loader.dataset, "use_hard_neg", False),
-                )
+                if getattr(loader.dataset, "use_inbatch_neg", False):
+                    loss, pos_sim, _ = compute_inbatch_loss(
+                        user_vecs=user_vec,
+                        pos_vecs=pos_vec,
+                        hard_neg_vecs=neg_vec,
+                        neg_types=neg_types,
+                    )
+                    B = user_vec.shape[0]
+                    scores = (user_vec.float() @ pos_vec.T.float()).reshape(-1).cpu().numpy()
+                    lbls = torch.eye(B, device=user_vec.device).reshape(-1).cpu().numpy()
+                else:
+                    pos_sim = model.cosine_score(user_vec, pos_vec)
+                    neg_sim = F.cosine_similarity(user_vec.unsqueeze(1), neg_vec, dim=2)
+                    loss = compute_multineg_loss(
+                        pos_sim=pos_sim,
+                        neg_sim=neg_sim,
+                        neg_types=neg_types,
+                        use_hard_neg=getattr(loader.dataset, "use_hard_neg", False),
+                    )
+                    scores = torch.cat([pos_sim, neg_sim.reshape(-1)]).cpu().numpy()
+                    lbls = torch.cat(
+                        [
+                            torch.ones_like(labels),
+                            torch.zeros(neg_sim.numel(), device=labels.device, dtype=labels.dtype),
+                        ]
+                    ).cpu().numpy()
             total_loss += loss.item()
             total_step += 1
-
-            # AUC 用原始相似度
-            scores = torch.cat([pos_sim, neg_sim.reshape(-1)]).cpu().numpy()
-            lbls = torch.cat(
-                [
-                    torch.ones_like(labels),
-                    torch.zeros(neg_sim.numel(), device=labels.device, dtype=labels.dtype),
-                ]
-            ).cpu().numpy()
             all_scores.append(scores)
             all_labels.append(lbls)
 
@@ -733,14 +813,23 @@ def train_one_epoch(
             flat_neg_img = i_neg_img.reshape(-1, EMB_DIM)
             neg_vec = model.forward_item(flat_neg_data, flat_neg_txt, flat_neg_img).reshape(user_vec.shape[0], -1, HIDDEN_DIM)
 
-            pos_sim = model.cosine_score(user_vec, pos_vec)
-            neg_sim = F.cosine_similarity(user_vec.unsqueeze(1), neg_vec, dim=2)
-            loss = compute_multineg_loss(
-                pos_sim=pos_sim,
-                neg_sim=neg_sim,
-                neg_types=neg_types,
-                use_hard_neg=getattr(train_loader.dataset, "use_hard_neg", False),
-            )
+            if getattr(train_loader.dataset, "use_inbatch_neg", False):
+                loss, pos_sim, neg_sim_mean = compute_inbatch_loss(
+                    user_vecs=user_vec,
+                    pos_vecs=pos_vec,
+                    hard_neg_vecs=neg_vec,
+                    neg_types=neg_types,
+                )
+            else:
+                pos_sim = model.cosine_score(user_vec, pos_vec)
+                neg_sim = F.cosine_similarity(user_vec.unsqueeze(1), neg_vec, dim=2)
+                loss = compute_multineg_loss(
+                    pos_sim=pos_sim,
+                    neg_sim=neg_sim,
+                    neg_types=neg_types,
+                    use_hard_neg=getattr(train_loader.dataset, "use_hard_neg", False),
+                )
+                neg_sim_mean = neg_sim.detach().float().mean().item()
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -748,17 +837,23 @@ def train_one_epoch(
 
         total_loss += loss.item()
         with torch.no_grad():
-            step_scores = torch.cat([pos_sim, neg_sim.reshape(-1)]).detach().float().cpu().numpy()
-            step_labels = torch.cat(
-                [
-                    torch.ones_like(labels),
-                    torch.zeros(neg_sim.numel(), device=labels.device, dtype=labels.dtype),
-                ]
-            ).detach().cpu().numpy()
-            train_scores.append(step_scores)
-            train_labels.append(step_labels)
+            if getattr(train_loader.dataset, "use_inbatch_neg", False):
+                B = user_vec.shape[0]
+                raw = user_vec.detach().float() @ pos_vec.detach().T.float()  # (B, B)
+                train_scores.append(raw.reshape(-1).cpu().numpy())
+                train_labels.append(torch.eye(B, device=user_vec.device).reshape(-1).cpu().numpy())
+            else:
+                step_scores = torch.cat([pos_sim, neg_sim.reshape(-1)]).detach().float().cpu().numpy()
+                step_labels = torch.cat(
+                    [
+                        torch.ones_like(labels),
+                        torch.zeros(neg_sim.numel(), device=labels.device, dtype=labels.dtype),
+                    ]
+                ).detach().cpu().numpy()
+                train_scores.append(step_scores)
+                train_labels.append(step_labels)
             pos_mean_sum += pos_sim.detach().float().mean().item()
-            neg_mean_sum += neg_sim.detach().float().mean().item()
+            neg_mean_sum += neg_sim_mean if isinstance(neg_sim_mean, float) else float(neg_sim_mean)
             step_cnt += 1
 
         writer.add_scalar("train/loss", loss.item(), global_step)
@@ -808,7 +903,7 @@ def export_item_embeddings(model, item_meta, stores, scene, model_tag, batch_siz
             }
             txt_vec = stores["note_text"].get_batch_vecs(batch_ids).to(DEVICE, non_blocking=True)
             img_vec = stores["note_img"].get_batch_vecs(batch_ids).to(DEVICE, non_blocking=True)
-            with torch.amp.autocast("cuda", enabled=DEVICE.type == "cuda"):
+            with torch.amp.autocast("cuda", enabled=False):
                 item_vec = model.forward_item(item_batch, txt_vec, img_vec)
             mmap_arr[start:end] = item_vec.detach().float().cpu().numpy()
 
@@ -893,7 +988,7 @@ def export_search_request_embeddings(model, stores, model_tag, batch_size=2048):
                     ),
                     "query_vec": stores["search_query"].get_batch_vecs(req_ids.tolist()).to(DEVICE, non_blocking=True),
                 }
-                with torch.amp.autocast("cuda", enabled=DEVICE.type == "cuda"):
+                with torch.amp.autocast("cuda", enabled=False):
                     req_vec = model.forward_user(user_batch, hist_vecs)
                 mmap_arr[start:end] = req_vec.detach().float().cpu().numpy()
 
@@ -1068,9 +1163,6 @@ def main(
     train_df, val_df = split_by_session_idx(df, val_ratio=0.2, seed=SEED)
     logger.info(f"Train {train_df.shape}, Val {val_df.shape}")
 
-    # item_meta 构建
-    item_meta = build_item_meta(df_all, scene, item_dense_cols)
-
     # 向量内存索引
     stores = {
         "note_text": MMapStore("note_text_emb", "note_text"),
@@ -1079,11 +1171,43 @@ def main(
     if scene == "search":
         stores["search_query"] = MMapStore("query_text_emb", "search_query")
 
+    # item_meta 构建：用特征表填充已知统计特征，并扩展到全量 note 向量集合
+    full_note_ids = sorted({
+        int(k)
+        for k in set(stores["note_text"].id2pos.keys()) | set(stores["note_img"].id2pos.keys())
+    })
+    item_meta = build_item_meta(df_all, scene, item_dense_cols, full_note_ids=full_note_ids)
+    logger.info(
+        "Item meta coverage: feature_items=%d, full_items=%d",
+        int(df_all["note_idx"].nunique()),
+        int(len(item_meta)),
+    )
+
+    # 将全量 note 并入负采样池：未出现在训练数据中的 note 以 count=1 入库，
+    # 使它们在训练中也能获得梯度更新（note_idx embedding 不再是随机初始化值）
+    known_neg_ids: set[int] = {int(x) for x in item_pool}
+    extra_ids = [nid for nid in full_note_ids if nid not in known_neg_ids]
+    if extra_ids:
+        extra_series = pd.Series(1.0, index=extra_ids, dtype=np.float32)
+        neg_item_counts_ext = pd.concat([neg_item_counts, extra_series])
+        item_pool = neg_item_counts_ext.index.tolist()
+        neg_sampling_probs = torch.tensor(
+            np.power(neg_item_counts_ext.values, 0.75), dtype=torch.float32
+        )
+        neg_sampling_probs = torch.clamp(neg_sampling_probs, min=1e-8)
+        neg_sampling_probs /= neg_sampling_probs.sum()
+        logger.info(
+            "Extended neg pool: from_train=%d → full_corpus=%d (+%d from full_note_ids)",
+            len(known_neg_ids),
+            len(item_pool),
+            len(extra_ids),
+        )
+
     # 词表尺寸
     cat_sizes = load_category_sizes()
     cat_vocabs = {
         "user_idx": int(train_df["user_idx"].max()) + 1,
-        "note_idx": int(max(train_df["note_idx"].max() + 1, len(stores["note_text"].id2pos))),
+        "note_idx": int(max(train_df["note_idx"].max() + 1, (max(full_note_ids) + 1) if full_note_ids else 0, len(stores["note_text"].id2pos))),
         "gender": max(cat_sizes.get("gender", 0), int(train_df["gender_enc"].max()) + 1),
         "platform": max(cat_sizes.get("platform", 0), int(train_df["platform_enc"].max()) + 1),
         "age": max(cat_sizes.get("age", 0), int(train_df["age_enc"].max()) + 1),
@@ -1106,6 +1230,7 @@ def main(
             hard_neg_col=hard_neg_col,
             hard_neg_ratio=HARD_NEG_RATIO,
             num_neg_per_pos=num_neg_per_pos,
+            use_inbatch_neg=True,
         ),
         batch_size=BATCH_SIZE,
         shuffle=True,
@@ -1127,6 +1252,7 @@ def main(
             hard_neg_col=hard_neg_col,
             hard_neg_ratio=HARD_NEG_RATIO,
             num_neg_per_pos=num_neg_per_pos,
+            use_inbatch_neg=True,
         ),
         batch_size=BATCH_SIZE,
         shuffle=False,

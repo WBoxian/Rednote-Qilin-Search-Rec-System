@@ -84,11 +84,11 @@ class GBDTPredictor:
         return np.zeros(len(X), dtype=np.float32)
 
 
-def run_coarse_gbdt(cand: pd.DataFrame, gbdt_topn: int, predict_gbdt) -> pd.DataFrame:
+def run_preranking_gbdt(cand: pd.DataFrame, gbdt_topn: int, predict_gbdt) -> pd.DataFrame:
     out = cand.copy()
     out["gbdt_score"] = predict_gbdt(out)
-    out["prerank_score"] = (0.8 * out["gbdt_score"] + 0.2 * out["dssm_score"]).astype(np.float32)
-    out = out.sort_values(["prerank_score", "rank"], ascending=[False, True], kind="mergesort").reset_index(drop=True)
+    out["preranking_score"] = (0.8 * out["gbdt_score"] + 0.2 * out["dssm_score"]).astype(np.float32)
+    out = out.sort_values(["preranking_score", "rank"], ascending=[False, True], kind="mergesort").reset_index(drop=True)
     if int(gbdt_topn) > 0:
         out = out.head(int(gbdt_topn)).reset_index(drop=True)
     return out

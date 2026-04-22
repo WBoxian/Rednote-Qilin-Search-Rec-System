@@ -116,7 +116,7 @@ onMounted(async () => {
     if (detail.value && homeRank > 0) {
       detail.value.stage_top500_ranks = {
         ...(detail.value.stage_top500_ranks || {}),
-        rerank: homeRank,
+          ranking: homeRank,
       };
       detail.value.stage_rank_note = '重排 Rank 显示的是你在首页点击该内容时看到的位次。';
     }
@@ -196,7 +196,7 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
 </script>
 
 <template>
-  <TopBar title="小红书麒麟推荐" :latency-ms="latencyMs" />
+  <TopBar title="小红书麒麟搜推系统项目" :latency-ms="latencyMs" />
   <main class="container" v-if="detail">
     <section class="panel">
       <div style="display:flex;justify-content:flex-start;margin-bottom:8px;">
@@ -204,12 +204,12 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
       </div>
       <div class="meta">scene={{ detail.scene }} | request_id={{ detail.request_id }} | note_idx={{ detail.note_idx }}</div>
       <div class="img-pager" @wheel.prevent="onImageWheel">
-        <button class="btn" :disabled="imageList().length <= 1" @click="moveImage(-1)">上一张</button>
+        <button class="btn" :disabled="imageList().length <= 1" @click="moveImage(-1)"><</button>
         <div class="img-stage" @click="openFullImage">
           <img v-if="curImage()" :src="api.imageUrl(curImage())" alt="img" loading="lazy" @error="onImgError" />
           <div v-else class="meta">暂无图片</div>
         </div>
-        <button class="btn" :disabled="imageList().length <= 1" @click="moveImage(1)">下一张</button>
+        <button class="btn" :disabled="imageList().length <= 1" @click="moveImage(1)">></button>
       </div>
       <div class="meta" style="margin-top:8px;">{{ imageList().length ? `${imageIdx + 1}/${imageList().length}` : '0/0' }}</div>
       <div class="thumb-pages" v-if="imageList().length">
@@ -231,9 +231,9 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
       <table class="table">
         <tbody>
           <tr><td>召回 Rank</td><td>{{ detail.stage_top500_ranks?.recall ?? '-' }}</td></tr>
-          <tr><td>粗排 Rank</td><td>{{ detail.stage_top500_ranks?.coarse ?? '-' }}</td></tr>
-          <tr><td>精排 Rank</td><td>{{ detail.stage_top500_ranks?.final ?? '-' }}</td></tr>
-          <tr><td>重排 Rank(去重后)</td><td>{{ detail.stage_top500_ranks?.rerank ?? '-' }}</td></tr>
+          <tr><td>粗排 Rank</td><td>{{ detail.stage_top500_ranks?.preranking ?? '-' }}</td></tr>
+          <tr><td>精排 Rank</td><td>{{ detail.stage_top500_ranks?.ranking ?? '-' }}</td></tr>
+          <tr><td>重排 Rank(去重后)</td><td>{{ detail.stage_top500_ranks?.ranking ?? '-' }}</td></tr>
         </tbody>
       </table>
       <div class="meta" style="margin-top:8px;">{{ detail.stage_rank_note }}</div>
@@ -284,9 +284,9 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
 
   <div v-if="fullImage" class="full-mask" @click.self="closeFullImage" @wheel.prevent="onImageWheel">
     <button class="btn" style="position:absolute;top:16px;right:16px;z-index:2;" @click="closeFullImage">关闭</button>
-    <button class="btn" style="position:absolute;left:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(-1)">上一张</button>
+    <button class="btn" style="position:absolute;left:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(-1)"><</button>
     <img v-if="curImage()" class="full-img" :src="api.imageUrl(curImage())" alt="full" @error="onImgError" />
-    <button class="btn" style="position:absolute;right:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(1)">下一张</button>
+    <button class="btn" style="position:absolute;right:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(1)">></button>
     <div class="meta" style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);color:#fff;">{{ imageList().length ? `${imageIdx + 1}/${imageList().length}` : '0/0' }}</div>
   </div>
 </template>

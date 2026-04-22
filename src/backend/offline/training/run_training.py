@@ -26,7 +26,7 @@ def run_training(
     scene: str,
     modes: str,
     recall_topk: int,
-    coarse_topn: int,
+    preranking_topn: int,
     gbdt_train_topn: int,
     route_min_quota: int,
     route_max_share: float,
@@ -85,7 +85,7 @@ def run_training(
                 modes="easy",
                 recall_topk=recall_topk,
                 gbdt_train_topn=gbdt_train_topn,
-                coarse_topn=coarse_topn,
+                preranking_topn=preranking_topn,
                 hard_neg_per_req=hard_neg_per_req,
                 dien_train_max_neg_per_req=dien_train_max_neg_per_req,
                 stages=",".join([
@@ -127,7 +127,7 @@ def run_training(
                 modes="hard",
                 recall_topk=recall_topk,
                 gbdt_train_topn=gbdt_train_topn,
-                coarse_topn=coarse_topn,
+                preranking_topn=preranking_topn,
                 hard_neg_per_req=hard_neg_per_req,
                 dien_train_max_neg_per_req=dien_train_max_neg_per_req,
                 stages=",".join([
@@ -142,7 +142,7 @@ def main() -> None:
     parser.add_argument("--scene", choices=["search", "rec"], default=cfg.scene)
     parser.add_argument("--modes", type=str, default=cfg.modes)
     parser.add_argument("--recall-topk", type=int, default=cfg.recall_topk)
-    parser.add_argument("--coarse-topn", type=int, default=cfg.coarse_topn)
+    parser.add_argument("--preranking-topn", dest="preranking_topn", type=int, default=cfg.preranking_topn)
     parser.add_argument("--gbdt-train-topn", type=int, default=cfg.gbdt_train_topn)
     parser.add_argument("--route-min-quota", type=int, default=cfg.route_min_quota)
     parser.add_argument("--route-max-share", type=float, default=cfg.route_max_share)
@@ -159,7 +159,7 @@ def main() -> None:
         scene=args.scene,
         modes=args.modes,
         recall_topk=args.recall_topk,
-        coarse_topn=args.coarse_topn,
+        preranking_topn=args.preranking_topn,
         gbdt_train_topn=args.gbdt_train_topn,
         route_min_quota=args.route_min_quota,
         route_max_share=args.route_max_share,

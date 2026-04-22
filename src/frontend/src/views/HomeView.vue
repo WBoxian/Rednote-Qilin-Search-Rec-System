@@ -14,6 +14,7 @@ const currentScene = ref<'search' | 'rec'>('rec');
 const loading = ref(false);
 const errorMsg = ref('');
 const latencyMs = ref<number | null>(null);
+const stageMs = ref<Record<string, number> | null>(null);
 const loadAnchor = ref<HTMLElement | null>(null);
 let observer: IntersectionObserver | null = null;
 const clickLocks = new Map<string, number>();
@@ -43,6 +44,7 @@ function saveHomeCache() {
         backendPage: backendPage.value,
         currentScene: currentScene.value,
         latencyMs: latencyMs.value,
+        stageMs: stageMs.value,
         savedAt: Date.now(),
       })
     );
@@ -63,6 +65,7 @@ function restoreHomeCache(): boolean {
     backendPage.value = Math.max(1, Number(obj.backendPage || 1));
     currentScene.value = (obj.currentScene === 'search' ? 'search' : 'rec');
     latencyMs.value = Number(obj.latencyMs || 0);
+    stageMs.value = (obj.stageMs && typeof obj.stageMs === 'object') ? obj.stageMs : null;
     return items.value.length > 0;
   } catch {
     return false;
@@ -84,6 +87,14 @@ async function load(reset = false) {
     const r = await api.feed(currentScene.value, uid, query.value, reqPage, 40);
     const f = r.feed;
     latencyMs.value = Number(r?.latency_ms ?? f?.latency_ms ?? 0);
+    stageMs.value = (f?.stage_ms && typeof f.stage_ms === 'object') ? f.stage_ms : null;
+    if (stageMs.value) {
+      try {
+        sessionStorage.setItem('qilin_last_stage_ms', JSON.stringify(stageMs.value));
+        sessionStorage.setItem('qilin_last_scene_mode', currentScene.value);
+      } catch {
+      }
+    }
     const batch = Array.isArray(f.items) ? f.items : [];
     const seen = new Set(items.value.map((x) => Number(x.note_idx)));
     const unique = batch.filter((x: any) => {
@@ -142,7 +153,7 @@ async function openDetail(it: any) {
   } catch {
   }
   saveHomeCache();
-  const homeRank = Number(it?.stage_ranks?.rerank ?? 0);
+  const homeRank = Number(it?.stage_ranks?.ranking ?? 0);
   const rankArg = Number.isFinite(homeRank) && homeRank > 0 ? `&home_rank=${homeRank}` : '';
   router.push(`/detail?scene=${it.scene}&user_idx=${it.user_idx}&request_id=${it.request_id}&note_idx=${it.note_idx}&query=${encodeURIComponent(query.value || '')}${rankArg}`);
 }
@@ -172,7 +183,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <TopBar title="小红书麒麟推荐" :latency-ms="latencyMs">
+  <TopBar
+    title="小红书麒麟搜推系统项目"
+    :latency-ms="latencyMs"
+    :stage-ms="stageMs"
+    :scene-mode="currentScene"
+  >
     <template #actions>
       <input
         v-model="query"

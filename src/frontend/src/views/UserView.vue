@@ -15,6 +15,15 @@ function fmt(v: any) {
   return String(v);
 }
 
+function fmtTitle(v: any) {
+  if (v == null) return '（无标题）';
+  const s = String(v).trim();
+  if (!s) return '（无标题）';
+  const sl = s.toLowerCase();
+  if (sl === 'nan' || sl === 'none' || sl === 'null' || sl === 'undefined') return '（无标题）';
+  return s;
+}
+
 function fmtTime(ts: any) {
   const n = Number(ts);
   if (!Number.isFinite(n) || n <= 0) return '-';
@@ -73,11 +82,22 @@ function dedupBehaviors(rows: any[]): any[] {
   return out;
 }
 
+function behaviorPairs(): Array<{ sRow: any; rRow: any }> {
+  const s = dedupBehaviors(userByScene.value['search']?.recent_behaviors || []);
+  const r = dedupBehaviors(userByScene.value['rec']?.recent_behaviors || []);
+  const n = Math.max(s.length, r.length, 20);
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    rows.push({ sRow: s[i] ?? null, rRow: r[i] ?? null });
+  }
+  return rows;
+}
+
 onMounted(load);
 </script>
 
 <template>
-  <TopBar title="小红书麒麟推荐" :latency-ms="latencyMs" />
+  <TopBar title="小红书麒麟搜推系统项目" :latency-ms="latencyMs" />
   <main class="container">
     <section class="panel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
       <div class="meta">{{ loading ? '加载中...' : '用户画像' }}</div>
@@ -95,61 +115,54 @@ onMounted(load);
         <table class="table">
           <tbody>
             <tr>
-              <td>gender</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.gender) }}</td>
-              <td>age</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.age) }}</td>
+              <td style="font-weight:700;">gender</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.gender) }}</td>
+              <td style="font-weight:700;">age</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.age) }}</td>
             </tr>
             <tr>
-              <td>platform</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.platform) }}</td>
-              <td>location</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.location) }}</td>
+              <td style="font-weight:700;">platform</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.platform) }}</td>
+              <td style="font-weight:700;">location</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.location) }}</td>
             </tr>
             <tr>
-              <td>fans_num</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.fans_num) }}</td>
-              <td>follows_num</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.follows_num) }}</td>
+              <td style="font-weight:700;">fans_num</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.fans_num) }}</td>
+              <td style="font-weight:700;">follows_num</td><td>{{ fmt((userByScene['search'] || userByScene['rec'])?.features?.follows_num) }}</td>
             </tr>
           </tbody>
         </table>
       </section>
 
       <section class="panel">
-        <h3 style="margin:0 0 8px;">Search 最近20条行为</h3>
-        <table class="table" v-if="dedupBehaviors(userByScene['search']?.recent_behaviors || []).length">
+        <h3 style="margin:0 0 8px;">最近20条行为</h3>
+        <table class="table">
           <tbody>
-            <tr><td style="width:62%;">行为详情</td><td>对应标题</td></tr>
-            <tr v-for="(row, i) in dedupBehaviors(userByScene['search']?.recent_behaviors || [])" :key="`s-${row.ts}-${row.note_idx}-${row.action}-${i}`">
-              <td>
-                <div>时间：{{ fmtTime(row.ts) }}</div>
-                <div>scene：{{ fmt(row.scene) }}</div>
-                <div>request_id：{{ fmt(row.request_id) }}</div>
-                <div>query：{{ fmt(row.query) }}</div>
-                <div>note_idx：{{ fmt(row.note_idx) }}</div>
-                <div>互动分：{{ fmt(row.interaction_score) }}</div>
+            <tr>
+              <td colspan="2" style="text-align:center;font-weight:700;">Search 最近20条</td>
+              <td colspan="2" style="text-align:center;font-weight:700;">Rec 最近20条</td>
+            </tr>
+            <tr>
+              <td style="width:38%;">行为详情</td><td style="width:12%;">标题</td>
+              <td style="width:38%;">行为详情</td><td style="width:12%;">标题</td>
+            </tr>
+            <tr v-for="(pair, idx) in behaviorPairs()" :key="`brow-${idx}`">
+              <td v-if="pair.sRow">
+                <div>时间：{{ fmtTime(pair.sRow.ts) }}</div>
+                <div>rid：{{ fmt(pair.sRow.request_id) }}</div>
+                <div>query：{{ fmt(pair.sRow.query) }}</div>
+                <div>note：{{ fmt(pair.sRow.note_idx) }}</div>
+                <div>互动：{{ fmt(pair.sRow.interaction_score) }}</div>
               </td>
-              <td>{{ fmt(row.title) }}</td>
+              <td v-else class="meta">-</td>
+              <td>{{ pair.sRow ? fmtTitle(pair.sRow.title) : '' }}</td>
+              <td v-if="pair.rRow">
+                <div>时间：{{ fmtTime(pair.rRow.ts) }}</div>
+                <div>rid：{{ fmt(pair.rRow.request_id) }}</div>
+                <div>note：{{ fmt(pair.rRow.note_idx) }}</div>
+                <div>互动：{{ fmt(pair.rRow.interaction_score) }}</div>
+              </td>
+              <td v-else class="meta">-</td>
+              <td>{{ pair.rRow ? fmtTitle(pair.rRow.title) : '' }}</td>
             </tr>
           </tbody>
         </table>
-        <div v-else class="meta">暂无 Search 行为记录。</div>
-      </section>
-
-      <section class="panel">
-        <h3 style="margin:0 0 8px;">Rec 最近20条行为</h3>
-        <table class="table" v-if="dedupBehaviors(userByScene['rec']?.recent_behaviors || []).length">
-          <tbody>
-            <tr><td style="width:62%;">行为详情</td><td>对应标题</td></tr>
-            <tr v-for="(row, i) in dedupBehaviors(userByScene['rec']?.recent_behaviors || [])" :key="`r-${row.ts}-${row.note_idx}-${row.action}-${i}`">
-              <td>
-                <div>时间：{{ fmtTime(row.ts) }}</div>
-                <div>scene：{{ fmt(row.scene) }}</div>
-                <div>request_id：{{ fmt(row.request_id) }}</div>
-                <div>query：{{ fmt(row.query) }}</div>
-                <div>note_idx：{{ fmt(row.note_idx) }}</div>
-                <div>互动分：{{ fmt(row.interaction_score) }}</div>
-              </td>
-              <td>{{ fmt(row.title) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="meta">暂无 Rec 行为记录。</div>
       </section>
     </template>
 

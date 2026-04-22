@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from collections import OrderedDict
 from pathlib import Path
@@ -78,6 +79,8 @@ class DIENPredictor:
         if not num_feats:
             return
 
+        # z-score 归一化 buffer 已烘焙进 checkpoint（训练后由 set_zscore_stats() 注入），
+        # load_state_dict 会自动恢复，线上无需额外文件或手动归一化。
         model = self.dien_train.DIENRanker(scene=self.scene, num_feats=num_feats).to(self.device)
         model.load_state_dict(state, strict=True)
         model.eval()
@@ -123,8 +126,8 @@ class DIENPredictor:
             return
         if DIENPredictor._shared_query_tokenizer is None or DIENPredictor._shared_query_model is None:
             try:
-                DIENPredictor._shared_query_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-base-zh")
-                DIENPredictor._shared_query_model = AutoModel.from_pretrained("BAAI/bge-base-zh").to("cpu")
+                DIENPredictor._shared_query_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-base-zh", local_files_only=True)
+                DIENPredictor._shared_query_model = AutoModel.from_pretrained("BAAI/bge-base-zh", local_files_only=True).to("cpu")
                 DIENPredictor._shared_query_model.eval()
             except Exception:
                 DIENPredictor._shared_query_tokenizer = None
@@ -166,13 +169,29 @@ class DIENPredictor:
 
     def _get_runtime_query_tensor(self, batch_df: pd.DataFrame, gids: np.ndarray) -> torch.Tensor:
         texts = [self._normalize_search_query(x) for x in batch_df.get("query", pd.Series([""] * len(batch_df))).tolist()]
-        if not any(texts):
-            return self.stores["q"].get_tensor(gids)
-
         emb_dim = int(self.dien_train.EMB_DIM)
         out = np.zeros((len(texts), emb_dim), dtype=np.float32)
+        if "q" in self.stores:
+            try:
+                ref_ids: list[int] = []
+                if "query_ref_request_id" in batch_df.columns:
+                    for raw_ref, gid in zip(batch_df["query_ref_request_id"].tolist(), gids.tolist()):
+                        try:
+                            ref_ids.append(int(pd.to_numeric(raw_ref, errors="coerce")))
+                        except Exception:
+                            ref_ids.append(int(gid))
+                else:
+                    ref_ids = [int(g) for g in gids.tolist()]
+                precomp = self.stores["q"].get_tensor(ref_ids).detach().cpu().numpy().astype(np.float32)
+                valid = np.linalg.norm(precomp, axis=1) > 1e-12
+                if valid.any():
+                    out[valid] = precomp[valid]
+            except Exception:
+                pass
         cache_by_text: dict[str, np.ndarray] = {}
         for i, q in enumerate(texts):
+            if float(np.linalg.norm(out[i])) > 1e-12:
+                continue
             if not q:
                 continue
             vec = cache_by_text.get(q)
@@ -182,10 +201,6 @@ class DIENPredictor:
                     cache_by_text[q] = vec
             if vec is not None:
                 out[i] = vec.reshape(-1)
-        zero_rows = np.where(np.abs(out).sum(axis=1) <= 1e-12)[0]
-        if len(zero_rows) > 0:
-            fallback = self.stores["q"].get_tensor(gids[zero_rows]).detach().cpu().numpy().astype(np.float32)
-            out[zero_rows] = fallback
         return torch.tensor(out, dtype=torch.float32, device=self.device)
 
     def _build_seq_tensor_from_history(self, history_note_ids: list[int], repeats: int) -> torch.Tensor:
@@ -217,27 +232,29 @@ class DIENPredictor:
 
         df = cand.reset_index(drop=True)
         preds = np.zeros(len(df), dtype=np.float32)
-        history_seq_tensor: torch.Tensor | None = None
-        if history_note_ids:
-            history_seq_tensor = self._build_seq_tensor_from_history(
-                history_note_ids=history_note_ids,
-                repeats=min(int(batch_size), len(df)),
-            )
         with torch.no_grad():
             for i in range(0, len(df), batch_size):
                 b = df.iloc[i : i + batch_size]
+                batch_len = len(b)
+                history_seq_tensor: torch.Tensor | None = None
+                if history_note_ids:
+                    history_seq_tensor = self._build_seq_tensor_from_history(
+                        history_note_ids=history_note_ids,
+                        repeats=batch_len,
+                    )
                 feats: dict[str, torch.Tensor] = {}
                 for f in self.num_feats:
                     if f in b.columns:
                         vals = pd.to_numeric(b[f], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(np.float32)
                     else:
                         vals = np.zeros(len(b), dtype=np.float32)
+                    # 传入原始值；模型 forward() 已内置 z-score 归一化（via register_buffer）
                     feats[f] = torch.tensor(vals, dtype=torch.float32, device=self.device).unsqueeze(-1)
 
                 gids = b[self.group_key].to_numpy(np.int64)
                 nids = b["note_idx"].to_numpy(np.int64)
                 if history_seq_tensor is not None:
-                    feats["seq_embs"] = history_seq_tensor[: len(b)]
+                    feats["seq_embs"] = history_seq_tensor[:batch_len]
                 else:
                     feats["seq_embs"] = torch.flip(self.stores["s"].get_tensor(gids), dims=[1])
                 feats["note_text_emb"] = self.stores["t"].get_tensor(nids)
@@ -247,7 +264,10 @@ class DIENPredictor:
 
                 p, _ = self.model(feats)
                 cur = p.detach().float().cpu().numpy().reshape(-1)
-                preds[i : i + len(b)] = np.nan_to_num(cur, nan=0.0, posinf=1e6, neginf=-1e6)
+                if len(cur) == batch_len:
+                    preds[i : i + batch_len] = np.nan_to_num(cur, nan=0.0, posinf=1e6, neginf=-1e6)
+                else:
+                    preds[i : i + min(len(cur), batch_len)] = np.nan_to_num(cur[:batch_len], nan=0.0, posinf=1e6, neginf=-1e6)
 
         return preds.astype(np.float32)
 
@@ -261,8 +281,9 @@ def apply_dien_scores(
     if cand.empty:
         return cand
     out = cand.copy()
-    dien_topn = len(out)
-    dien_pred = np.zeros(len(out), dtype=np.float32)
+    online_cap = int(os.environ.get("QILIN_ONLINE_DIEN_TOPN", "12"))
+    dien_topn = min(len(out), max(0, online_cap))
+    dien_pred = pd.to_numeric(out.get("gbdt_score", 0.0), errors="coerce").fillna(0.0).to_numpy(np.float32)
     if dien_topn > 0:
         dien_pred[:dien_topn] = predict_dien(out.iloc[:dien_topn], history_note_ids=history_note_ids)
     out["dien_score"] = np.nan_to_num(dien_pred, nan=0.0, posinf=1e6, neginf=-1e6)

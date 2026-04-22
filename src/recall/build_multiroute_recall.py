@@ -18,7 +18,7 @@
 - 通过每路最小配额 + 单路占比上限，抑制单路主导，最后按总 topk 截断
 
 输出:
-- outputs/data/recall_{scene}_{split}_{tag}_multiroute_topk.parquet
+- outputs/data/recall_{scene}_{split}_{tag}_multiroute_top{topk}.parquet
 """
 
 from __future__ import annotations
@@ -485,7 +485,7 @@ def build_multiroute_recall(
         "from_usercf",
         "first_route",
     ]
-    out_path = OUT_DATA_DIR / f"recall_{scene}_{split}_{tag}_multiroute_topk.parquet"
+    out_path = OUT_DATA_DIR / f"recall_{scene}_{split}_{tag}_multiroute_top{int(topk)}.parquet"
     writer = StreamingParquetWriter(out_path=out_path, columns=output_columns, flush_size=ROW_FLUSH_SIZE)
 
     for row in tqdm(req_df.itertuples(index=False), total=len(req_df), desc=f"Recall {scene}_{split}"):
@@ -557,9 +557,9 @@ def main():
     parser.add_argument("--split", choices=["train", "test"], default="train")
     parser.add_argument("--tag", default="easy")
     parser.add_argument("--topk", type=int, default=1000)
-    parser.add_argument("--ann-topk", type=int, default=500)
-    parser.add_argument("--swing-topk", type=int, default=500)
-    parser.add_argument("--usercf-topk", type=int, default=500)
+    parser.add_argument("--ann-topk", type=int, default=1000)
+    parser.add_argument("--swing-topk", type=int, default=1000)
+    parser.add_argument("--usercf-topk", type=int, default=1000)
     parser.add_argument("--route-min-quota", type=int, default=100, help="每路最少保留配额（去重后，不足则按实际）")
     parser.add_argument("--route-max-share", type=float, default=0.6, help="单路最大占比上限（其他路由仍有候选时生效）")
     parser.add_argument(

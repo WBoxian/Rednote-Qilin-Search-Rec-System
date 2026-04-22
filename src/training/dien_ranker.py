@@ -66,14 +66,14 @@ def _group_key(scene: str) -> str:
     return "search_idx" if scene == "search" else "request_idx"
 
 
-def _default_train_path(scene: str, coarse_topn: int, output_tag: str) -> Path | None:
+def _default_train_path(scene: str, preranking_topn: int, output_tag: str) -> Path | None:
     tag_suffix = f"_{output_tag}" if output_tag else ""
-    p = OUT_DIR / "data" / f"dien_{scene}{tag_suffix}_train_from_gbdt_top{coarse_topn}.parquet"
+    p = OUT_DIR / "data" / f"dien_{scene}{tag_suffix}_train_from_gbdt_top{preranking_topn}.parquet"
     if p.exists():
         return p
     if not output_tag:
         cands = sorted(
-            (OUT_DIR / "data").glob(f"dien_{scene}_*_train_from_gbdt_top{coarse_topn}.parquet"),
+            (OUT_DIR / "data").glob(f"dien_{scene}_*_train_from_gbdt_top{preranking_topn}.parquet"),
             key=lambda x: x.stat().st_mtime,
             reverse=True,
         )
@@ -128,16 +128,16 @@ def _downsample_negatives_for_dien(
         if len(neg) <= max_neg_per_req:
             return g
 
-        # hard/easy 划分：优先用 coarse_rank，其次 coarse_score/lgb+xgb
-        if "coarse_rank" in g.columns:
-            hard_pool = neg.nsmallest(min(len(neg), max(1, head_neg_keep)), "coarse_rank")
+        # hard/easy 划分：优先用 preranking_rank，其次 preranking_score/lgb+xgb
+        if "preranking_rank" in g.columns:
+            hard_pool = neg.nsmallest(min(len(neg), max(1, head_neg_keep)), "preranking_rank")
             easy_pool = neg.drop(index=hard_pool.index)
-        elif "coarse_score" in g.columns:
-            hard_pool = neg.nlargest(min(len(neg), max(1, head_neg_keep)), "coarse_score")
+        elif "preranking_score" in g.columns:
+            hard_pool = neg.nlargest(min(len(neg), max(1, head_neg_keep)), "preranking_score")
             easy_pool = neg.drop(index=hard_pool.index)
         elif "lgb_score" in g.columns and "xgb_score" in g.columns:
-            tmp = neg.assign(_coarse=(neg["lgb_score"].to_numpy() + neg["xgb_score"].to_numpy()) * 0.5)
-            hard_pool = tmp.nlargest(min(len(tmp), max(1, head_neg_keep)), "_coarse").drop(columns=["_coarse"])
+            tmp = neg.assign(_preranking=(neg["lgb_score"].to_numpy() + neg["xgb_score"].to_numpy()) * 0.5)
+            hard_pool = tmp.nlargest(min(len(tmp), max(1, head_neg_keep)), "_preranking").drop(columns=["_preranking"])
             easy_pool = neg.drop(index=hard_pool.index)
         else:
             hard_pool = neg.iloc[:0]
@@ -171,10 +171,10 @@ def _downsample_negatives_for_dien(
             tail = remain
 
         out = pd.concat([pos, head, tail], axis=0)
-        if "coarse_rank" in out.columns:
-            out = out.sort_values("coarse_rank", ascending=True, kind="mergesort")
-        elif "coarse_score" in out.columns:
-            out = out.sort_values("coarse_score", ascending=False, kind="mergesort")
+        if "preranking_rank" in out.columns:
+            out = out.sort_values("preranking_rank", ascending=True, kind="mergesort")
+        elif "preranking_score" in out.columns:
+            out = out.sort_values("preranking_score", ascending=False, kind="mergesort")
         return out
 
     sampled_parts: list[pd.DataFrame] = []
@@ -202,12 +202,18 @@ def _fit_apply_zscore_by_train(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     num_feats: list[str],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, dict[str, float]]]:
     """
     按训练折统计量做 z-score，避免使用全量数据统计量造成验证集信息泄露。
+    同时返回 zscore_stats，使模型自带归一化，线上推理与离线训练输入分布保持一致。
+
+    Returns:
+        (normalized_train_df, normalized_val_df, zscore_stats)
+        zscore_stats[feat] = {"mean": float, "std": float}
     """
     tr = train_df.copy()
     val = val_df.copy()
+    zscore_stats: dict[str, dict[str, float]] = {}
     for c in num_feats:
         tr_v = tr[c].to_numpy(dtype=np.float32, copy=True)
         mu = float(np.mean(tr_v))
@@ -215,10 +221,12 @@ def _fit_apply_zscore_by_train(
         if not np.isfinite(sd) or sd < 1e-6:
             tr[c] = 0.0
             val[c] = 0.0
+            zscore_stats[c] = {"mean": mu, "std": 0.0}  # std=0 → 线上直接置 0
         else:
             tr[c] = (tr[c].to_numpy(dtype=np.float32, copy=False) - mu) / (sd + 1e-6)
             val[c] = (val[c].to_numpy(dtype=np.float32, copy=False) - mu) / (sd + 1e-6)
-    return tr, val
+            zscore_stats[c] = {"mean": mu, "std": sd}
+    return tr, val, zscore_stats
 
 
 def _group_val_split(df: pd.DataFrame, group_key: str, valid_ratio: float = VALID_RATIO) -> tuple[np.ndarray, np.ndarray]:
@@ -364,6 +372,12 @@ class DIENRanker(nn.Module):
         self.num_proj = nn.ModuleDict({
             f: nn.Linear(1, 32) for f in self.num_feats
         })
+        # z-score 归一化 buffer（不参与梯度，随 checkpoint 持久化）
+        # 默认 mean=0 / std=1 即 identity，训练完成后由 set_zscore_stats() 注入真实统计量。
+        # 线上推理时模型自带归一化，与离线训练完全一致，无需外部文件。
+        for f in self.num_feats:
+            self.register_buffer(f"zscore_mean_{f}", torch.zeros(1))
+            self.register_buffer(f"zscore_std_{f}",  torch.ones(1))
         
         # 2. 兴趣抽取层 (Interest Extractor Layer)
         # 输入用户历史 20 条 note 的 embedding
@@ -413,6 +427,15 @@ class DIENRanker(nn.Module):
         # 树模型融合参数
         #self.alpha = nn.Parameter(torch.tensor(0.1))
         #self.beta = nn.Parameter(torch.tensor(0.1))
+
+    def set_zscore_stats(self, stats: dict[str, dict[str, float]]) -> None:
+        """训练完成后注入 z-score 统计量，使 checkpoint 自带归一化，消除 Training-Serving Skew。"""
+        for f, stat in stats.items():
+            if not hasattr(self, f"zscore_mean_{f}"):
+                continue
+            getattr(self, f"zscore_mean_{f}").fill_(float(stat["mean"]))
+            sd = float(stat["std"])
+            getattr(self, f"zscore_std_{f}").fill_(sd if sd >= 1e-6 else 0.0)
 
     def forward(self, features, batch_y=None, batch_g=None):
         # A. 准备数据
@@ -483,9 +506,17 @@ class DIENRanker(nn.Module):
             h_t = self.ln_h(h_t)
 
         # F. 特征拼接与 MLP
+        # num_feats 先经模型内置 z-score 归一化（buffer 来自训练统计量），再投影。
+        # 训练期间 buffer 为 (0, 1) → identity；re-save 后线上与离线输入分布一致。
         feat_list = [h_t, note_txt, note_img]
         for f in self.num_feats:
-            feat_list.append(self.num_proj[f](features[f]))
+            x = features[f]  # [B, 1]
+            sd = getattr(self, f"zscore_std_{f}")
+            if sd.item() >= 1e-6:
+                x = (x - getattr(self, f"zscore_mean_{f}")) / (sd + 1e-6)
+            else:
+                x = torch.zeros_like(x)
+            feat_list.append(self.num_proj[f](x))
             
         if self.scene == "search":
             feat_list.append(features["query_emb"])
@@ -684,7 +715,7 @@ def main(
     scene,
     train_path: Path | None,
     output_tag: str,
-    coarse_topn: int,
+    preranking_topn: int,
     train_max_neg_per_req: int,
     train_head_neg_keep: int,
     aux_loss_weight: float,
@@ -693,13 +724,13 @@ def main(
 ):
     group_key = _group_key(scene)
     if train_path is None:
-        train_path = _default_train_path(scene, coarse_topn, output_tag)
+        train_path = _default_train_path(scene, preranking_topn, output_tag)
     if train_path is None or not train_path.exists():
         raise FileNotFoundError(
             f"Missing DIEN training set for scene={scene}, tag={output_tag}. "
             "Please run GBDT stage first to export dien_*_train_from_gbdt_topN.parquet."
         )
-    print(f"[Load] serial offline train set from coarse rank: {train_path}")
+    print(f"[Load] serial offline train set from preranking rank: {train_path}")
 
     if not output_tag:
         p = str(train_path).lower()
@@ -764,7 +795,7 @@ def main(
 
     tr_fold_df = df.iloc[tr_idx].copy()
     val_fold_df = df.iloc[val_idx].copy()
-    tr_fold_df, val_fold_df = _fit_apply_zscore_by_train(tr_fold_df, val_fold_df, num_feats)
+    tr_fold_df, val_fold_df, zscore_stats = _fit_apply_zscore_by_train(tr_fold_df, val_fold_df, num_feats)
 
     score, val_pred = train_fold(
         scene,
@@ -780,6 +811,17 @@ def main(
         aux_neg_map,
     )
     oof_dien[val_idx] = val_pred
+    # 将 z-score 统计量注入已保存的 checkpoint，模型自带归一化
+    ckpt_path = MODEL_DIR / f"dien_{scene}{tag_suffix}.pt"
+    if ckpt_path.exists():
+        _state = torch.load(ckpt_path, map_location="cpu")
+        _tmp_model = DIENRanker(scene=scene, num_feats=num_feats)
+        _tmp_model.load_state_dict(_state)
+        _tmp_model.set_zscore_stats(zscore_stats)
+        torch.save(_tmp_model.state_dict(), ckpt_path)
+        del _tmp_model, _state
+        print(f"[ZScore] 统计量已注入 checkpoint ({len(zscore_stats)} 个特征) → {ckpt_path}")
+
     print(f"[DIEN Val] Best NDCG: {score:.6f}\n")
     del tr_fold_df, val_fold_df, val_pred
     if torch.cuda.is_available():
@@ -806,8 +848,13 @@ if __name__ == "__main__":
     parser.add_argument("--scene", required=True, choices=["search", "rec"])
     parser.add_argument("--output-tag", type=str, default="", help="输出文件标签（例如 easy/hard），为空则不加后缀")
     parser.add_argument("--train-path", type=Path, default=None, help="精排训练集路径（通常来自 gbdt 导出的 topN）")
-    parser.add_argument("--coarse-topn", type=int, default=500, help="当未指定 train-path 时，读取默认粗排 topN 文件")
-    parser.add_argument("--train-max-neg-per-req", type=int, default=20, help="DIEN 训练时每请求最多保留负样本数（默认20）")
+    parser.add_argument("--preranking-topn", dest="preranking_topn", type=int, default=500, help="当未指定 train-path 时，读取默认 preranking topN 文件")
+    parser.add_argument(
+        "--train-max-neg-per-req",
+        type=int,
+        default=0,
+        help="DIEN 训练时每请求最多保留负样本数（默认0，表示不做下采样，保持与线上候选分布一致）",
+    )
     parser.add_argument("--train-head-neg-keep", type=int, default=7, help="DIEN hard 模式下 hard negative 候选池大小")
     parser.add_argument("--aux-loss-weight", type=float, default=AUX_LOSS_WEIGHT, help="辅助损失权重")
     parser.add_argument("--max-epochs", type=int, default=EPOCHS, help="最大训练轮数")
@@ -817,7 +864,7 @@ if __name__ == "__main__":
         args.scene,
         args.train_path,
         args.output_tag,
-        args.coarse_topn,
+        args.preranking_topn,
         args.train_max_neg_per_req,
         args.train_head_neg_keep,
         args.aux_loss_weight,

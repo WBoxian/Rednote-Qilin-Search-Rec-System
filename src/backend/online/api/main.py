@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import mimetypes
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -17,17 +18,74 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from backend.online.pipeline import OnlineRuntimeRegistry  # noqa: E402
+from backend.online.config import DEFAULT_GBDT_TOPN, DEFAULT_RECALL_RANK_CAP
 
 BASE_DIR = Path(__file__).resolve().parents[4]
 
 
 class AppContext:
 	def __init__(self, tag: str, gbdt_topn: int, recall_rank_cap: int):
-		# 统一运行时注册器：按 easy/hard 标签懒加载对应场景 pipeline
+		# 统一运行时注册器
 		self.registry = OnlineRuntimeRegistry(default_tag=tag, gbdt_topn=gbdt_topn, recall_rank_cap=recall_rank_cap)
+		self._cache_lock = threading.Lock()
+		self._metrics_cache: dict[tuple[str, str, int], tuple[float, dict[str, Any]]] = {}
+		self._validation_cache: dict[tuple[str, str, int, int], tuple[float, dict[str, Any]]] = {}
+		self.metrics_ttl_sec = 15 * 60.0
+		self.validation_ttl_sec = 3 * 60.0
+		# 启动阶段不做全量预加载/预热，避免后端启动过慢、前端首屏直接报代理错误。
+		# 运行时仍保持懒加载 + 接口级缓存。
 
 	def get_runtime(self, tag: str | None):
 		return self.registry.get_runtime(tag)
+
+	def get_metrics_cached(
+		self,
+		scene: str,
+		tag: str,
+		sample_n: int,
+		include_val: bool = True,
+		test_use_online_recall: bool = True,
+	) -> tuple[dict[str, Any], bool]:
+		key = (str(tag), str(scene), int(sample_n), bool(include_val), bool(test_use_online_recall))
+		now = time.time()
+		with self._cache_lock:
+			cached = self._metrics_cache.get(key)
+			if cached is not None and (now - float(cached[0])) <= self.metrics_ttl_sec:
+				return cached[1], True
+
+		obj = self.get_runtime(tag).get_pipeline(scene).state.compute_metrics_layered(
+			sample_n=int(sample_n),
+			include_val=bool(include_val),
+			test_use_online_recall=bool(test_use_online_recall),
+		)
+		with self._cache_lock:
+			self._metrics_cache[key] = (time.time(), obj)
+		return obj, False
+
+	def get_validation_cached(
+		self,
+		scene: str,
+		tag: str,
+		max_groups: int,
+		example_limit: int,
+		user_idx: int | None,
+	) -> tuple[dict[str, Any], bool]:
+		# validation compare currently does not depend on user_idx; keep it out of the cache key
+		key = (str(tag), str(scene), int(max_groups), int(example_limit))
+		now = time.time()
+		with self._cache_lock:
+			cached = self._validation_cache.get(key)
+			if cached is not None and (now - float(cached[0])) <= self.validation_ttl_sec:
+				return cached[1], True
+
+		obj = self.get_runtime(tag).get_pipeline(scene).state.compute_validation_compare(
+			max_groups=int(max_groups),
+			example_limit=int(example_limit),
+			context_user_idx=(int(user_idx) if user_idx is not None else None),
+		)
+		with self._cache_lock:
+			self._validation_cache[key] = (time.time(), obj)
+		return obj, False
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -39,8 +97,8 @@ def _safe_int(v: Any, default: int = 0) -> int:
 
 def create_app(
 	tag: str = "hard",
-	gbdt_topn: int = 500,
-	recall_rank_cap: int = 800,
+	gbdt_topn: int = DEFAULT_GBDT_TOPN,
+	recall_rank_cap: int = DEFAULT_RECALL_RANK_CAP,
 ) -> FastAPI:
 	ctx = AppContext(tag=tag, gbdt_topn=gbdt_topn, recall_rank_cap=recall_rank_cap)
 
@@ -49,36 +107,10 @@ def create_app(
 
 	def _resolve_tag(scene: str, explicit_tag: str | None = None) -> str:
 		cand = str(explicit_tag or "").strip().lower()
-		need_ann = scene in {"search", "rec"}
-
-		def _ready(use_tag: str) -> dict[str, Any] | None:
-			try:
-				return app.state.ctx.get_runtime(use_tag).get_pipeline(scene).state.readiness()
-			except Exception:
-				return None
-
 		if cand in {"easy", "hard"}:
-			if need_ann:
-				ready = _ready(cand)
-				if bool((ready or {}).get("realtime_ann_enabled")):
-					return cand
-				for t in ["hard", "easy"]:
-					ready = _ready(t)
-					if bool((ready or {}).get("realtime_ann_enabled")):
-						return t
 			return cand
-
-		if need_ann:
-			for t in ["hard", "easy"]:
-				ready = _ready(t)
-				if bool((ready or {}).get("realtime_ann_enabled")):
-					return t
-
-		for t in ["hard", "easy"]:
-			ready = _ready(t)
-			if bool((ready or {}).get("lgb_loaded") or (ready or {}).get("xgb_loaded") or (ready or {}).get("dien_loaded") or (ready or {}).get("dssm_user_tower_loaded")):
-				return t
-		return "easy"
+		default_tag = str(getattr(app.state.ctx.registry, "default_tag", "easy") or "easy").lower()
+		return default_tag if default_tag in {"easy", "hard"} else "easy"
 
 	app.add_middleware(
 		CORSMiddleware,
@@ -208,6 +240,7 @@ def create_app(
 		request_id: int = Query(...),
 		note_idx: int = Query(...),
 		query: str = Query(""),
+		meta_only: bool = Query(False),
 	):
 		try:
 			t0 = time.perf_counter()
@@ -217,6 +250,7 @@ def create_app(
 				request_id=_safe_int(request_id),
 				note_idx=_safe_int(note_idx),
 				query=str(query or ""),
+				meta_only=bool(meta_only),
 			)
 			return {"ok": True, "scene": scene, "tag": use_tag, "detail": detail, "latency_ms": float((time.perf_counter() - t0) * 1000.0)}
 		except ValueError as e:
@@ -322,17 +356,28 @@ def create_app(
 	def metrics(
 		scene: str = Query("search"),
 		tag: str = Query(""),
-		dien_max_groups: int = Query(1200),
-		max_groups: int = Query(3000),
+		sample_n: int = Query(100),
+		include_val: int = Query(1),
+		online_recall: int = Query(0),
 	):
 		try:
 			t0 = time.perf_counter()
 			use_tag = _resolve_tag(scene=scene, explicit_tag=tag)
-			obj = app.state.ctx.get_runtime(use_tag).get_pipeline(scene).state.compute_test_metrics(
-				dien_max_groups=_safe_int(dien_max_groups, 1200),
-				max_groups=max(100, _safe_int(max_groups, 3000)),
+			obj, hit = app.state.ctx.get_metrics_cached(
+				scene=scene,
+				tag=use_tag,
+				sample_n=max(10, _safe_int(sample_n, 100)),
+				include_val=bool(_safe_int(include_val, 1)),
+				test_use_online_recall=bool(_safe_int(online_recall, 1)),
 			)
-			return {"ok": True, "scene": scene, "tag": use_tag, "metrics": obj, "latency_ms": float((time.perf_counter() - t0) * 1000.0)}
+			return {
+				"ok": True,
+				"scene": scene,
+				"tag": use_tag,
+				"metrics": obj,
+				"cache_hit": bool(hit),
+				"latency_ms": float((time.perf_counter() - t0) * 1000.0),
+			}
 		except ValueError as e:
 			raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -347,12 +392,21 @@ def create_app(
 		try:
 			t0 = time.perf_counter()
 			use_tag = _resolve_tag(scene=scene, explicit_tag=tag)
-			obj = app.state.ctx.get_runtime(use_tag).get_pipeline(scene).state.compute_validation_compare(
+			obj, hit = app.state.ctx.get_validation_cached(
+				scene=scene,
+				tag=use_tag,
 				max_groups=_safe_int(max_groups, 800),
 				example_limit=max(0, _safe_int(example_limit, 5)),
-				context_user_idx=(_safe_int(user_idx) if user_idx is not None else None),
+				user_idx=(_safe_int(user_idx) if user_idx is not None else None),
 			)
-			return {"ok": True, "scene": scene, "tag": use_tag, "validation": obj, "latency_ms": float((time.perf_counter() - t0) * 1000.0)}
+			return {
+				"ok": True,
+				"scene": scene,
+				"tag": use_tag,
+				"validation": obj,
+				"cache_hit": bool(hit),
+				"latency_ms": float((time.perf_counter() - t0) * 1000.0),
+			}
 		except ValueError as e:
 			raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -377,8 +431,8 @@ def main() -> None:
 	parser.add_argument("--host", type=str, default="0.0.0.0")
 	parser.add_argument("--port", type=int, default=18080)
 	parser.add_argument("--tag", type=str, default="hard")
-	parser.add_argument("--gbdt-topn", type=int, default=500)
-	parser.add_argument("--recall-rank-cap", type=int, default=800)
+	parser.add_argument("--gbdt-topn", type=int, default=DEFAULT_GBDT_TOPN)
+	parser.add_argument("--recall-rank-cap", type=int, default=DEFAULT_RECALL_RANK_CAP)
 	args = parser.parse_args()
 
 	import uvicorn

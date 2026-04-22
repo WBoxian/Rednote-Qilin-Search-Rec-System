@@ -5,7 +5,7 @@ Qilin Serving 前端 API 服务
 - 模型模式由后端自动选择：优先 hard，不可用时回退 easy
 */
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:18080';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 const behaviorInflight = new Map<string, Promise<any>>();
 const behaviorLastTs = new Map<string, number>();
 
@@ -59,8 +59,8 @@ export const api = {
     req(`/api/user?scene=${scene}&user_idx=${userIdx}`),
   feed: (scene: string, userIdx: number, query: string, page: number, pageSize: number) =>
     req(`/api/feed?scene=${scene}&user_idx=${userIdx}&query=${encodeURIComponent(query)}&page=${page}&page_size=${pageSize}`),
-  note: (scene: string, userIdx: number, requestId: number, noteIdx: number, query: string = '') =>
-    req(`/api/note?scene=${scene}&user_idx=${userIdx}&request_id=${requestId}&note_idx=${noteIdx}&query=${encodeURIComponent(query)}`),
+  note: (scene: string, userIdx: number, requestId: number, noteIdx: number, query: string = '', metaOnly = false) =>
+    req(`/api/note?scene=${scene}&user_idx=${userIdx}&request_id=${requestId}&note_idx=${noteIdx}&query=${encodeURIComponent(query)}&meta_only=${metaOnly}`),
   click: (
     scene: string,
     userIdx: number,
@@ -139,11 +139,11 @@ export const api = {
     behaviorInflight.set(key, p);
     return p;
   },
-  metrics: (scene: string, maxGroups: number = 3000, dienMaxGroups: number = 1200) =>
+  metrics: (scene: string, sampleN: number = 80, onlineRecall = false) =>
     req(
       `/api/metrics?scene=${scene}`
-      + `&max_groups=${Math.max(100, Math.min(10000, Number(maxGroups) || 3000))}`
-      + `&dien_max_groups=${Math.max(100, Math.min(5000, Number(dienMaxGroups) || 1200))}`
+      + `&sample_n=${Math.max(10, Math.min(300, Number(sampleN) || 80))}`
+      + `&include_val=0&online_recall=${onlineRecall ? 1 : 0}`
     ),
   validation: (scene: string, maxGroups: number = 800, exampleLimit: number = 5, userIdx?: number | null) =>
     req(

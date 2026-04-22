@@ -45,6 +45,13 @@ def deploy_local_artifacts(base_dir: Path, scene: str) -> Path:
             index_dir / f"dssm_{scene}_{tag}_item_map.json",
             index_dir / f"dssm_{scene}_{tag}_item_meta.json",
             index_dir / f"dssm_{scene}_{tag}_item_emb.bin",
+            # search-only: pre-exported request query vectors (test/train splits)
+            index_dir / f"dssm_{scene}_{tag}_test_query_emb.bin",
+            index_dir / f"dssm_{scene}_{tag}_test_query_map.json",
+            index_dir / f"dssm_{scene}_{tag}_test_query_meta.json",
+            index_dir / f"dssm_{scene}_{tag}_train_query_emb.bin",
+            index_dir / f"dssm_{scene}_{tag}_train_query_map.json",
+            index_dir / f"dssm_{scene}_{tag}_train_query_meta.json",
         ]
 
         for src in patterns:

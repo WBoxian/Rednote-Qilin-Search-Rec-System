@@ -111,7 +111,7 @@ def _group_key(scene: str) -> str:
 
 
 def _default_candidate_path(scene: str, recall_tag: str) -> Path:
-    return OUT_DATA_DIR / f"recall_{scene}_train_{recall_tag}_multiroute_topk.parquet"
+    return OUT_DATA_DIR / f"recall_{scene}_train_{recall_tag}_multiroute_top1000.parquet"
 
 
 def _df_mem_mb(df: pd.DataFrame) -> float:
@@ -318,7 +318,7 @@ def _downsample_negatives_for_gbdt(
     return out
 
 
-def _build_coarse_scored_frame(
+def _build_preranking_scored_frame(
     df: pd.DataFrame,
     group_key: str,
     oof_lgb: np.ndarray,
@@ -327,9 +327,9 @@ def _build_coarse_scored_frame(
     out = df.copy()
     out["lgb_score"] = oof_lgb
     out["xgb_score"] = oof_xgb
-    out["coarse_score"] = 0.5 * (oof_lgb + oof_xgb)
-    out.sort_values([group_key, "coarse_score"], ascending=[True, False], kind="mergesort", inplace=True)
-    out["coarse_rank"] = out.groupby(group_key).cumcount() + 1
+    out["preranking_score"] = 0.5 * (oof_lgb + oof_xgb)
+    out.sort_values([group_key, "preranking_score"], ascending=[True, False], kind="mergesort", inplace=True)
+    out["preranking_rank"] = out.groupby(group_key).cumcount() + 1
     return out
 
 
@@ -355,34 +355,34 @@ def _group_val_split(group: np.ndarray, valid_ratio: float = VALID_RATIO) -> tup
 
 
 def _export_dien_dataset(
-    coarse_scored: pd.DataFrame,
+    preranking_scored: pd.DataFrame,
     scene: str,
     output_tag: str,
     group_key: str,
     topn: int,
     keep_positive: bool,
 ) -> tuple[Path, Path]:
-    out = coarse_scored.copy()
+    out = preranking_scored.copy()
 
-    # 导出粗排全量打分结果，供 hard neg 挖掘（coarse 淘汰集合）
+    # 导出粗排全量打分结果，供 hard neg 挖掘（preranking 淘汰集合）
     full_cols = [
         group_key,
         "note_idx",
         "click",
         "y_multi",
-        "coarse_score",
-        "coarse_rank",
+        "preranking_score",
+        "preranking_rank",
         "lgb_score",
         "xgb_score",
     ]
     full_cols = [c for c in full_cols if c in out.columns]
     tag_suffix = f"_{output_tag}" if output_tag else ""
-    full_scored_path = OUT_DATA_DIR / f"coarse_{scene}{tag_suffix}_train_scored_full.parquet"
+    full_scored_path = OUT_DATA_DIR / f"preranking_{scene}{tag_suffix}_train_scored_full.parquet"
     out[full_cols].to_parquet(full_scored_path, index=False)
-    print(f"[Export] coarse full scored set: {full_scored_path}, shape={out[full_cols].shape}")
+    print(f"[Export] preranking full scored set: {full_scored_path}, shape={out[full_cols].shape}")
 
     if topn > 0:
-        mask = out["coarse_rank"] <= topn
+        mask = out["preranking_rank"] <= topn
         if keep_positive and "click" in out.columns:
             mask = mask | (out["click"] > 0)
         out = out[mask].copy()
@@ -394,13 +394,13 @@ def _export_dien_dataset(
     return out_path, full_scored_path
 
 
-def _export_easy_coarse_complement_hard_neg(
+def _export_easy_preranking_complement_hard_neg(
     scene: str,
     output_tag: str,
     group_key: str,
     candidate_path: Path | None,
-    coarse_scored: pd.DataFrame,
-    coarse_topn: int,
+    preranking_scored: pd.DataFrame,
+    preranking_topn: int,
     hard_neg_input_topn: int,
     hard_neg_per_req: int,
 ) -> Path | None:
@@ -430,13 +430,13 @@ def _export_easy_coarse_complement_hard_neg(
         print("[HardNeg Export] skip: no candidate rows after rank filter")
         return None
 
-    keep_pairs = coarse_scored[coarse_scored["coarse_rank"] <= max(0, int(coarse_topn))][[group_key, "note_idx"]]
+    keep_pairs = preranking_scored[preranking_scored["preranking_rank"] <= max(0, int(preranking_topn))][[group_key, "note_idx"]]
     keep_pairs = keep_pairs.drop_duplicates(subset=[group_key, "note_idx"]).copy()
 
     anti = cand.merge(keep_pairs, on=[group_key, "note_idx"], how="left", indicator=True)
     hard = anti[anti["_merge"] == "left_only"].copy()
     if len(hard) == 0:
-        print("[HardNeg Export] skip: empty complement set (recall_input - coarse_topN)")
+        print("[HardNeg Export] skip: empty complement set (recall_input - preranking_topN)")
         return None
 
     if "rank" in hard.columns:
@@ -459,7 +459,7 @@ def _export_easy_coarse_complement_hard_neg(
     print(
         f"[HardNeg Export] path={out_path}, req_rows={len(req_hard)}, "
         f"coverage={cov:.4f}, avg_list_len={avg_len:.2f}, "
-        f"input_topn={hard_neg_input_topn}, coarse_topn={coarse_topn}, per_req_limit={per_req_limit}"
+        f"input_topn={hard_neg_input_topn}, preranking_topn={preranking_topn}, per_req_limit={per_req_limit}"
     )
     return out_path
 
@@ -658,7 +658,7 @@ def main(
     del dtr, dva, xgb_dall, X_tr, X_val, y_tr, y_val, g_tr, g_val
     gc.collect()
 
-    coarse_scored = _build_coarse_scored_frame(
+    preranking_scored = _build_preranking_scored_frame(
         df=df,
         group_key=group_key,
         oof_lgb=full_lgb_pred,
@@ -667,7 +667,7 @@ def main(
 
     if not skip_export_dien:
         _export_dien_dataset(
-            coarse_scored=coarse_scored,
+            preranking_scored=preranking_scored,
             scene=scene,
             output_tag=output_tag,
             group_key=group_key,
@@ -676,13 +676,13 @@ def main(
         )
 
     if not skip_export_hard_neg:
-        _export_easy_coarse_complement_hard_neg(
+        _export_easy_preranking_complement_hard_neg(
             scene=scene,
             output_tag=output_tag,
             group_key=group_key,
             candidate_path=candidate_path,
-            coarse_scored=coarse_scored,
-            coarse_topn=dien_topn,
+            preranking_scored=preranking_scored,
+            preranking_topn=dien_topn,
             hard_neg_input_topn=hard_neg_input_topn,
             hard_neg_per_req=hard_neg_per_req,
         )
@@ -695,8 +695,18 @@ if __name__ == "__main__":
     parser.add_argument("--output-tag", type=str, default="", help="输出文件标签（例如 easy/hard），为空则不加后缀")
     parser.add_argument("--candidate-path", type=Path, default=None, help="召回候选文件路径")
     parser.add_argument("--recall-tag", type=str, default="easy", help="当未指定 candidate-path 时，按 tag 推断默认候选文件")
-    parser.add_argument("--train-candidate-topn", type=int, default=500, help="粗排训练使用的候选截断（不影响召回 topk）")
-    parser.add_argument("--dien-topn", type=int, default=500, help="导出给 DIEN 的粗排 topN")
+    parser.add_argument(
+        "--train-candidate-topn",
+        type=int,
+        default=1000,
+        help="preranking 训练使用的候选截断（与线上召回 topK 对齐，默认1000）",
+    )
+    parser.add_argument(
+        "--dien-topn",
+        type=int,
+        default=500,
+        help="导出给 DIEN 的 preranking topN（与线上粗排/精排输入 topN 对齐，默认500）",
+    )
     parser.add_argument("--no-keep-positive-for-dien", action="store_true", help="导出 DIEN 数据时不强制保留正样本")
     parser.add_argument("--skip-export-dien", action="store_true")
     parser.add_argument("--hard-neg-input-topn", type=int, default=1000, help="hard neg 输入召回集合截断（通常等于召回 topk）")

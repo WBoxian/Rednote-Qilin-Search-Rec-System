@@ -37,7 +37,7 @@ def run_train_rankers(
     modes: str,
     recall_topk: int,
     gbdt_train_topn: int,
-    coarse_topn: int,
+    preranking_topn: int,
     hard_neg_per_req: int,
     dien_train_max_neg_per_req: int,
     stages: str = "preranking,ranking",
@@ -68,7 +68,7 @@ def run_train_rankers(
                 candidate_path=None,
                 recall_tag=mode,
                 train_candidate_topn=gbdt_train_topn,
-                dien_topn=coarse_topn,
+                dien_topn=preranking_topn,
                 keep_positive_for_dien=True,
                 skip_export_dien=False,
                 hard_neg_input_topn=recall_topk,
@@ -85,9 +85,9 @@ def run_train_rankers(
             )
             dien_ranker.main(
                 scene=scene,
-                train_path=base_dir / "outputs" / "data" / f"dien_{scene}_{mode}_train_from_gbdt_top{coarse_topn}.parquet",
+                train_path=base_dir / "outputs" / "data" / f"dien_{scene}_{mode}_train_from_gbdt_top{preranking_topn}.parquet",
                 output_tag=mode,
-                coarse_topn=coarse_topn,
+                preranking_topn=preranking_topn,
                 train_max_neg_per_req=dien_train_max_neg_per_req,
                 train_head_neg_keep=7,
                 aux_loss_weight=0.05,
@@ -103,7 +103,7 @@ def main() -> None:
     parser.add_argument("--modes", type=str, default=cfg.modes)
     parser.add_argument("--recall-topk", type=int, default=cfg.recall_topk)
     parser.add_argument("--gbdt-train-topn", type=int, default=cfg.gbdt_train_topn)
-    parser.add_argument("--coarse-topn", type=int, default=cfg.coarse_topn)
+    parser.add_argument("--preranking-topn", dest="preranking_topn", type=int, default=cfg.preranking_topn)
     parser.add_argument("--hard-neg-per-req", type=int, default=cfg.hard_neg_per_req)
     parser.add_argument("--dien-train-max-neg-per-req", type=int, default=cfg.dien_train_max_neg_per_req)
     parser.add_argument("--stages", type=str, default="preranking,ranking", help="可选：preranking,ranking（逗号分隔）")
@@ -116,7 +116,7 @@ def main() -> None:
         modes=args.modes,
         recall_topk=args.recall_topk,
         gbdt_train_topn=args.gbdt_train_topn,
-        coarse_topn=args.coarse_topn,
+        preranking_topn=args.preranking_topn,
         hard_neg_per_req=args.hard_neg_per_req,
         dien_train_max_neg_per_req=args.dien_train_max_neg_per_req,
         stages=args.stages,

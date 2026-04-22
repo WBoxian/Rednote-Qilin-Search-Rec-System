@@ -36,6 +36,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 IMG_BATCH_SIZE = 512    # ~40h
 NOTE_SHARD_SIZE = 10000
+EMB_DIM = 768
 DTYPE = np.float16
 
 # ======================
@@ -61,11 +62,31 @@ def encode_images(imgs):
     return emb.cpu().numpy().astype(DTYPE)
 
 # ======================
+def find_image_paths(note_idx: int) -> list[Path]:
+    """根据note_idx找到对应的图片文件路径"""
+    # 图片按note_idx分组：part_XX/YYZZZZ/note_idx.jpg
+    # 其中XX = note_idx // 10000, YYZZZZ = note_idx // 1000
+    part = note_idx // 10000
+    subdir = note_idx // 1000
+    img_dir = IMG_ROOT / "image" / f"part_{part}" / str(subdir)
+    
+    if not img_dir.exists():
+        return []
+    
+    img_file = img_dir / f"{note_idx}.jpg"
+    if img_file.exists():
+        return [img_file]
+    
+    # 有些笔记可能有多张图片，检查是否有其他文件
+    # 但通常每篇笔记只有一张图片，所以这里简化处理
+    return []
+
+# ======================
 def main():
     print("📥 Loading notes metadata...")
     notes = pd.concat(
         [
-            pd.read_parquet(p, columns=["note_idx", "image_path"])
+            pd.read_parquet(p, columns=["note_idx", "image_path", "image_num"])
             for p in DATA_DIR.glob("notes/*.parquet")
         ],
         ignore_index=True,
@@ -77,6 +98,10 @@ def main():
 
     print(f"🧱 Total notes: {n_notes}")
     print(f"🧩 Shards: {n_shards}, shard_size={NOTE_SHARD_SIZE}")
+
+    # 统计有多少笔记有图片
+    has_images = notes['image_num'] > 0
+    print(f"📸 Notes with images: {has_images.sum()} ({100*has_images.sum()/n_notes:.1f}%)")
 
     for shard_id in range(n_shards):
         out_file = OUT_DIR / f"part-{shard_id:05d}.parquet"
@@ -95,23 +120,34 @@ def main():
             total=len(shard_notes),
             desc=f"Shard {shard_id}",
         ):
+            note_idx = int(row.note_idx)
             imgs = []
-            for p in row.image_path:
-                img = load_image(IMG_ROOT / p)
-                if img:
-                    imgs.append(img)
+            
+            # 优先使用image_path字段中的路径
+            if len(row.image_path) > 0:
+                for p in row.image_path:
+                    img = load_image(IMG_ROOT / p)
+                    if img:
+                        imgs.append(img)
+            # 如果没有image_path但image_num > 0，尝试从文件系统查找
+            elif row.image_num > 0:
+                img_paths = find_image_paths(note_idx)
+                for p in img_paths:
+                    img = load_image(p)
+                    if img:
+                        imgs.append(img)
 
+            # 如果没有找到图片，使用零向量
             if not imgs:
-                continue
-
-            embs = []
-            for i in range(0, len(imgs), IMG_BATCH_SIZE):
-                embs.append(encode_images(imgs[i:i + IMG_BATCH_SIZE]))
-
-            note_emb = np.vstack(embs).mean(axis=0) # mean pooling
+                note_emb = np.zeros(EMB_DIM, dtype=DTYPE)
+            else:
+                embs = []
+                for i in range(0, len(imgs), IMG_BATCH_SIZE):
+                    embs.append(encode_images(imgs[i:i + IMG_BATCH_SIZE]))
+                note_emb = np.vstack(embs).mean(axis=0) # mean pooling
 
             rows.append({
-                "note_idx": int(row.note_idx),
+                "note_idx": note_idx,
                 "note_img_emb": note_emb,
             })
 

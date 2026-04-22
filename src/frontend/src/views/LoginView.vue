@@ -83,12 +83,7 @@ onMounted(refreshUsers);
 
 <template>
   <div>
-    <TopBar title="小红书麒麟推荐" :latency-ms="latencyMs">
-      <template #actions>
-        <button class="btn-tab" :class="{ active: scene === 'search' }" @click="switchScene('search')">Search</button>
-        <button class="btn-tab" :class="{ active: scene === 'rec' }" @click="switchScene('rec')">Rec</button>
-      </template>
-    </TopBar>
+    <TopBar title="小红书麒麟搜推系统项目" :latency-ms="latencyMs" />
     <main class="container">
       <section class="panel" style="max-width:1120px;margin:24px auto;">
         <h3>用户登录</h3>

@@ -1,16 +1,28 @@
-"""在线粗排服务编排层。"""
+"""在线 preranking 服务编排层。"""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from backend.online.preranking.gbdt import run_coarse_gbdt
+from backend.online.preranking.gbdt import run_preranking_gbdt
 
 _USER_SCALAR_COLS = (
     ["gender_enc", "platform_enc", "age_enc", "location_enc", "fans_num", "follows_num"]
     + [f"dense_feat{i}" for i in range(1, 41)]
 )
+
+
+def _valid_history_value(v) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, float) and np.isnan(v):
+        return False
+    if isinstance(v, np.ndarray):
+        return v.size > 0
+    if isinstance(v, (list, tuple)):
+        return len(v) > 0
+    return True
 
 
 def run_preranking(
@@ -24,7 +36,7 @@ def run_preranking(
     fetch_notes,
     predict_gbdt,
 ) -> pd.DataFrame:
-    # 召回候选拼接特征与内容元信息，再进入 GBDT 粗排
+    # 召回候选拼接特征与内容元信息，再进入 GBDT preranking
     if recall_cand.empty:
         return pd.DataFrame()
 
@@ -74,24 +86,30 @@ def run_preranking(
                 cand["recent_clicked_note_idxs"] = [hist_val] * len(cand)
             else:
                 cand["recent_clicked_note_idxs"] = [
-                    v if (v is not None and not (isinstance(v, float) and np.isnan(v)) and v != [] and v != ())
-                    else hist_val
+                    v if _valid_history_value(v) else hist_val
                     for v in cand["recent_clicked_note_idxs"]
                 ]
 
-    note_meta = fetch_notes(cand["note_idx"].astype(int).tolist())
-    cand = cand.merge(note_meta, on="note_idx", how="left", suffixes=("", "_note"))
+    note_cols = ["accum_like_num", "accum_collect_num", "accum_comment_num", "image_path", "note_title", "note_content"]
+    need_note_meta = any((col not in cand.columns) or cand[col].isna().all() for col in note_cols)
+    if need_note_meta:
+        note_meta = fetch_notes(cand["note_idx"].drop_duplicates().astype(int).tolist(), include_text=False)
+        if not note_meta.empty:
+            cand = cand.merge(note_meta, on="note_idx", how="left", suffixes=("", "_note"))
 
     if scene == "search":
         cand["query"] = str(query or "").strip()
 
-    for col in ["accum_like_num", "accum_collect_num", "accum_comment_num", "image_path", "note_title", "note_content"]:
+    for col in note_cols:
         note_col = f"{col}_note"
         if note_col in cand.columns:
-            cand[col] = cand[note_col]
+            if col in cand.columns:
+                cand[col] = cand[col].where(cand[col].notna(), cand[note_col])
+            else:
+                cand[col] = cand[note_col]
 
     ann_score = pd.to_numeric(cand.get("score_ann", 0.0), errors="coerce").fillna(0.0)
     recall_score = pd.to_numeric(cand.get("recall_score", ann_score), errors="coerce").fillna(0.0)
     cand["dssm_score"] = ann_score.where(ann_score >= recall_score, recall_score).astype("float32")
 
-    return run_coarse_gbdt(cand=cand, gbdt_topn=gbdt_topn, predict_gbdt=predict_gbdt)
+    return run_preranking_gbdt(cand=cand, gbdt_topn=gbdt_topn, predict_gbdt=predict_gbdt)

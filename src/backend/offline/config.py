@@ -20,7 +20,7 @@ class OfflineConfig:
     enable_query_emb: bool = True
 
     recall_topk: int = 1000
-    coarse_topn: int = 500
+    preranking_topn: int = 500
     gbdt_train_topn: int = 500
     route_min_quota: int = 100
     route_max_share: float = 0.8
@@ -56,7 +56,7 @@ def load_offline_config(scene: str | None = None) -> OfflineConfig:
         enable_note_image_emb=_env_bool("QILIN_ENABLE_NOTE_IMAGE_EMB", True),
         enable_query_emb=_env_bool("QILIN_ENABLE_QUERY_EMB", True),
         recall_topk=int(os.getenv("QILIN_RECALL_TOPK", "1000")),
-        coarse_topn=int(os.getenv("QILIN_COARSE_TOPN", "500")),
+        preranking_topn=int(os.getenv("QILIN_PRERANKING_TOPN", "500")),
         gbdt_train_topn=int(os.getenv("QILIN_GBDT_TRAIN_TOPN", "500")),
         route_min_quota=int(os.getenv("QILIN_ROUTE_MIN_QUOTA", "100")),
         route_max_share=float(os.getenv("QILIN_ROUTE_MAX_SHARE", "0.8")),
