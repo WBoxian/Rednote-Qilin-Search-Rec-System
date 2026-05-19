@@ -19,9 +19,7 @@ def calc_interaction_score(
     page_time: float = 0.0,
 ) -> float:
     c_click = max(0, int(click))
-    if c_click <= 0:
-        return 0.0
-    return float(
+    base_signal = (
         1.0 * c_click
         + 2.0 * max(0, int(like))
         + 3.0 * max(0, int(collect))
@@ -29,15 +27,36 @@ def calc_interaction_score(
         + 3.0 * max(0, int(share))
         + 0.2 * float(math.log1p(max(0.0, float(page_time))))
     )
+    return float(base_signal) if float(base_signal) > 0 else 0.0
 
 
 @dataclass
 class RealtimeCache:
     client: Any
     history_max_len: int = 50
-    behavior_max_len: int = 20
+    behavior_max_len: int = 60
     exposure_max_len: int = 500
     dedup_window_sec: int = 2
+
+    def _collapse_behaviors(self, rows: list[dict[str, Any]], max_len: int) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for obj in rows:
+            key = (
+                f"{obj.get('scene')}|{obj.get('request_id')}|{obj.get('note_idx')}|{obj.get('query', '')}"
+            )
+            prev = merged.get(key)
+            if prev is None:
+                merged[key] = obj
+                continue
+            prev_ts = int(prev.get('ts', 0) or 0)
+            cur_ts = int(obj.get('ts', 0) or 0)
+            if cur_ts >= prev_ts:
+                nxt = dict(prev)
+                nxt.update(obj)
+                merged[key] = nxt
+        out = list(merged.values())
+        out.sort(key=lambda x: (int(x.get('ts', 0) or 0), float(x.get('interaction_score', 0) or 0)), reverse=True)
+        return out[: int(max_len)]
 
     def get_user_profile(self, user_idx: int) -> dict[str, Any] | None:
         key = f"qilin:user:{int(user_idx)}:profile"
@@ -70,7 +89,7 @@ class RealtimeCache:
 
     def get_recent_behaviors(self, user_idx: int, scene: str, max_len: int = 20) -> list[dict[str, Any]]:
         key = f"qilin:user:{int(user_idx)}:{scene}:behaviors"
-        arr = self.client.lrange(key, 0, max(0, int(max_len) - 1))
+        arr = self.client.lrange(key, 0, max(0, int(max_len) * 3))
         out: list[dict[str, Any]] = []
         for x in arr:
             try:
@@ -78,8 +97,10 @@ class RealtimeCache:
             except Exception:
                 continue
             if isinstance(obj, dict):
+                if not obj.get("scene"):
+                    obj["scene"] = scene
                 out.append(obj)
-        return out
+        return self._collapse_behaviors(out, max_len=max_len)
 
     def get_recent_exposed_notes(self, user_idx: int, scene: str, max_len: int = 200) -> list[int]:
         key = f"qilin:user:{int(user_idx)}:{scene}:exposed_notes"
@@ -130,7 +151,7 @@ class RealtimeCache:
         merged: list[dict[str, Any]] = []
         for scene in ["search", "rec"]:
             key = f"qilin:user:{int(user_idx)}:{scene}:behaviors"
-            arr = self.client.lrange(key, 0, max(0, int(max_len) * 3))
+            arr = self.client.lrange(key, 0, max(0, int(max_len) * 4))
             for x in arr:
                 try:
                     obj = json.loads(x)
@@ -140,21 +161,25 @@ class RealtimeCache:
                     if not obj.get("scene"):
                         obj["scene"] = scene
                     merged.append(obj)
-        merged.sort(key=lambda x: int(x.get("ts", 0) or 0), reverse=True)
-        out: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for obj in merged:
-            key = (
-                f"{obj.get('ts')}|{obj.get('scene')}|{obj.get('note_idx')}|{obj.get('request_id')}|"
-                f"{obj.get('query','')}|{obj.get('interaction_score', 0)}"
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(obj)
-            if len(out) >= int(max_len):
-                break
-        return out
+        return self._collapse_behaviors(merged, max_len=max_len)
+
+    def _match_behavior_event(
+        self,
+        obj: dict[str, Any],
+        scene: str,
+        note_idx: int,
+        ts: int | None = None,
+        request_id: int | None = None,
+    ) -> bool:
+        if str(obj.get("scene") or scene) != str(scene):
+            return False
+        if int(obj.get("note_idx", -1) or -1) != int(note_idx):
+            return False
+        if request_id is not None and int(obj.get("request_id", -1) or -1) != int(request_id):
+            return False
+        if ts is not None and int(obj.get("ts", -1) or -1) != int(ts):
+            return False
+        return True
 
     def append_behavior_event(
         self,
@@ -209,8 +234,27 @@ class RealtimeCache:
                 page_time=float(max(0.0, float(page_time))),
             ),
         }
+        arr = self.client.lrange(key, 0, max(0, int(self.behavior_max_len) * 4))
+        keep: list[str] = []
+        for raw in arr:
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                keep.append(raw)
+                continue
+            if not isinstance(obj, dict):
+                keep.append(raw)
+                continue
+            same_scene = str(obj.get("scene") or scene) == str(scene)
+            same_note = int(obj.get("note_idx", -1) or -1) == int(note_idx)
+            same_request = int(obj.get("request_id", -1) or -1) == int(request_id if request_id is not None else -1)
+            same_query = str(obj.get("query") or "") == str(query or "")
+            if same_scene and same_note and same_request and same_query:
+                continue
+            keep.append(json.dumps(obj, ensure_ascii=False))
         p = self.client.pipeline(transaction=False)
-        p.lpush(key, json.dumps(event, ensure_ascii=False))
+        p.delete(key)
+        p.rpush(key, json.dumps(event, ensure_ascii=False), *keep[: max(0, int(self.behavior_max_len) - 1)])
         p.ltrim(key, 0, max(0, int(self.behavior_max_len) - 1))
         p.execute()
         return True
@@ -254,6 +298,50 @@ class RealtimeCache:
             p.lpush(key, int(note_idx))
             p.ltrim(key, 0, max(0, int(self.history_max_len) - 1))
             p.execute()
+        return True
+
+    def delete_behavior(
+        self,
+        user_idx: int,
+        scene: str,
+        note_idx: int,
+        ts: int | None = None,
+        request_id: int | None = None,
+    ) -> bool:
+        key = f"qilin:user:{int(user_idx)}:{scene}:behaviors"
+        arr = self.client.lrange(key, 0, max(0, int(self.behavior_max_len) * 4))
+        if not arr:
+            return False
+        keep: list[str] = []
+        removed = False
+        remaining_same_note = False
+        for raw in arr:
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                keep.append(raw)
+                continue
+            if not isinstance(obj, dict):
+                keep.append(raw)
+                continue
+            if not removed and self._match_behavior_event(obj, scene=scene, note_idx=note_idx, ts=ts, request_id=request_id):
+                removed = True
+                continue
+            if self._match_behavior_event(obj, scene=scene, note_idx=note_idx, request_id=request_id):
+                remaining_same_note = True
+            keep.append(json.dumps(obj, ensure_ascii=False))
+        if not removed:
+            return False
+
+        p = self.client.pipeline(transaction=False)
+        p.delete(key)
+        if keep:
+            p.rpush(key, *keep)
+            p.ltrim(key, -max(1, int(self.behavior_max_len)), -1)
+        if not remaining_same_note:
+            hist_key = f"qilin:user:{int(user_idx)}:{scene}:history_notes"
+            p.lrem(hist_key, 0, int(note_idx))
+        p.execute()
         return True
 
     def record_click(
@@ -315,8 +403,8 @@ class RealtimeCache:
             note_idx=int(note_idx),
             request_id=request_id,
             query=query,
-            update_history=True,
-            click=1,
+            update_history=bool(has_feedback),
+            click=0,
             like=max(0, int(like)),
             collect=max(0, int(collect)),
             comment=max(0, int(comment)),
@@ -337,7 +425,7 @@ def build_realtime_cache() -> RealtimeCache | None:
         return RealtimeCache(
             client=client,
             history_max_len=int(os.getenv("QILIN_HISTORY_MAX_LEN", "50")),
-            behavior_max_len=int(os.getenv("QILIN_BEHAVIOR_MAX_LEN", "20")),
+            behavior_max_len=int(os.getenv("QILIN_BEHAVIOR_MAX_LEN", "60")),
             dedup_window_sec=int(os.getenv("QILIN_BEHAVIOR_DEDUP_SEC", "2")),
         )
     except Exception:

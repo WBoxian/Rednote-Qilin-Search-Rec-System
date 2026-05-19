@@ -88,6 +88,11 @@ def run_preranking_gbdt(cand: pd.DataFrame, gbdt_topn: int, predict_gbdt) -> pd.
     out = cand.copy()
     out["gbdt_score"] = predict_gbdt(out)
     out["preranking_score"] = (0.8 * out["gbdt_score"] + 0.2 * out["dssm_score"]).astype(np.float32)
+    if "linkage_boost" in out.columns:
+        out["preranking_score"] = (
+            pd.to_numeric(out["preranking_score"], errors="coerce").fillna(0.0)
+            + pd.to_numeric(out["linkage_boost"], errors="coerce").fillna(0.0) * 0.18
+        ).astype(np.float32)
     out = out.sort_values(["preranking_score", "rank"], ascending=[False, True], kind="mergesort").reset_index(drop=True)
     if int(gbdt_topn) > 0:
         out = out.head(int(gbdt_topn)).reset_index(drop=True)

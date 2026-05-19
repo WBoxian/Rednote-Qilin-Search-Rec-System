@@ -1,81 +1,82 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Qilin 停止脚本（Linux/macOS）
-# - 停止后端 FastAPI
-# - 停止前端 Vite 开发服务
-# - 如 Redis 由 start.sh 拉起，则一并停止对应容器
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}"
+REDIS_CONTAINER_NAME="qilin-redis-local"
 RUN_DIR="${PROJECT_ROOT}/.qilin/run"
 BACKEND_PID_FILE="${RUN_DIR}/backend.pid"
-FRONTEND_PID_FILE="${RUN_DIR}/frontend.pid"
-REDIS_MARKER_FILE="${RUN_DIR}/redis_started_by_script"
-REDIS_CONTAINER_NAME="qilin-redis-local"
 
 cd "${PROJECT_ROOT}"
 
-is_pid_running() {
-  local pid="$1"
-  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
+stop_pattern() {
+  local pattern="$1"
+  local pids
+  pids="$(pgrep -f "${pattern}" || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+  echo "[Qilin] Stopping pattern: ${pattern}"
+  kill ${pids} 2>/dev/null || true
+  sleep 1
+  pids="$(pgrep -f "${pattern}" || true)"
+  if [[ -n "${pids}" ]]; then
+    kill -9 ${pids} 2>/dev/null || true
+  fi
 }
 
-stop_pid_file() {
-  local name="$1"
-  local pid_file="$2"
-  if [[ ! -f "${pid_file}" ]]; then
+stop_pidfile() {
+  local pidfile="$1"
+  if [[ ! -f "${pidfile}" ]]; then
     return 0
   fi
   local pid
-  pid="$(cat "${pid_file}" 2>/dev/null || true)"
-  if is_pid_running "${pid}"; then
-    echo "[Qilin] Stopping ${name} pid=${pid}"
-    kill "${pid}" 2>/dev/null || true
-    sleep 1
-    if is_pid_running "${pid}"; then
-      kill -9 "${pid}" 2>/dev/null || true
-    fi
+  pid="$(cat "${pidfile}" 2>/dev/null || true)"
+  if [[ -z "${pid}" ]]; then
+    rm -f "${pidfile}"
+    return 0
   fi
-  rm -f "${pid_file}"
+  echo "[Qilin] Stopping pid from ${pidfile}: ${pid}"
+  kill "${pid}" 2>/dev/null || true
+  sleep 1
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill -9 "${pid}" 2>/dev/null || true
+  fi
+  rm -f "${pidfile}"
 }
 
 stop_port() {
   local port="$1"
-  if ! command -v lsof >/dev/null 2>&1; then
-    return 0
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${port}/tcp" >/dev/null 2>&1 || true
   fi
-  local pids
-  pids=$(lsof -ti tcp:"${port}" -sTCP:LISTEN || true)
-  if [[ -z "${pids}" ]]; then
-    return 0
-  fi
-  echo "[Qilin] Stopping processes on port ${port}: ${pids}"
-  for pid in ${pids}; do
-    kill "${pid}" 2>/dev/null || true
-  done
-  sleep 1
-  pids=$(lsof -ti tcp:"${port}" -sTCP:LISTEN || true)
-  if [[ -n "${pids}" ]]; then
-    for pid in ${pids}; do
-      kill -9 "${pid}" 2>/dev/null || true
-    done
+  if command -v lsof >/dev/null 2>&1; then
+    local pids
+    pids="$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "${pids}" ]]; then
+      echo "[Qilin] Stopping port ${port}: ${pids}"
+      kill ${pids} 2>/dev/null || true
+      sleep 1
+      pids="$(lsof -ti "tcp:${port}" -sTCP:LISTEN 2>/dev/null || true)"
+      if [[ -n "${pids}" ]]; then
+        kill -9 ${pids} 2>/dev/null || true
+      fi
+    fi
   fi
 }
 
-stop_pid_file "backend" "${BACKEND_PID_FILE}"
-stop_pid_file "frontend" "${FRONTEND_PID_FILE}"
+stop_pidfile "${BACKEND_PID_FILE}"
+stop_pattern "uv run python src/backend/online/api/main.py"
+stop_pattern "python src/backend/online/api/main.py"
+stop_pattern "uvicorn.*18080"
 stop_port 18080
-stop_port 5173
+stop_port 6379
 
-if [[ -f "${REDIS_MARKER_FILE}" ]]; then
-  if command -v docker >/dev/null 2>&1; then
-    if docker ps --format '{{.Names}}' | grep -qx "${REDIS_CONTAINER_NAME}"; then
-      echo "[Qilin] Stopping Redis container: ${REDIS_CONTAINER_NAME}"
-      docker stop "${REDIS_CONTAINER_NAME}" >/dev/null 2>&1 || true
-    fi
-  fi
-  rm -f "${REDIS_MARKER_FILE}"
+if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' | grep -qx "${REDIS_CONTAINER_NAME}"; then
+  echo "[Qilin] Removing Redis container: ${REDIS_CONTAINER_NAME}"
+  docker rm -f "${REDIS_CONTAINER_NAME}" >/dev/null 2>&1 || true
 fi
+
+rm -rf "${PROJECT_ROOT}/.qilin/run"
 
 echo "[Qilin] Stopped."

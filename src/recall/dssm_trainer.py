@@ -37,12 +37,14 @@ from tqdm import tqdm
 # 1. 全局配置
 # =============================
 SEED = 42
-BATCH_SIZE = 1024           # in-batch neg 模式下每批即有 1023 个负样本，可用较大 batch
+BATCH_SIZE = 1024           # search 默认 batch
+REC_BATCH_SIZE = 768        # rec 引入 sequence tower 后降低一点显存峰值
 EPOCHS = 3                  # in-batch neg 收敛更快，3 轮通常足够
 EARLY_STOP = 2
 LR = 1e-3
 EMB_DIM = 768              # 文本/图片向量维度
 HIDDEN_DIM = 128           # 双塔输出维度
+SEQ_TOWER_DIM = 128        # rec sequence tower 输出维度
 MARGIN = 0.5               # Triplet 阈值（供旧版 loss 兼容）
 INBATCH_TEMPERATURE = 0.07 # in-batch softmax 温度，越小对比越尖锐
 SEQ_MAX_LEN = 20
@@ -77,6 +79,9 @@ HARD_NEG_RATIO = 0.5  # hard:ease=1:1
 NUM_NEG_PER_POS = 3
 HARD_EASY_NEG_RATIO = (1, 2)  # hard mode: 1 hard : 2 easy
 HARD_NEG_KEEP_TOPK = 10
+HIST_TEXT_WEIGHT = 0.72
+HIST_IMG_WEIGHT = 0.28
+HIST_RECENT_WINDOW = 5
 
 
 # =============================
@@ -223,6 +228,69 @@ def attach_external_hard_neg(
     cov = float((merged["hard_neg_note_idxs"].apply(len) > 0).mean()) if len(merged) > 0 else 0.0
     logger.info(f"Attached external hard neg from {hard_neg_path}, coverage={cov:.4f}")
     return merged
+
+
+def _fuse_history_modal_vecs(text_vecs: torch.Tensor, img_vecs: torch.Tensor | None = None) -> torch.Tensor:
+    base = text_vecs.float()
+    if img_vecs is None or img_vecs.numel() == 0:
+        return base
+    img = img_vecs.float()
+    if img.shape != base.shape:
+        return base
+    return base * HIST_TEXT_WEIGHT + img * HIST_IMG_WEIGHT
+
+
+def summarize_history_sequence(vecs: torch.Tensor, recent_window: int = HIST_RECENT_WINDOW) -> torch.Tensor:
+    if vecs.ndim == 1:
+        return F.normalize(vecs.float(), p=2, dim=0)
+    if vecs.numel() == 0 or vecs.shape[0] <= 0:
+        return torch.zeros(EMB_DIM, dtype=torch.float32, device=vecs.device)
+    seq = vecs.float()
+    seq_len = int(seq.shape[0])
+    win = max(1, min(int(recent_window), seq_len))
+    mean_vec = seq.mean(dim=0)
+    recent_vec = seq[-win:].mean(dim=0)
+    last_vec = seq[-1]
+    max_vec = seq.max(dim=0).values
+    weights = torch.linspace(0.35, 1.0, steps=seq_len, dtype=torch.float32, device=seq.device)
+    weights = weights / weights.sum().clamp_min(1e-12)
+    recency_vec = (seq * weights.unsqueeze(1)).sum(dim=0)
+    summary = (
+        0.34 * recency_vec
+        + 0.26 * recent_vec
+        + 0.18 * last_vec
+        + 0.14 * mean_vec
+        + 0.08 * max_vec
+    )
+    return F.normalize(summary, p=2, dim=0)
+
+
+def build_history_sequence_from_ids(history_ids: list[int], stores: dict[str, object], max_len: int = SEQ_MAX_LEN) -> tuple[torch.Tensor, torch.Tensor]:
+    ids = [int(x) for x in history_ids if int(x) >= 0]
+    if not ids:
+        return torch.zeros(max_len, EMB_DIM, dtype=torch.float32), torch.zeros(max_len, dtype=torch.float32)
+    ids = ids[-max(1, int(max_len)) :]
+    text_vecs = stores["note_text"].get_batch_vecs(ids)
+    img_store = stores.get("note_img")
+    img_vecs = img_store.get_batch_vecs(ids) if img_store is not None else None
+    fused = _fuse_history_modal_vecs(text_vecs=text_vecs, img_vecs=img_vecs)
+    seq = torch.zeros(max_len, EMB_DIM, dtype=torch.float32)
+    mask = torch.zeros(max_len, dtype=torch.float32)
+    valid_len = int(fused.shape[0])
+    seq[:valid_len] = fused[:valid_len].float()
+    mask[:valid_len] = 1.0
+    return seq, mask
+
+
+def build_history_summary_from_ids(history_ids: list[int], stores: dict[str, object]) -> torch.Tensor:
+    ids = [int(x) for x in history_ids if int(x) >= 0]
+    if not ids:
+        return torch.zeros(EMB_DIM, dtype=torch.float32)
+    text_vecs = stores["note_text"].get_batch_vecs(ids)
+    img_store = stores.get("note_img")
+    img_vecs = img_store.get_batch_vecs(ids) if img_store is not None else None
+    fused = _fuse_history_modal_vecs(text_vecs=text_vecs, img_vecs=img_vecs)
+    return summarize_history_sequence(fused)
 
 
 # =============================
@@ -397,6 +465,10 @@ class DSSMModel(nn.Module):
     def __init__(self, scene, cat_vocabs, item_dense_dim, user_dense_dim):
         super().__init__()
         self.scene = scene
+        if self.scene == "rec":
+            self.seq_input_proj = nn.Linear(EMB_DIM, SEQ_TOWER_DIM)
+            self.seq_gru = nn.GRU(SEQ_TOWER_DIM, SEQ_TOWER_DIM // 2, batch_first=True, bidirectional=True)
+            self.seq_attn = nn.Linear(SEQ_TOWER_DIM, 1)
 
         # --- User Tower ---
         self.u_emb_user = nn.Embedding(cat_vocabs["user_idx"], 32)
@@ -436,7 +508,7 @@ class DSSMModel(nn.Module):
         # 将非法索引裁剪到合法区间，避免 CUDA embedding 越界
         return torch.clamp(x, min=0, max=vocab_size - 1)
 
-    def forward_user(self, batch_data, history_vecs):
+    def forward_user(self, batch_data, history_vecs, seq_tokens=None, seq_mask=None):
         user_idx = self._safe_index(batch_data["user_idx"], self.u_emb_user.num_embeddings)
         gender = self._safe_index(batch_data["gender_enc"], self.u_emb_gender.num_embeddings)
         platform = self._safe_index(batch_data["platform_enc"], self.u_emb_platform.num_embeddings)
@@ -458,7 +530,22 @@ class DSSMModel(nn.Module):
             dim=1,
         )
 
+        seq_repr = None
+        if self.scene == "rec":
+            if seq_tokens is None:
+                seq_repr = torch.zeros(history_vecs.shape[0], SEQ_TOWER_DIM, dtype=history_vecs.dtype, device=history_vecs.device)
+            else:
+                seq_x = self.seq_input_proj(seq_tokens.float())
+                seq_out, _ = self.seq_gru(seq_x)
+                attn_logits = self.seq_attn(seq_out).squeeze(-1)
+                if seq_mask is not None:
+                    attn_logits = attn_logits.masked_fill(seq_mask <= 0, -1e4)
+                attn = torch.softmax(attn_logits, dim=1).unsqueeze(-1)
+                seq_repr = (seq_out * attn).sum(dim=1)
+
         user_parts = [e1, e2, e3, e4, e5, u_dense, history_vecs]
+        if seq_repr is not None:
+            user_parts.append(seq_repr)
         if self.scene == "search":
             user_parts.append(batch_data["query_vec"])
         combined = torch.cat(user_parts, dim=1)
@@ -495,9 +582,11 @@ class DSSMModel(nn.Module):
         item_batch,
         item_text_vecs,
         item_img_vecs,
+        seq_tokens=None,
+        seq_mask=None,
     ):
         """端到端前向，直接输出一个 user-item pair 的余弦相似度"""
-        user_vec = self.forward_user(user_batch, history_vecs)
+        user_vec = self.forward_user(user_batch, history_vecs, seq_tokens=seq_tokens, seq_mask=seq_mask)
         item_vec = self.forward_item(item_batch, item_text_vecs, item_img_vecs)
         return self.cosine_score(user_vec, item_vec)
 
@@ -554,15 +643,21 @@ def collate_fn_builder(stores, scene: str):
         batch_size = len(users)
         num_neg = len(neg_items_list[0]) if batch_size > 0 else 0
 
-        # 历史 mean pooling
+        # 多模态近期强化 history summary + sequence tower 原始序列
         hist_vecs = []
+        hist_seq_vecs = []
+        hist_seq_masks = []
         for u in users:
             ids = u["history_ids"]
             if len(ids) > 0:
-                vecs = stores["note_text"].get_batch_vecs(ids)
-                hist_vecs.append(vecs.mean(dim=0))
+                hist_vecs.append(build_history_summary_from_ids(ids, stores))
+                seq_vec, seq_mask = build_history_sequence_from_ids(ids, stores)
             else:
                 hist_vecs.append(torch.zeros(EMB_DIM))
+                seq_vec = torch.zeros(SEQ_MAX_LEN, EMB_DIM)
+                seq_mask = torch.zeros(SEQ_MAX_LEN)
+            hist_seq_vecs.append(seq_vec)
+            hist_seq_masks.append(seq_mask)
 
         # 正/负 item 文本与图片向量
         pos_ids = [i["note_idx"] for i in pos_items]
@@ -606,6 +701,8 @@ def collate_fn_builder(stores, scene: str):
         return (
             user_batch,
             torch.stack(hist_vecs),
+            torch.stack(hist_seq_vecs),
+            torch.stack(hist_seq_masks),
             pos_batch,
             pos_txt,
             pos_img,
@@ -704,6 +801,8 @@ def evaluate(model, loader):
             (
                 u_data,
                 u_hist,
+                u_hist_seq,
+                u_hist_mask,
                 i_pos_data,
                 i_pos_txt,
                 i_pos_img,
@@ -715,7 +814,7 @@ def evaluate(model, loader):
             ) = batch
 
             with torch.amp.autocast("cuda", enabled=DEVICE.type == "cuda"):
-                user_vec = model.forward_user(u_data, u_hist)
+                user_vec = model.forward_user(u_data, u_hist, seq_tokens=u_hist_seq, seq_mask=u_hist_mask)
                 pos_vec = model.forward_item(i_pos_data, i_pos_txt, i_pos_img)
                 flat_neg_data = {
                     "note_idx": i_neg_data["note_idx"].reshape(-1),
@@ -788,6 +887,8 @@ def train_one_epoch(
         (
             u_data,
             u_hist,
+            u_hist_seq,
+            u_hist_mask,
             i_pos_data,
             i_pos_txt,
             i_pos_img,
@@ -801,7 +902,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast("cuda", enabled=DEVICE.type == "cuda"):
-            user_vec = model.forward_user(u_data, u_hist)
+            user_vec = model.forward_user(u_data, u_hist, seq_tokens=u_hist_seq, seq_mask=u_hist_mask)
             pos_vec = model.forward_item(i_pos_data, i_pos_txt, i_pos_img)
             flat_neg_data = {
                 "note_idx": i_neg_data["note_idx"].reshape(-1),
@@ -915,15 +1016,18 @@ def export_item_embeddings(model, item_meta, stores, scene, model_tag, batch_siz
     logger.info(f"Item embeddings exported: {emb_path} / {map_path}")
 
 
-def export_search_request_embeddings(model, stores, model_tag, batch_size=2048):
+def export_request_embeddings(model, stores, scene, model_tag, batch_size=2048):
     """
-    仅 search 场景使用：
     导出 request/user tower 向量（供 ANN 查询）到 train/test 两个 split。
-    - dssm_search_{tag}_{split}_query_emb.bin
-    - dssm_search_{tag}_{split}_query_map.json
-    - dssm_search_{tag}_{split}_query_meta.json
+    主输出：
+    - dssm_{scene}_{tag}_{split}_request_emb.bin
+    - dssm_{scene}_{tag}_{split}_request_map.json
+    - dssm_{scene}_{tag}_{split}_request_meta.json
+
+    为兼容旧 search 链路，同时额外保留：
+    - dssm_search_{tag}_{split}_query_emb.bin / query_map.json / query_meta.json
     """
-    req_col = "search_idx"
+    req_col = "search_idx" if scene == "search" else "request_idx"
     use_cols = [
         req_col,
         "user_idx",
@@ -937,9 +1041,9 @@ def export_search_request_embeddings(model, stores, model_tag, batch_size=2048):
     ] + [f"dense_feat{i}" for i in range(1, 41)]
 
     for split in ["train", "test"]:
-        feat_path = FEAT_DIR / f"search_{split}_features.parquet"
+        feat_path = FEAT_DIR / f"{scene}_{split}_features.parquet"
         if not feat_path.exists():
-            logger.warning(f"Missing {feat_path}, skip export search request emb for split={split}.")
+            logger.warning(f"Missing {feat_path}, skip export {scene} request emb for split={split}.")
             continue
 
         req_df = pd.read_parquet(feat_path, columns=use_cols)
@@ -952,26 +1056,34 @@ def export_search_request_embeddings(model, stores, model_tag, batch_size=2048):
             logger.warning(f"No requests in {feat_path}, skip export.")
             continue
 
-        emb_path = RESULT_DIR / f"dssm_search_{model_tag}_{split}_query_emb.bin"
-        map_path = RESULT_DIR / f"dssm_search_{model_tag}_{split}_query_map.json"
-        meta_path = RESULT_DIR / f"dssm_search_{model_tag}_{split}_query_meta.json"
+        emb_path = RESULT_DIR / f"dssm_{scene}_{model_tag}_{split}_request_emb.bin"
+        map_path = RESULT_DIR / f"dssm_{scene}_{model_tag}_{split}_request_map.json"
+        meta_path = RESULT_DIR / f"dssm_{scene}_{model_tag}_{split}_request_meta.json"
         mmap_arr = np.memmap(emb_path, dtype="float32", mode="w+", shape=(n_req, HIDDEN_DIM))
 
         model.eval()
         with torch.no_grad():
-            for start in tqdm(range(0, n_req, batch_size), desc=f"Export search_{split}_{model_tag} req emb"):
+            for start in tqdm(range(0, n_req, batch_size), desc=f"Export {scene}_{split}_{model_tag} req emb"):
                 end = min(start + batch_size, n_req)
                 batch_df = req_df.iloc[start:end]
                 req_ids = batch_df[req_col].to_numpy(np.int64)
 
                 hist_vecs = []
+                hist_seq_vecs = []
+                hist_seq_masks = []
                 for ids in batch_df["recent_clicked_note_idxs"].tolist():
                     if len(ids) > 0:
-                        vecs = stores["note_text"].get_batch_vecs(ids)
-                        hist_vecs.append(vecs.mean(dim=0))
+                        hist_vecs.append(build_history_summary_from_ids(ids, stores))
+                        seq_vec, seq_mask = build_history_sequence_from_ids(ids, stores)
                     else:
                         hist_vecs.append(torch.zeros(EMB_DIM))
+                        seq_vec = torch.zeros(SEQ_MAX_LEN, EMB_DIM)
+                        seq_mask = torch.zeros(SEQ_MAX_LEN)
+                    hist_seq_vecs.append(seq_vec)
+                    hist_seq_masks.append(seq_mask)
                 hist_vecs = torch.stack(hist_vecs).to(DEVICE, non_blocking=True)
+                hist_seq_vecs = torch.stack(hist_seq_vecs).to(DEVICE, non_blocking=True)
+                hist_seq_masks = torch.stack(hist_seq_masks).to(DEVICE, non_blocking=True)
 
                 user_batch = {
                     "user_idx": torch.tensor(batch_df["user_idx"].to_numpy(np.int64), dtype=torch.long, device=DEVICE),
@@ -986,29 +1098,54 @@ def export_search_request_embeddings(model, stores, model_tag, batch_size=2048):
                         dtype=torch.float32,
                         device=DEVICE,
                     ),
-                    "query_vec": stores["search_query"].get_batch_vecs(req_ids.tolist()).to(DEVICE, non_blocking=True),
                 }
+                if scene == "search":
+                    sq_store = stores.get("search_query")
+                    if sq_store is not None:
+                        user_batch["query_vec"] = sq_store.get_batch_vecs(req_ids.tolist()).to(DEVICE, non_blocking=True)
+                    else:
+                        user_batch["query_vec"] = torch.zeros((len(batch_df), EMB_DIM), dtype=torch.float32, device=DEVICE)
                 with torch.amp.autocast("cuda", enabled=False):
-                    req_vec = model.forward_user(user_batch, hist_vecs)
+                    req_vec = model.forward_user(user_batch, hist_vecs, seq_tokens=hist_seq_vecs, seq_mask=hist_seq_masks)
                 mmap_arr[start:end] = req_vec.detach().float().cpu().numpy()
 
         mmap_arr.flush()
+        req_map = {str(int(rid)): i for i, rid in enumerate(req_df[req_col].tolist())}
+        req_meta = {
+            "scene": scene,
+            "split": split,
+            "num_requests": n_req,
+            "dim": HIDDEN_DIM,
+            "dtype": "float32",
+            "req_col": req_col,
+        }
         with open(map_path, "w") as f:
-            json.dump({str(int(rid)): i for i, rid in enumerate(req_df[req_col].tolist())}, f)
+            json.dump(req_map, f)
         with open(meta_path, "w") as f:
-            json.dump(
-                {
-                    "scene": "search",
-                    "split": split,
-                    "num_queries": n_req,
-                    "dim": HIDDEN_DIM,
-                    "dtype": "float32",
-                    "req_col": req_col,
-                },
-                f,
-                indent=2,
-            )
-        logger.info(f"Search request embeddings exported: {emb_path} / {map_path}")
+            json.dump(req_meta, f, indent=2)
+
+        if scene == "search":
+            with open(RESULT_DIR / f"dssm_search_{model_tag}_{split}_query_map.json", "w") as f:
+                json.dump(req_map, f)
+            with open(RESULT_DIR / f"dssm_search_{model_tag}_{split}_query_meta.json", "w") as f:
+                json.dump(
+                    {
+                        "scene": scene,
+                        "split": split,
+                        "num_queries": n_req,
+                        "dim": HIDDEN_DIM,
+                        "dtype": "float32",
+                        "req_col": req_col,
+                    },
+                    f,
+                    indent=2,
+                )
+            legacy_emb_path = RESULT_DIR / f"dssm_search_{model_tag}_{split}_query_emb.bin"
+            if legacy_emb_path != emb_path:
+                np.memmap(legacy_emb_path, dtype="float32", mode="w+", shape=(n_req, HIDDEN_DIM))[:] = np.memmap(
+                    emb_path, dtype="float32", mode="r", shape=(n_req, HIDDEN_DIM)
+                )[:]
+        logger.info(f"{scene} request embeddings exported: {emb_path} / {map_path}")
 
 
 def save_tower_checkpoints(
@@ -1028,7 +1165,11 @@ def save_tower_checkpoints(
     user_state = {
         k: v
         for k, v in state_dict.items()
-        if k.startswith("u_emb_") or k.startswith("user_mlp")
+        if k.startswith("u_emb_")
+        or k.startswith("user_mlp")
+        or k.startswith("seq_input_proj")
+        or k.startswith("seq_gru")
+        or k.startswith("seq_attn")
     }
     item_state = {
         k: v
@@ -1041,6 +1182,7 @@ def save_tower_checkpoints(
         "tag": model_tag,
         "hidden_dim": HIDDEN_DIM,
         "emb_dim": EMB_DIM,
+        "seq_tower_dim": SEQ_TOWER_DIM,
         "cat_vocabs": cat_vocabs,
         "user_dense_dim": user_dense_dim,
         "item_dense_dim": item_dense_dim,
@@ -1048,6 +1190,37 @@ def save_tower_checkpoints(
     torch.save({"state_dict": user_state, "meta": common_meta}, user_path)
     torch.save({"state_dict": item_state, "meta": common_meta}, item_path)
     logger.info(f"Tower checkpoints saved: {full_path}, {user_path}, {item_path}")
+
+
+def export_request_embeddings_from_checkpoint(scene: str, model_tag: str) -> None:
+    user_tower_path = MODEL_DIR / f"dssm_{scene}_{model_tag}_user_tower.pt"
+    if not user_tower_path.exists():
+        raise FileNotFoundError(f"missing checkpoint: {user_tower_path}")
+    ckpt = torch.load(user_tower_path, map_location="cpu")
+    meta = ckpt.get("meta", {})
+    user_state = ckpt.get("state_dict", {})
+    cat_vocabs = meta.get("cat_vocabs", {})
+    item_dense_dim = int(meta.get("item_dense_dim", 0))
+    user_dense_dim = int(meta.get("user_dense_dim", 0))
+    if not cat_vocabs or user_dense_dim <= 0:
+        raise ValueError(f"invalid user tower checkpoint meta: {user_tower_path}")
+
+    model = DSSMModel(
+        scene=scene,
+        cat_vocabs=cat_vocabs,
+        item_dense_dim=item_dense_dim,
+        user_dense_dim=user_dense_dim,
+    ).to(DEVICE)
+    model.load_state_dict(user_state, strict=False)
+    model.eval()
+
+    stores = {
+        "note_text": MMapStore("note_text_emb", "note_text"),
+        "note_img": MMapStore("note_img_emb", "note_img"),
+    }
+    if scene == "search":
+        stores["search_query"] = MMapStore("query_text_emb", "search_query")
+    export_request_embeddings(model, stores, scene=scene, model_tag=model_tag)
 
 
 def main(
@@ -1232,7 +1405,7 @@ def main(
             num_neg_per_pos=num_neg_per_pos,
             use_inbatch_neg=True,
         ),
-        batch_size=BATCH_SIZE,
+        batch_size=(REC_BATCH_SIZE if scene == "rec" else BATCH_SIZE),
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=4,
@@ -1254,7 +1427,7 @@ def main(
             num_neg_per_pos=num_neg_per_pos,
             use_inbatch_neg=True,
         ),
-        batch_size=BATCH_SIZE,
+        batch_size=(REC_BATCH_SIZE if scene == "rec" else BATCH_SIZE),
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=2,
@@ -1263,9 +1436,11 @@ def main(
         prefetch_factor=2,
     )
 
-    user_dense_dim = 2 + len(dense_feat_cols) + EMB_DIM  # fans/follows + 40 + hist
+    user_dense_dim = 2 + len(dense_feat_cols) + EMB_DIM  # fans/follows + 40 + hist summary
     if scene == "search":
         user_dense_dim += EMB_DIM  # + query_text_emb
+    else:
+        user_dense_dim += SEQ_TOWER_DIM  # + rec sequence tower
     item_dense_dim = len(item_dense_cols)
 
     model = DSSMModel(scene, cat_vocabs, item_dense_dim, user_dense_dim).to(DEVICE)
@@ -1354,8 +1529,7 @@ def main(
         model.load_state_dict(best_state_dict)
         model.to(DEVICE)
         export_item_embeddings(model, item_meta, stores, scene, model_tag)  # 导出 item embedding 供 Faiss 使用
-        if scene == "search" and "search_query" in stores:
-            export_search_request_embeddings(model, stores, model_tag=model_tag)
+        export_request_embeddings(model, stores, scene, model_tag=model_tag)
 
     writer.close()
     logger.info(f"Training done. Best AUC={best_auc:.4f}")
@@ -1368,5 +1542,9 @@ if __name__ == "__main__":
     parser.add_argument("--neg-mode", choices=["auto", "easy", "hard"], default="auto")
     parser.add_argument("--hard-neg-path", type=Path, default=None, help="外部 hard neg 文件路径（通常来自 easy 阶段排序淘汰导出）")
     parser.add_argument("--num-neg-per-pos", type=int, default=NUM_NEG_PER_POS, help="每个正样本采样的负样本数量")
+    parser.add_argument("--export-only-tag", choices=["easy", "hard"], default=None)
     args = parser.parse_args()
-    main(args.scene, args.neg_mode, args.hard_neg_path, args.num_neg_per_pos)
+    if args.export_only_tag is not None:
+        export_request_embeddings_from_checkpoint(args.scene, args.export_only_tag)
+    else:
+        main(args.scene, args.neg_mode, args.hard_neg_path, args.num_neg_per_pos)

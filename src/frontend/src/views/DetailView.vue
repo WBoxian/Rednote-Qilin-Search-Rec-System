@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import TopBar from '../components/TopBar.vue';
 import { api } from '../services/api';
@@ -18,6 +18,18 @@ const enterAtMs = ref(0);
 const actionState = ref({ like: false, collect: false, comment: false, share: false });
 const imageIdx = ref(0);
 const fullImage = ref(false);
+const brokenImages = ref<Record<number, boolean>>({});
+const imageOrientations = ref<Record<number, 'landscape' | 'portrait'>>({});
+const DETAIL_SEED_KEY = 'qilin_detail_seed';
+const pageTitle = 'Qilin \u5E16\u5B50\u8BE6\u60C5';
+const copy = {
+  noTitle: '\uFF08\u65E0\u6807\u9898\uFF09',
+  noImage: '\u6682\u65E0\u56FE\u7247',
+  noContent: '\u6682\u65E0\u5185\u5BB9',
+  backHome: '\u8FD4\u56DE\u9996\u9875',
+  close: '\u5173\u95ED',
+  rankNote: '\u6700\u7EC8 Rank \u7EE7\u627F\u9996\u9875\u6362\u4E00\u6279\u4E4B\u540E\u7684\u5C55\u793A\u987A\u5E8F',
+};
 
 function fmt(v: any) {
   if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(4);
@@ -36,26 +48,27 @@ function fmtTime(ts: any) {
 }
 
 function dedupBehaviors(rows: any[]): any[] {
-  const out: any[] = [];
-  const seen = new Set<string>();
-  for (const row of (rows || [])) {
-    const key = `${row?.note_idx}|${row?.request_id}|${row?.query || ''}|${row?.scene || ''}`;
-    if (seen.has(key)) continue;
-    out.push(row);
-    seen.add(key);
-    if (out.length >= 20) break;
+  const merged = new Map<string, any>();
+  for (const row of rows || []) {
+    const key = String(row?.note_idx ?? '');
+    const prev = merged.get(key);
+    if (!prev) {
+      merged.set(key, row);
+      continue;
+    }
+    const prevTs = Number(prev?.ts || 0);
+    const nextTs = Number(row?.ts || 0);
+    if (nextTs >= prevTs) {
+      merged.set(key, { ...prev, ...row });
+    }
   }
-  return out;
+  return Array.from(merged.values())
+    .sort((a, b) => Number(b?.ts || 0) - Number(a?.ts || 0))
+    .slice(0, 40);
 }
 
 function goHomeKeepFeed() {
   router.push('/?preserve=1');
-}
-
-function onImgError(e: Event) {
-  const img = e.target as HTMLImageElement | null;
-  if (!img) return;
-  img.style.display = 'none';
 }
 
 function imageList() {
@@ -69,6 +82,29 @@ function curImage() {
   return arr[idx] || '';
 }
 
+const currentImageFrameClass = computed(() => imageOrientations.value[imageIdx.value] || 'landscape');
+
+function hasCurrentImage() {
+  return Boolean(curImage()) && !brokenImages.value[imageIdx.value];
+}
+
+function currentPlaceholderTags() {
+  return Array.isArray(detail.value?.topic_tokens) ? detail.value.topic_tokens.slice(0, 4) : [];
+}
+
+function onImgError() {
+  brokenImages.value = { ...brokenImages.value, [imageIdx.value]: true };
+}
+
+function onImgLoad(event: Event) {
+  const img = event.target as HTMLImageElement | null;
+  if (!img) return;
+  imageOrientations.value = {
+    ...imageOrientations.value,
+    [imageIdx.value]: img.naturalWidth >= img.naturalHeight ? 'landscape' : 'portrait',
+  };
+}
+
 function moveImage(step: number) {
   const arr = imageList();
   if (!arr.length) return;
@@ -77,13 +113,13 @@ function moveImage(step: number) {
 }
 
 function onImageWheel(e: WheelEvent) {
-  if (!detail.value || imageList().length <= 1) return;
+  if (!fullImage.value || imageList().length <= 1) return;
   if (e.deltaY > 0) moveImage(1);
   else if (e.deltaY < 0) moveImage(-1);
 }
 
 function openFullImage() {
-  if (!curImage()) return;
+  if (!hasCurrentImage()) return;
   fullImage.value = true;
 }
 
@@ -92,7 +128,6 @@ function closeFullImage() {
 }
 
 onMounted(async () => {
-  // 从路由 query 还原上下文并请求详情
   const scene = String(route.query.scene || 'search');
   const userIdx = Number(route.query.user_idx || 0);
   const requestId = Number(route.query.request_id || 0);
@@ -105,6 +140,22 @@ onMounted(async () => {
   noteIdxRef.value = noteIdx;
   queryRef.value = query;
   enterAtMs.value = Date.now();
+  try {
+    const raw = sessionStorage.getItem(DETAIL_SEED_KEY);
+    if (raw) {
+      const seed = JSON.parse(raw);
+      if (
+        String(seed?.scene || '') === scene
+        && Number(seed?.user_idx || -1) === userIdx
+        && Number(seed?.request_id || -1) === requestId
+        && Number(seed?.note_idx || -1) === noteIdx
+        && Date.now() - Number(seed?.savedAt || 0) <= 10 * 60 * 1000
+      ) {
+        detail.value = seed.detail || null;
+      }
+    }
+  } catch {
+  }
   const [noteRes, userRes] = await Promise.allSettled([
     api.note(scene, userIdx, requestId, noteIdx, query),
     api.user(scene, userIdx),
@@ -112,13 +163,15 @@ onMounted(async () => {
   if (noteRes.status === 'fulfilled') {
     detail.value = noteRes.value.detail;
     imageIdx.value = 0;
+    brokenImages.value = {};
+    imageOrientations.value = {};
     fullImage.value = false;
     if (detail.value && homeRank > 0) {
       detail.value.stage_top500_ranks = {
         ...(detail.value.stage_top500_ranks || {}),
-          ranking: homeRank,
+        rerank: homeRank,
       };
-      detail.value.stage_rank_note = '重排 Rank 显示的是你在首页点击该内容时看到的位次。';
+      detail.value.stage_rank_note = copy.rankNote;
     }
     latencyMs.value = Number(noteRes.value?.latency_ms ?? 0);
   }
@@ -130,13 +183,21 @@ onMounted(async () => {
 onUnmounted(async () => {
   try {
     const dwellSec = Math.max(0, (Date.now() - Number(enterAtMs.value || Date.now())) / 1000);
+    const hasAction = Object.values(actionState.value).some(Boolean);
+    if (!hasAction && dwellSec < 1) return;
     await api.engage(
       sceneRef.value,
       Number(userIdxRef.value),
       Number(noteIdxRef.value),
       Number(requestIdRef.value),
       queryRef.value,
-      { pageTime: dwellSec }
+      {
+        like: actionState.value.like ? 1 : 0,
+        collect: actionState.value.collect ? 1 : 0,
+        comment: actionState.value.comment ? 1 : 0,
+        share: actionState.value.share ? 1 : 0,
+        pageTime: dwellSec,
+      }
     );
   } catch {
   }
@@ -196,20 +257,28 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
 </script>
 
 <template>
-  <TopBar title="小红书麒麟搜推系统项目" :latency-ms="latencyMs" />
+  <TopBar :title="pageTitle" :latency-ms="latencyMs" />
   <main class="container" v-if="detail">
-    <section class="panel">
+    <section class="panel detail-panel detail-panel-hero">
       <div style="display:flex;justify-content:flex-start;margin-bottom:8px;">
-        <button class="btn" @click="goHomeKeepFeed">返回首页</button>
+        <button class="btn" @click="goHomeKeepFeed">{{ copy.backHome }}</button>
       </div>
       <div class="meta">scene={{ detail.scene }} | request_id={{ detail.request_id }} | note_idx={{ detail.note_idx }}</div>
-      <div class="img-pager" @wheel.prevent="onImageWheel">
-        <button class="btn" :disabled="imageList().length <= 1" @click="moveImage(-1)"><</button>
-        <div class="img-stage" @click="openFullImage">
-          <img v-if="curImage()" :src="api.imageUrl(curImage())" alt="img" loading="lazy" @error="onImgError" />
-          <div v-else class="meta">暂无图片</div>
+      <div class="img-pager">
+        <button class="btn img-nav-btn" :disabled="imageList().length <= 1" @click="moveImage(-1)"><</button>
+        <div class="img-stage-shell">
+          <div class="img-stage" :class="currentImageFrameClass" @click="openFullImage">
+            <img v-if="hasCurrentImage()" :src="api.imageUrl(curImage())" alt="img" loading="lazy" @error="onImgError" @load="onImgLoad" />
+            <div v-else class="media-placeholder detail-placeholder">
+              <div class="media-placeholder-mark">&#x1F5BC;</div>
+              <div class="media-placeholder-title">{{ detail.title || copy.noImage }}</div>
+              <div class="media-placeholder-tags">
+                <span v-for="tag in currentPlaceholderTags()" :key="`${detail.note_idx}-${tag}`">{{ tag }}</span>
+              </div>
+            </div>
+          </div>
         </div>
-        <button class="btn" :disabled="imageList().length <= 1" @click="moveImage(1)">></button>
+        <button class="btn img-nav-btn" :disabled="imageList().length <= 1" @click="moveImage(1)">></button>
       </div>
       <div class="meta" style="margin-top:8px;">{{ imageList().length ? `${imageIdx + 1}/${imageList().length}` : '0/0' }}</div>
       <div class="thumb-pages" v-if="imageList().length">
@@ -223,86 +292,117 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
           {{ Number(idx) + 1 }}
         </button>
       </div>
-      <div class="note-title">{{ detail.title }}</div>
-      <div class="note-content">{{ detail.content }}</div>
+      <div class="note-title">{{ detail.title || copy.noTitle }}</div>
+      <div class="note-content">{{ detail.content || copy.noContent }}</div>
     </section>
-    <section class="panel">
-      <h3>三阶段 Top500 位次</h3>
+    <section class="panel detail-panel">
+      <h3>&#x5404;&#x9636;&#x6BB5; Top500 &#x6392;&#x4F4D;</h3>
       <table class="table">
         <tbody>
-          <tr><td>召回 Rank</td><td>{{ detail.stage_top500_ranks?.recall ?? '-' }}</td></tr>
-          <tr><td>粗排 Rank</td><td>{{ detail.stage_top500_ranks?.preranking ?? '-' }}</td></tr>
-          <tr><td>精排 Rank</td><td>{{ detail.stage_top500_ranks?.ranking ?? '-' }}</td></tr>
-          <tr><td>重排 Rank(去重后)</td><td>{{ detail.stage_top500_ranks?.ranking ?? '-' }}</td></tr>
+          <tr><td>&#x53EC;&#x56DE; Rank</td><td>{{ detail.stage_top500_ranks?.recall ?? '-' }}</td></tr>
+          <tr><td>&#x7C97;&#x6392; Rank</td><td>{{ detail.stage_top500_ranks?.preranking ?? '-' }}</td></tr>
+          <tr><td>&#x7CBE;&#x6392; Rank</td><td>{{ detail.stage_top500_ranks?.ranking ?? '-' }}</td></tr>
+          <tr><td>&#x6700;&#x7EC8; Rank(&#x9996;&#x9875;&#x5C55;&#x793A;)</td><td>{{ detail.stage_top500_ranks?.rerank ?? '-' }}</td></tr>
         </tbody>
       </table>
       <div class="meta" style="margin-top:8px;">{{ detail.stage_rank_note }}</div>
       <div class="action-row">
-        <button class="action-btn" :class="{ active: actionState.like }" @click="engage('like')">
-          <span class="action-icon">{{ actionState.like ? '♥' : '♡' }}</span>
-          <span class="action-text">点赞</span>
+        <button class="action-btn action-like" :class="{ active: actionState.like }" @click="engage('like')">
+          <span class="action-icon">&#x2665;</span>
+          <span class="action-text">&#x70B9;&#x8D5E;</span>
           <span class="action-count">{{ actionCount('like') }}</span>
         </button>
-        <button class="action-btn collect" :class="{ active: actionState.collect }" @click="engage('collect')">
-          <span class="action-icon">{{ actionState.collect ? '★' : '☆' }}</span>
-          <span class="action-text">收藏</span>
+        <button class="action-btn action-collect" :class="{ active: actionState.collect }" @click="engage('collect')">
+          <span class="action-icon">&#x2605;</span>
+          <span class="action-text">&#x6536;&#x85CF;</span>
           <span class="action-count">{{ actionCount('collect') }}</span>
         </button>
-        <button class="action-btn comment" :class="{ active: actionState.comment }" @click="engage('comment')">
-          <span class="action-icon">{{ actionState.comment ? '●' : '◌' }}</span>
-          <span class="action-text">评论</span>
+        <button class="action-btn action-comment" :class="{ active: actionState.comment }" @click="engage('comment')">
+          <span class="action-icon">&#x1F4AC;</span>
+          <span class="action-text">&#x8BC4;&#x8BBA;</span>
           <span class="action-count">{{ actionCount('comment') }}</span>
         </button>
-        <button class="action-btn share" :class="{ active: actionState.share }" @click="engage('share')">
-          <span class="action-icon">{{ actionState.share ? '➜' : '➚' }}</span>
-          <span class="action-text">分享</span>
+        <button class="action-btn action-share" :class="{ active: actionState.share }" @click="engage('share')">
+          <span class="action-icon">&#x27A6;</span>
+          <span class="action-text">&#x5206;&#x4EAB;</span>
           <span class="action-count">{{ actionCount('share') }}</span>
         </button>
       </div>
     </section>
-    <section class="panel" v-if="currentUser">
-      <h3 style="margin:0 0 10px;">当前用户最近行为（20条）</h3>
+    <section class="panel detail-panel" v-if="currentUser">
+      <h3 style="margin:0 0 10px;">&#x7528;&#x6237;&#x6700;&#x8FD1;&#x53BB;&#x91CD;&#x884C;&#x4E3A; 40 &#x6761;</h3>
       <table class="table" v-if="dedupBehaviors(currentUser.recent_behaviors || []).length">
         <tbody>
-          <tr><td style="width:62%;">行为明细</td><td>对应标题</td></tr>
-          <tr v-for="(row, i) in dedupBehaviors(currentUser.recent_behaviors || [])" :key="`${row.ts}-${row.note_idx}-${row.action}-${i}`">
+          <tr><td style="width:62%;">&#x884C;&#x4E3A;&#x4FE1;&#x606F;</td><td>&#x6807;&#x9898;</td></tr>
+          <tr v-for="(row, i) in dedupBehaviors(currentUser.recent_behaviors || [])" :key="`${row.scene}-${row.request_id}-${row.note_idx}-${i}`">
             <td>
-              <div>时间：{{ fmtTime(row.ts) }}</div>
-              <div>scene：{{ fmt(row.scene) }}</div>
-              <div>request_id：{{ fmt(row.request_id) }}</div>
-              <div>query：{{ fmt(row.query) }}</div>
-              <div>note_idx：{{ fmt(row.note_idx) }}</div>
-              <div>互动分：{{ fmt(row.interaction_score) }}</div>
+              <div>&#x65F6;&#x95F4;&#xFF1A;{{ fmtTime(row.ts) }}</div>
+              <div>scene&#xFF1A;{{ fmt(row.scene) }}</div>
+              <div>request_id&#xFF1A;{{ fmt(row.request_id) }}</div>
+              <div>query&#xFF1A;{{ fmt(row.query) }}</div>
+              <div>note_idx&#xFF1A;{{ fmt(row.note_idx) }}</div>
+              <div>&#x4E92;&#x52A8;&#x5206;&#xFF1A;{{ fmt(row.interaction_score) }}</div>
             </td>
             <td>{{ fmt(row.title) }}</td>
           </tr>
         </tbody>
       </table>
-      <div v-else class="meta">暂无实时行为记录。</div>
+      <div v-else class="meta">&#x6682;&#x65E0;&#x6700;&#x8FD1;&#x884C;&#x4E3A;&#x6570;&#x636E;</div>
     </section>
   </main>
 
   <div v-if="fullImage" class="full-mask" @click.self="closeFullImage" @wheel.prevent="onImageWheel">
-    <button class="btn" style="position:absolute;top:16px;right:16px;z-index:2;" @click="closeFullImage">关闭</button>
-    <button class="btn" style="position:absolute;left:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(-1)"><</button>
-    <img v-if="curImage()" class="full-img" :src="api.imageUrl(curImage())" alt="full" @error="onImgError" />
-    <button class="btn" style="position:absolute;right:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(1)">></button>
+    <button class="btn" style="position:absolute;top:16px;right:16px;z-index:2;" @click="closeFullImage">{{ copy.close }}</button>
+    <button class="btn img-nav-btn" style="position:absolute;left:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(-1)"><</button>
+    <img v-if="hasCurrentImage()" class="full-img" :src="api.imageUrl(curImage())" alt="full" @error="onImgError" />
+    <button class="btn img-nav-btn" style="position:absolute;right:16px;top:50%;transform:translateY(-50%);z-index:2;" :disabled="imageList().length<=1" @click="moveImage(1)">></button>
     <div class="meta" style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);color:#fff;">{{ imageList().length ? `${imageIdx + 1}/${imageList().length}` : '0/0' }}</div>
   </div>
 </template>
 
 <style scoped>
+.detail-panel {
+  background:
+    linear-gradient(145deg, rgba(248, 250, 252, 0.98), rgba(234, 239, 244, 0.95) 54%, rgba(242, 245, 248, 0.96)),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.68), transparent 28%),
+    radial-gradient(circle at 100% 0%, rgba(189, 205, 222, 0.20), transparent 26%);
+  border: 1px solid rgba(86, 102, 121, 0.11);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 18px 36px rgba(24, 33, 43, 0.07);
+}
+
+.detail-panel-hero {
+  background:
+    linear-gradient(145deg, rgba(246, 249, 251, 0.99), rgba(232, 237, 242, 0.95) 52%, rgba(244, 247, 249, 0.96)),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.72), transparent 24%),
+    radial-gradient(circle at 100% 0%, rgba(194, 210, 228, 0.16), transparent 24%);
+}
+
 .img-pager {
   display: grid;
   grid-template-columns: auto 1fr auto;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 
+.img-nav-btn {
+  min-width: 56px;
+  min-height: 56px;
+  padding: 12px 14px;
+  font-size: 22px;
+  font-weight: 700;
+  border-radius: 18px;
+}
+
+.img-stage-shell {
+  display: flex;
+  justify-content: center;
+}
+
 .img-stage {
-  min-height: 420px;
-  background: #111;
-  border-radius: 12px;
+  width: min(100%, 760px);
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -310,10 +410,27 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
   cursor: zoom-in;
 }
 
+.img-stage.landscape {
+  aspect-ratio: 16 / 9;
+}
+
+.img-stage.portrait {
+  width: min(100%, 420px);
+  aspect-ratio: 9 / 16;
+}
+
 .img-stage img {
   width: 100%;
-  max-height: 560px;
-  object-fit: contain;
+  height: 100%;
+  border-radius: 16px;
+  object-fit: cover;
+  box-shadow: 0 18px 42px rgba(24, 33, 43, 0.14);
+}
+
+.detail-placeholder {
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
 }
 
 .thumb-pages {
@@ -353,66 +470,137 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
   object-fit: contain;
 }
 
+.media-placeholder {
+  position: relative;
+  display: grid;
+  align-content: end;
+  gap: 8px;
+  padding: 18px 16px;
+  color: #22303c;
+  background:
+    radial-gradient(circle at top right, rgba(255,255,255,0.72), transparent 26%),
+    linear-gradient(160deg, rgba(238, 242, 246, 0.98), rgba(222, 229, 236, 0.92));
+}
+
+.media-placeholder::after {
+  content: '';
+  position: absolute;
+  inset: 10px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.50);
+  pointer-events: none;
+}
+
+.media-placeholder-mark {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  font-size: 28px;
+  opacity: 0.42;
+}
+
+.media-placeholder-title {
+  position: relative;
+  z-index: 1;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.media-placeholder-tags {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.media-placeholder-tags span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.70);
+  border: 1px solid rgba(36, 44, 56, 0.08);
+  font-size: 11px;
+  color: #5a6876;
+}
+
+.note-title {
+  margin-top: 14px;
+  font-size: clamp(24px, 2.8vw, 34px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  color: #16212c;
+}
+
+.note-content {
+  margin-top: 12px;
+  white-space: pre-wrap;
+  line-height: 1.75;
+  color: #31414f;
+}
+
 .action-row {
+  margin-top: 16px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 14px;
+  gap: 10px;
 }
 
 .action-btn {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-height: 88px;
-  border-radius: 18px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  color: #374151;
-  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(36, 44, 56, 0.10);
+  background: linear-gradient(180deg, rgba(27, 35, 45, 0.22), rgba(27, 35, 45, 0.12));
+  color: rgba(24, 33, 43, 0.42);
 }
 
-.action-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+.action-btn .action-count,
+.action-btn .action-icon,
+.action-btn .action-text {
+  transition: color 0.18s ease, opacity 0.18s ease;
 }
 
 .action-btn.active {
-  border-color: transparent;
-  background: linear-gradient(135deg, #fff1f2, #ffe4e6);
-  color: #e11d48;
+  transform: translateY(-1px);
+  box-shadow: 0 14px 30px rgba(24, 33, 43, 0.08);
 }
 
-.action-btn.collect.active {
-  background: linear-gradient(135deg, #fff7ed, #ffedd5);
-  color: #ea580c;
+.action-like.active {
+  color: #b42318;
+  background: linear-gradient(135deg, rgba(244, 190, 188, 0.38), rgba(255,255,255,0.96));
 }
 
-.action-btn.comment.active {
-  background: linear-gradient(135deg, #eff6ff, #dbeafe);
-  color: #2563eb;
+.action-collect.active {
+  color: #8a5a00;
+  background: linear-gradient(135deg, rgba(244, 220, 161, 0.46), rgba(255,255,255,0.96));
 }
 
-.action-btn.share.active {
-  background: linear-gradient(135deg, #ecfeff, #cffafe);
-  color: #0891b2;
+.action-comment.active {
+  color: #175cd3;
+  background: linear-gradient(135deg, rgba(181, 205, 248, 0.46), rgba(255,255,255,0.96));
 }
 
-.action-icon {
-  font-size: 28px;
-  line-height: 1;
+.action-share.active {
+  color: #027a48;
+  background: linear-gradient(135deg, rgba(176, 234, 212, 0.46), rgba(255,255,255,0.96));
 }
 
 .action-text {
-  font-size: 14px;
   font-weight: 700;
 }
 
 .action-count {
-  font-size: 12px;
-  color: inherit;
-  opacity: 0.9;
+  color: rgba(24, 33, 43, 0.62);
+}
+
+@media (max-width: 900px) {
+  .action-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

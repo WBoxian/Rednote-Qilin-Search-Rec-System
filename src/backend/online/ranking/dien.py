@@ -16,6 +16,8 @@ except Exception:
     AutoModel = None
     AutoTokenizer = None
 
+from backend.online.shared_query_encoder import get_shared_query_encoder
+
 BASE_DIR = Path(__file__).resolve().parents[4]
 
 
@@ -38,9 +40,6 @@ def _ensure_training_utils_loaded() -> None:
 
 
 class DIENPredictor:
-    _shared_query_tokenizer = None
-    _shared_query_model = None
-
     def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str):
         self.scene = scene
         self.tag = tag
@@ -53,6 +52,8 @@ class DIENPredictor:
         self.query_model = None
         self._query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._query_cache_max = 2048
+        self._history_seq_cache: OrderedDict[tuple[int, ...], torch.Tensor] = OrderedDict()
+        self._history_seq_cache_max = 256
 
         _ensure_training_utils_loaded()
         self.dien_train = _load_module_from_src("online_ranking_dien_ranker", "training/dien_ranker.py")
@@ -122,18 +123,7 @@ class DIENPredictor:
             self._load_query_encoder()
 
     def _load_query_encoder(self) -> None:
-        if AutoTokenizer is None or AutoModel is None:
-            return
-        if DIENPredictor._shared_query_tokenizer is None or DIENPredictor._shared_query_model is None:
-            try:
-                DIENPredictor._shared_query_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-base-zh", local_files_only=True)
-                DIENPredictor._shared_query_model = AutoModel.from_pretrained("BAAI/bge-base-zh", local_files_only=True).to("cpu")
-                DIENPredictor._shared_query_model.eval()
-            except Exception:
-                DIENPredictor._shared_query_tokenizer = None
-                DIENPredictor._shared_query_model = None
-        self.query_tokenizer = DIENPredictor._shared_query_tokenizer
-        self.query_model = DIENPredictor._shared_query_model
+        self.query_tokenizer, self.query_model = get_shared_query_encoder()
 
     def _normalize_search_query(self, text: str) -> str:
         return str(text or "").strip()
@@ -203,12 +193,17 @@ class DIENPredictor:
                 out[i] = vec.reshape(-1)
         return torch.tensor(out, dtype=torch.float32, device=self.device)
 
-    def _build_seq_tensor_from_history(self, history_note_ids: list[int], repeats: int) -> torch.Tensor:
+    def _get_history_seq_base_tensor(self, history_note_ids: list[int]) -> torch.Tensor:
         seq_len = int(self.dien_train.SEQ_LEN)
         emb_dim = int(self.dien_train.EMB_DIM)
-        note_ids = [int(x) for x in history_note_ids[:seq_len] if int(x) >= 0]
+        note_ids = tuple(int(x) for x in history_note_ids[:seq_len] if int(x) >= 0)
+        cached = self._history_seq_cache.get(note_ids)
+        if cached is not None:
+            self._history_seq_cache.move_to_end(note_ids)
+            return cached
+
         if note_ids:
-            seq_tensor = self.stores["t"].get_tensor(note_ids)
+            seq_tensor = self.stores["t"].get_tensor(list(note_ids))
             seq_np = seq_tensor.detach().cpu().numpy().astype(np.float32)
         else:
             seq_np = np.zeros((0, emb_dim), dtype=np.float32)
@@ -218,8 +213,15 @@ class DIENPredictor:
             take = min(seq_len, len(seq_np))
             padded[:take] = seq_np[:take]
         padded = np.flip(padded, axis=0).copy()
-        batch_np = np.repeat(padded[None, :, :], repeats=int(repeats), axis=0)
-        return torch.tensor(batch_np, dtype=torch.float32, device=self.device)
+        base = torch.tensor(padded, dtype=torch.float32, device=self.device)
+        self._history_seq_cache[note_ids] = base
+        if len(self._history_seq_cache) > self._history_seq_cache_max:
+            self._history_seq_cache.popitem(last=False)
+        return base
+
+    def _build_seq_tensor_from_history(self, history_note_ids: list[int], repeats: int) -> torch.Tensor:
+        base = self._get_history_seq_base_tensor(history_note_ids)
+        return base.unsqueeze(0).expand(int(repeats), -1, -1)
 
     def predict(
         self,
@@ -245,7 +247,12 @@ class DIENPredictor:
                 feats: dict[str, torch.Tensor] = {}
                 for f in self.num_feats:
                     if f in b.columns:
-                        vals = pd.to_numeric(b[f], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(np.float32)
+                        col = b[f]
+                        if pd.api.types.is_numeric_dtype(col):
+                            vals = col.to_numpy(dtype=np.float32, copy=True)
+                            vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
+                        else:
+                            vals = pd.to_numeric(col, errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(np.float32)
                     else:
                         vals = np.zeros(len(b), dtype=np.float32)
                     # 传入原始值；模型 forward() 已内置 z-score 归一化（via register_buffer）
@@ -281,7 +288,7 @@ def apply_dien_scores(
     if cand.empty:
         return cand
     out = cand.copy()
-    online_cap = int(os.environ.get("QILIN_ONLINE_DIEN_TOPN", "12"))
+    online_cap = int(os.environ.get("QILIN_ONLINE_DIEN_TOPN", "240"))
     dien_topn = min(len(out), max(0, online_cap))
     dien_pred = pd.to_numeric(out.get("gbdt_score", 0.0), errors="coerce").fillna(0.0).to_numpy(np.float32)
     if dien_topn > 0:

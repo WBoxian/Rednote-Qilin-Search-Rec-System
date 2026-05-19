@@ -711,6 +711,131 @@ def train_fold(
 
     return best_ndcg, best_pred
 
+
+def _score_frame(
+    model: DIENRanker,
+    df: pd.DataFrame,
+    stores,
+    num_feats: list[str],
+    scene: str,
+    group_key: str,
+) -> np.ndarray:
+    model.eval()
+    preds: list[np.ndarray] = []
+    with torch.no_grad():
+        for batch in tqdm(
+            batch_generator(df, stores, num_feats, scene, group_key, BATCH_SIZE, aux_neg_map=None),
+            total=(len(df) + BATCH_SIZE - 1) // BATCH_SIZE,
+            desc="Score Full Train Candidates",
+        ):
+            pred, _aux = model(batch["feats"])
+            preds.append(pred.detach().cpu().numpy().reshape(-1).astype(np.float32, copy=False))
+    if not preds:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(preds, axis=0)
+
+
+def _groupwise_minmax_score(values: np.ndarray, groups: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float32)
+    out = np.zeros_like(arr, dtype=np.float32)
+    if arr.size == 0:
+        return out
+    g = np.asarray(groups)
+    for gid in pd.unique(g):
+        mask = g == gid
+        vals = arr[mask]
+        if vals.size == 0:
+            continue
+        vmin = float(np.min(vals))
+        vmax = float(np.max(vals))
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or abs(vmax - vmin) < 1e-6:
+            out[mask] = 0.0
+        else:
+            out[mask] = (vals - vmin) / (vmax - vmin + 1e-6)
+    return out
+
+
+def _binary_auc_local(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    y = np.asarray(y_true, dtype=np.int8)
+    s = np.asarray(y_score, dtype=np.float64)
+    pos = int((y == 1).sum())
+    neg = int((y == 0).sum())
+    if pos == 0 or neg == 0:
+        return 0.5
+    order = np.argsort(s, kind="mergesort")
+    ranks = np.empty_like(order, dtype=np.float64)
+    ranks[order] = np.arange(1, len(s) + 1, dtype=np.float64)
+    pos_rank_sum = float(ranks[y == 1].sum())
+    auc = (pos_rank_sum - pos * (pos + 1) / 2.0) / float(pos * neg)
+    return float(max(0.0, min(1.0, auc)))
+
+
+def _choose_fused_scores(
+    val_df: pd.DataFrame,
+    raw_dien_scores: np.ndarray,
+    group_key: str,
+) -> tuple[np.ndarray, float, float]:
+    if "preranking_score" not in val_df.columns or len(val_df) != len(raw_dien_scores):
+        return np.asarray(raw_dien_scores, dtype=np.float32), 1.0, 0.0
+    groups = val_df[group_key].to_numpy()
+    y = pd.to_numeric(val_df["y_multi"], errors="coerce").fillna(0.0).to_numpy(np.float32)
+    y_disc = discretize_relevance(y)
+    pre = pd.to_numeric(val_df["preranking_score"], errors="coerce").fillna(0.0).to_numpy(np.float32)
+    pre_norm = _groupwise_minmax_score(pre, groups)
+    dien_norm = _groupwise_minmax_score(np.asarray(raw_dien_scores, dtype=np.float32), groups)
+
+    best_w = 1.0
+    best_score = -1.0
+    best_auc = -1.0
+    best_fused = dien_norm.copy()
+    for w in np.linspace(0.0, 1.0, 21, dtype=np.float32):
+        fused = (1.0 - float(w)) * pre_norm + float(w) * dien_norm
+        ndcg = float(eval_ndcg_by_group(y_disc, fused, groups, TOPK))
+        auc = float(_binary_auc_local((y > 0).astype(np.int8), fused)) if len(np.unique((y > 0).astype(np.int8))) > 1 else 0.5
+        if (ndcg > best_score + 1e-9) or (abs(ndcg - best_score) <= 1e-9 and auc > best_auc):
+            best_w = float(w)
+            best_score = ndcg
+            best_auc = auc
+            best_fused = fused.astype(np.float32, copy=False)
+    return best_fused, best_w, best_score
+
+
+def _export_scored_full_frame(
+    scene: str,
+    output_tag: str,
+    full_df: pd.DataFrame,
+    dien_scores: np.ndarray,
+    raw_dien_scores: np.ndarray | None,
+    group_key: str,
+) -> Path:
+    out = full_df.copy()
+    out["dien_score"] = np.nan_to_num(dien_scores.astype(np.float32, copy=False), nan=0.0, posinf=1e6, neginf=-1e6)
+    if raw_dien_scores is not None:
+        out["raw_dien_score"] = np.nan_to_num(np.asarray(raw_dien_scores, dtype=np.float32), nan=0.0, posinf=1e6, neginf=-1e6)
+    out = out.sort_values([group_key, "dien_score", "note_idx"], ascending=[True, False, True], kind="mergesort").copy()
+    out["ranking_rank"] = out.groupby(group_key).cumcount().astype(np.int32) + 1
+
+    keep_cols = [
+        group_key,
+        "user_idx",
+        "note_idx",
+        "click",
+        "y_multi",
+        "preranking_score",
+        "preranking_rank",
+        "lgb_score",
+        "xgb_score",
+        "dien_score",
+        "raw_dien_score",
+        "ranking_rank",
+    ]
+    keep_cols = [c for c in keep_cols if c in out.columns]
+    tag_suffix = f"_{output_tag}" if output_tag else ""
+    out_path = OUT_DIR / "data" / f"dien_{scene}{tag_suffix}_train_scored_full.parquet"
+    out[keep_cols].to_parquet(out_path, index=False)
+    print(f"[Export] DIEN full scored set: {out_path}, shape={out[keep_cols].shape}")
+    return out_path
+
 def main(
     scene,
     train_path: Path | None,
@@ -721,6 +846,7 @@ def main(
     aux_loss_weight: float,
     max_epochs: int,
     early_stop_rounds: int,
+    export_only: bool = False,
 ):
     group_key = _group_key(scene)
     if train_path is None:
@@ -739,7 +865,12 @@ def main(
         elif "_hard_" in p:
             output_tag = "hard"
 
-    df = pd.read_parquet(train_path)
+    raw_df = pd.read_parquet(train_path)
+    df = raw_df.copy()
+    drop_feats = ["click", "y_multi", "note_idx", group_key, "recent_clicked_note_idxs", "first_route"]
+    candidate_num_feats = [c for c in raw_df.columns if c not in drop_feats]
+    num_feats = [c for c in candidate_num_feats if pd.api.types.is_numeric_dtype(raw_df[c])]
+    raw_df[num_feats] = raw_df[num_feats].fillna(0.0).replace([np.inf, -np.inf], 0.0)
     print(f"原始样本数: {len(df)}")
 
     train_mode = output_tag if output_tag in {"easy", "hard"} else "easy"
@@ -770,6 +901,9 @@ def main(
     print(f"[Group Filter] groups: {before_groups} -> {after_groups}, rows={len(df)}")
     if len(df) == 0:
         raise ValueError("No training rows left after group filtering.")
+    eval_df = raw_df.groupby(group_key).filter(lambda x: len(x) > 1 and float(x["y_multi"].max()) > 0.0).reset_index(drop=True)
+    if len(eval_df) == 0:
+        raise ValueError("No evaluation rows left after group filtering.")
     oof_dien = np.zeros(len(df), dtype=np.float32)
 
     # Embedding Stores
@@ -785,8 +919,32 @@ def main(
     req_cov = float(np.mean([int(r) in aux_neg_map for r in df[group_key].drop_duplicates().tolist()])) if len(df) > 0 else 0.0
     print(f"[Aux Neg] exposure-unclicked map ready, req_coverage={req_cov:.4f}")
 
-    # TB Writer
     tag_suffix = f"_{output_tag}" if output_tag else ""
+    ckpt_path = MODEL_DIR / f"dien_{scene}{tag_suffix}.pt"
+    if export_only:
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"checkpoint not found for export-only mode: {ckpt_path}")
+        _state = torch.load(ckpt_path, map_location=DEVICE)
+        _tmp_model = DIENRanker(scene=scene, num_feats=num_feats).to(DEVICE)
+        _tmp_model.load_state_dict(_state)
+        full_raw_scores = _score_frame(_tmp_model, eval_df, stores, num_feats, scene, group_key)
+        val_groups = set(df.iloc[_group_val_split(df=df, group_key=group_key, valid_ratio=VALID_RATIO)[1]][group_key].astype(int).tolist())
+        val_eval = eval_df[eval_df[group_key].isin(val_groups)].copy()
+        val_raw = full_raw_scores[eval_df[group_key].isin(val_groups).to_numpy()]
+        _fused_val, best_w, best_ndcg = _choose_fused_scores(val_eval, val_raw, group_key)
+        pre_norm = _groupwise_minmax_score(pd.to_numeric(eval_df["preranking_score"], errors="coerce").fillna(0.0).to_numpy(np.float32), eval_df[group_key].to_numpy())
+        dien_norm = _groupwise_minmax_score(full_raw_scores, eval_df[group_key].to_numpy())
+        full_scores = ((1.0 - best_w) * pre_norm + best_w * dien_norm).astype(np.float32, copy=False)
+        print(f"[Blend] export_only best_w={best_w:.2f}, val_ndcg10={best_ndcg:.6f}")
+        _export_scored_full_frame(scene, output_tag, eval_df, full_scores, full_raw_scores, group_key)
+        np.save(RESULT_DIR / f"dien_{scene}{tag_suffix}.npy", full_scores)
+        del _tmp_model, _state, full_raw_scores, full_scores, val_eval, val_raw, _fused_val, pre_norm, dien_norm
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        return
+
+    # TB Writer
     log_dir = LOG_DIR / f"dien_{scene}{tag_suffix}_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     writer = SummaryWriter(log_dir=str(log_dir))
 
@@ -828,7 +986,32 @@ def main(
         torch.cuda.empty_cache()
     gc.collect()
 
-    np.save(RESULT_DIR / f"dien_{scene}{tag_suffix}.npy", oof_dien)
+    blend_weight = 1.0
+    blend_ndcg = float(score)
+    if ckpt_path.exists():
+        _state = torch.load(ckpt_path, map_location=DEVICE)
+        _tmp_model = DIENRanker(scene=scene, num_feats=num_feats).to(DEVICE)
+        _tmp_model.load_state_dict(_state)
+        val_groups = set(val_fold_df[group_key].astype(int).tolist())
+        val_eval = eval_df[eval_df[group_key].isin(val_groups)].copy()
+        val_raw_scores = _score_frame(_tmp_model, val_eval, stores, num_feats, scene, group_key)
+        _fused_val, blend_weight, blend_ndcg = _choose_fused_scores(val_eval, val_raw_scores, group_key)
+        full_raw_scores = _score_frame(_tmp_model, eval_df, stores, num_feats, scene, group_key)
+        pre_norm = _groupwise_minmax_score(
+            pd.to_numeric(eval_df["preranking_score"], errors="coerce").fillna(0.0).to_numpy(np.float32),
+            eval_df[group_key].to_numpy(),
+        )
+        dien_norm = _groupwise_minmax_score(full_raw_scores, eval_df[group_key].to_numpy())
+        full_scores = ((1.0 - blend_weight) * pre_norm + blend_weight * dien_norm).astype(np.float32, copy=False)
+        print(f"[Blend] best_w={blend_weight:.2f}, val_ndcg10={blend_ndcg:.6f}")
+        _export_scored_full_frame(scene, output_tag, eval_df, full_scores, full_raw_scores, group_key)
+        np.save(RESULT_DIR / f"dien_{scene}{tag_suffix}.npy", full_scores)
+        del _tmp_model, _state, val_eval, val_raw_scores, _fused_val, full_raw_scores, full_scores, pre_norm, dien_norm
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+    else:
+        np.save(RESULT_DIR / f"dien_{scene}{tag_suffix}.npy", oof_dien)
     best_score = float(score)
 
     writer.add_text(
@@ -838,6 +1021,10 @@ def main(
     writer.add_text(
         "Final/Best_Result",
         f"val_ndcg10={best_score:.6f}",
+    )
+    writer.add_text(
+        "Final/Blend",
+        f"best_w={blend_weight:.2f}, fused_val_ndcg10={blend_ndcg:.6f}",
     )
     writer.close()
 
@@ -859,6 +1046,7 @@ if __name__ == "__main__":
     parser.add_argument("--aux-loss-weight", type=float, default=AUX_LOSS_WEIGHT, help="辅助损失权重")
     parser.add_argument("--max-epochs", type=int, default=EPOCHS, help="最大训练轮数")
     parser.add_argument("--early-stop-rounds", type=int, default=EARLY_STOP, help="早停轮数")
+    parser.add_argument("--export-only", action="store_true", help="涓嶉噸鏂拌缁冿紝浠呯敤宸叉湁 checkpoint 鍥炲埛鍏ㄩ噺 DIEN 鎵撳垎浜х墿")
     args = parser.parse_args()
     main(
         args.scene,
@@ -870,4 +1058,5 @@ if __name__ == "__main__":
         args.aux_loss_weight,
         args.max_epochs,
         args.early_stop_rounds,
+        args.export_only,
     )

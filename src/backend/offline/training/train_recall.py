@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.offline.config import load_offline_config
 
+
 def _parse_modes(modes: str) -> list[str]:
     out = [x.strip().lower() for x in modes.split(",") if x.strip()]
     invalid = [x for x in out if x not in {"easy", "hard"}]
@@ -15,6 +16,17 @@ def _parse_modes(modes: str) -> list[str]:
     if not out:
         raise ValueError("modes is empty")
     return out
+
+
+def _resolve_hard_neg_path(base_dir: Path, scene: str, mode: str) -> Path | None:
+    if mode != "hard":
+        return None
+    candidates = [
+        base_dir / "outputs" / "data" / f"hard_neg_{scene}_train_hard.parquet",
+        base_dir / "outputs" / "data" / f"hard_neg_{scene}_train_easy.parquet",
+        base_dir / "outputs" / "data" / f"dssm_hard_neg_{scene}.parquet",
+    ]
+    return next((p for p in candidates if p.exists()), None)
 
 
 def run_train_recall(
@@ -27,6 +39,7 @@ def run_train_recall(
     skip_faiss: bool,
 ) -> None:
     from recall.build_faiss_ivfpq import build_faiss_index  # noqa: PLC0415
+    from recall.build_seq_transition_index import build_seq_transition_for_scene
     from recall.build_swing_index import build_swing_for_scene
     from recall.build_usercf_index import build_usercf_for_scene
     from recall.cf_shared_index import ensure_user_item_index
@@ -37,13 +50,16 @@ def run_train_recall(
     if not skip_cf:
         print(f"[Offline/Training/Recall] ensure_user_item_index(scene={scene}, split=train)")
         ensure_user_item_index(scene=scene, split="train", use_cache=True, rebuild=False)
+        if scene == "rec":
+            print(f"[Offline/Training/Recall] build_seq_transition_for_scene(scene={scene}, split=train)")
+            build_seq_transition_for_scene(scene=scene, split="train", topk=400, max_hist_len=20)
         print(f"[Offline/Training/Recall] build_usercf_for_scene(scene={scene}, split=train)")
         build_usercf_for_scene(
             scene=scene,
             split="train",
-            topk=50,
-            max_items_per_user=200,
-            max_users_per_item=300,
+            topk=120 if scene == "rec" else 50,
+            max_items_per_user=300 if scene == "rec" else 200,
+            max_users_per_item=500 if scene == "rec" else 300,
             interest_col="y_multi",
             min_interest=0.0,
             rebuild_ui_index=False,
@@ -52,26 +68,25 @@ def run_train_recall(
         build_swing_for_scene(
             scene=scene,
             split="train",
-            topk=50,
+            topk=120 if scene == "rec" else 50,
             alpha=1.0,
-            max_items_per_user=200,
-            max_users_per_item=200,
-            candidate_topn=200,
+            max_items_per_user=300 if scene == "rec" else 200,
+            max_users_per_item=300 if scene == "rec" else 200,
+            candidate_topn=600 if scene == "rec" else 200,
             min_common_users=2,
             interest_col="y_multi",
             min_interest=0.0,
             rebuild_ui_index=False,
         )
 
-    hard_neg_path = base_dir / "outputs" / "data" / f"dssm_hard_neg_{scene}.parquet"
     for mode in mode_list:
         if not skip_dssm:
             print(
                 f"[Offline/Training/Recall] dssm_trainer.main(scene={scene}, neg_mode={mode}, num_neg_per_pos={num_neg_per_pos})"
             )
-            hard_path = None
-            if mode == "hard" and hard_neg_path.exists():
-                hard_path = hard_neg_path
+            hard_path = _resolve_hard_neg_path(base_dir=base_dir, scene=scene, mode=mode)
+            if mode == "hard":
+                print(f"[Offline/Training/Recall] hard_neg_path={hard_path}")
             train_dssm(
                 scene=scene,
                 neg_mode=mode,
