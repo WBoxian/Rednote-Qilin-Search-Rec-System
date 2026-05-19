@@ -3147,14 +3147,19 @@ class OnlineScenePipeline:
             user_requests=self.state.user_requests,
             request_threshold=COLD_START_REQ_THRESHOLD,
         )
+        live_recall_rank_cap = int(self.state.live_recall_rank_cap)
+        live_gbdt_topn = int(self.state.live_gbdt_topn)
+        if self.state.scene == "search":
+            live_recall_rank_cap = min(live_recall_rank_cap, 160)
+            live_gbdt_topn = min(live_gbdt_topn, 80)
         t_cold = time.perf_counter()
         recall_cand = run_recall(
             request_id=req_id,
             user_idx=int(user_idx),
             feat_req=feat_req,
             is_cold=cold,
-            recall_rank_cap=self.state.live_recall_rank_cap,
-            hot_route_topk=min(HOT_ROUTE_TOPK, self.state.live_recall_rank_cap),
+            recall_rank_cap=live_recall_rank_cap,
+            hot_route_topk=min(HOT_ROUTE_TOPK, live_recall_rank_cap),
             fetch_recall_candidates=self.state._fetch_recall_candidates,
             group_key=self.state.group_key,
         )
@@ -3169,7 +3174,7 @@ class OnlineScenePipeline:
             group_key=self.state.group_key,
             recall_cand=recall_cand,
             feat_req=feat_req,
-            gbdt_topn=self.state.live_gbdt_topn,
+            gbdt_topn=live_gbdt_topn,
             fetch_notes=self.state._fetch_notes,
             predict_gbdt=self.state.predict_gbdt,
             linkage_ctx=linkage_ctx,
@@ -3216,7 +3221,7 @@ class OnlineScenePipeline:
         stages = {
             "coldstart": {"enabled": bool(cold)},
             "recall": {"candidates": int(len(recall_cand))},
-            "preranking": {"candidates": int(len(prerank_cand)), "topn": int(self.state.live_gbdt_topn)},
+            "preranking": {"candidates": int(len(prerank_cand)), "topn": int(live_gbdt_topn)},
             "ranking": {"candidates": int(len(cand)), "page_items": int(len(page_df))},
         }
         cached_meta = {

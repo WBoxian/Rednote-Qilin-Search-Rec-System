@@ -147,7 +147,8 @@ async function load(reset = false, forceRefresh = false, excludeNoteIds: number[
       feedSessionKey.value = `rec-${Date.now()}`;
     }
     const reqPage = backendPage.value;
-    const r = await api.feed(currentScene.value, uid, query.value, reqPage, 20, feedSessionKey.value, excludeNoteIds);
+    const pageSize = 15;
+    const r = await api.feed(currentScene.value, uid, query.value, reqPage, pageSize, feedSessionKey.value, excludeNoteIds);
     const f = r.feed;
     latencyMs.value = Number(f?.latency_ms ?? r?.latency_ms ?? 0);
     stageMs.value = (f?.stage_ms && typeof f.stage_ms === 'object') ? f.stage_ms : null;
@@ -182,7 +183,7 @@ async function refreshRec() {
   brokenImages.value = {};
   try {
     const nextRefreshKey = `rec-${Date.now()}`;
-    const r = await api.feed('rec', uid, '', 1, 20, nextRefreshKey, excludeIds);
+    const r = await api.feed('rec', uid, '', 1, 15, nextRefreshKey, excludeIds);
     const f = r.feed || {};
     latencyMs.value = Number(f?.latency_ms ?? r?.latency_ms ?? 0);
     stageMs.value = (f?.stage_ms && typeof f.stage_ms === 'object') ? f.stage_ms : null;
@@ -197,6 +198,15 @@ async function refreshRec() {
     loading.value = false;
     saveHomeCache();
   }
+}
+
+async function returnToRecommendationHome() {
+  query.value = '';
+  suggestItems.value = [];
+  suggestOpen.value = false;
+  refreshSeenNoteIds.value = [];
+  brokenImages.value = {};
+  await load(true, true);
 }
 
 async function consumeMore() {
@@ -365,7 +375,7 @@ watch(
 </script>
 
 <template>
-  <TopBar :title="pageTitle" :latency-ms="latencyMs" :stage-ms="stageMs" :scene-mode="currentScene">
+  <TopBar :title="pageTitle" :latency-ms="latencyMs" :stage-ms="stageMs" :scene-mode="currentScene" @home="returnToRecommendationHome">
     <template #actions>
       <div class="home-search-row">
         <div class="search-shell">

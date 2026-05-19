@@ -10,6 +10,10 @@ const props = defineProps<{
   sceneMode?: string | null;
 }>();
 
+const emit = defineEmits<{
+  (e: 'home'): void;
+}>();
+
 const router = useRouter();
 const route = useRoute();
 const userId = getUserId();
@@ -55,10 +59,18 @@ function logout() {
 
 function goBrandHome() {
   if (route.path === '/') {
-    router.replace({ path: '/' });
+    emit('home');
     return;
   }
-  router.push({ path: '/' });
+  router.push({ path: '/', query: { refresh: String(Date.now()) } });
+}
+
+function goHomeNav() {
+  if (route.path === '/') {
+    emit('home');
+    return;
+  }
+  router.push({ path: '/', query: { refresh: String(Date.now()) } });
 }
 </script>
 
@@ -73,32 +85,40 @@ function goBrandHome() {
           </button>
 
           <nav class="topbar-nav topbar-nav-premium">
-            <router-link v-for="item in navItems" :key="item.to" :to="item.to" class="nav-tile">
+            <button
+              type="button"
+              class="nav-tile nav-tile-button"
+              :class="{ 'nav-tile-active': route.path === '/' }"
+              @click="goHomeNav"
+            >
+              <span class="nav-tile-title">{{ navItems[0].title }}</span>
+              <span class="nav-tile-meta">{{ navItems[0].meta }}</span>
+            </button>
+            <router-link v-for="item in navItems.slice(1)" :key="item.to" :to="item.to" class="nav-tile">
               <span class="nav-tile-title">{{ item.title }}</span>
               <span class="nav-tile-meta">{{ item.meta }}</span>
             </router-link>
           </nav>
         </div>
+      </div>
 
-        <div class="topbar-right topbar-right-premium">
-          <div class="topbar-metrics topbar-metrics-premium">
-            <div class="metric-chip metric-chip-strong metric-chip-wide">
-              <span class="metric-label">&#x670D;&#x52A1;&#x5EF6;&#x8FDF;</span>
-              <span class="metric-value metric-value-topbar">{{ serviceLatency }}</span>
-            </div>
-            <div v-for="item in stageEntries" :key="item.label" class="metric-chip metric-chip-soft">
-              <span class="metric-label">{{ item.label }}</span>
-              <span class="metric-value metric-value-topbar">{{ item.value }}</span>
-            </div>
+      <div class="topbar-metric-row">
+        <div class="topbar-metrics topbar-metrics-premium">
+          <div class="metric-chip metric-chip-strong metric-chip-wide">
+            <span class="metric-label">&#x670D;&#x52A1;&#x5EF6;&#x8FDF;</span>
+            <span class="metric-value metric-value-topbar">{{ serviceLatency }}</span>
           </div>
-
-          <div class="topbar-side topbar-side-premium">
-            <div class="user-chip user-chip-strong">
-              <span class="user-chip-label">{{ props.sceneMode ? String(props.sceneMode).toUpperCase() : 'ONLINE' }}</span>
-              <span class="user-chip-value">UID {{ userId ?? '-' }}</span>
-            </div>
-            <button class="nav-chip nav-chip-ghost logout-button" @click="logout">&#x9000;&#x51FA;</button>
+          <div v-for="item in stageEntries" :key="item.label" class="metric-chip metric-chip-soft">
+            <span class="metric-label">{{ item.label }}</span>
+            <span class="metric-value metric-value-topbar">{{ item.value }}</span>
           </div>
+        </div>
+        <div class="topbar-side topbar-side-premium">
+          <div class="user-chip user-chip-strong">
+            <span class="user-chip-label">{{ props.sceneMode ? String(props.sceneMode).toUpperCase() : 'ONLINE' }}</span>
+            <span class="user-chip-value">UID {{ userId ?? '-' }}</span>
+          </div>
+          <button class="nav-chip nav-chip-ghost logout-button" @click="logout">&#x9000;&#x51FA;</button>
         </div>
       </div>
 
@@ -116,6 +136,8 @@ function goBrandHome() {
   background: transparent;
   text-align: left;
   box-shadow: none;
+  flex: 0 1 auto;
+  min-width: 220px;
 }
 
 .brand-button:hover {
@@ -141,16 +163,14 @@ function goBrandHome() {
 }
 
 .topbar-left-premium,
-.topbar-right-premium {
+.topbar-side-premium {
   align-items: stretch;
 }
 
 .topbar-left-premium {
   gap: 18px;
-}
-
-.topbar-right-premium {
-  gap: 16px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .topbar-kicker {
@@ -169,8 +189,10 @@ function goBrandHome() {
 
 .topbar-nav-premium {
   display: grid;
-  grid-template-columns: repeat(3, minmax(148px, 1fr));
+  grid-template-columns: repeat(3, minmax(132px, 1fr));
   gap: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .nav-tile {
@@ -185,6 +207,11 @@ function goBrandHome() {
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
+.nav-tile-button {
+  appearance: none;
+  text-align: left;
+}
+
 .nav-tile:hover {
   transform: translateY(-2px);
   border-color: rgba(24, 33, 43, 0.16);
@@ -197,10 +224,20 @@ function goBrandHome() {
   border-color: rgba(24, 33, 43, 0.94);
 }
 
+.nav-tile-active {
+  background: linear-gradient(135deg, rgba(24, 33, 43, 0.96), rgba(44, 58, 76, 0.92));
+  border-color: rgba(24, 33, 43, 0.94);
+}
+
 .nav-tile.router-link-active .nav-tile-title,
 .nav-tile.router-link-active .nav-tile-meta,
 .nav-tile.router-link-exact-active .nav-tile-title,
 .nav-tile.router-link-exact-active .nav-tile-meta {
+  color: #f7f2eb;
+}
+
+.nav-tile-active .nav-tile-title,
+.nav-tile-active .nav-tile-meta {
   color: #f7f2eb;
 }
 
@@ -224,6 +261,13 @@ function goBrandHome() {
   min-width: 128px;
 }
 
+.topbar-metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
 .metric-chip-soft {
   background: rgba(255, 255, 255, 0.78);
 }
@@ -236,8 +280,21 @@ function goBrandHome() {
   white-space: nowrap;
 }
 
-.topbar-metrics-premium,
+.topbar-metrics-premium {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.topbar-metrics-premium::-webkit-scrollbar {
+  display: none;
+}
+
 .topbar-side-premium {
+  flex: 0 0 auto;
+  justify-content: flex-end;
   flex-wrap: nowrap;
 }
 
@@ -264,8 +321,25 @@ function goBrandHome() {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .topbar-right-premium {
-    justify-content: space-between;
+  .topbar-side-premium {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 1100px) {
+  .topbar-sticky-shell {
+    position: static;
+  }
+
+  .topbar-metrics-premium,
+  .topbar-side-premium,
+  .topbar-left-premium {
+    flex-wrap: wrap;
+  }
+
+  .topbar-metric-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 
@@ -274,7 +348,6 @@ function goBrandHome() {
     grid-template-columns: 1fr;
   }
 
-  .topbar-right-premium,
   .topbar-left-premium {
     flex-direction: column;
   }
