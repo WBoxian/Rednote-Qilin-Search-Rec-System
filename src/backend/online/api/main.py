@@ -237,6 +237,17 @@ class AppContext:
 				return
 		threading.Thread(target=_run, daemon=True).start()
 
+	def async_prewarm_scene_runtime(self, scenes: list[str] | None = None) -> None:
+		scene_list = [s for s in (scenes or ["search", "rec"]) if s in {"search", "rec"}]
+		if not scene_list:
+			return
+		def _run() -> None:
+			try:
+				self._load_default_pipelines(scene_list)
+			except Exception:
+				return
+		threading.Thread(target=_run, daemon=True).start()
+
 	def async_prewarm_user_validation_examples(self, user_idx: int) -> None:
 		uid = int(user_idx)
 		if uid < 0:
@@ -262,7 +273,7 @@ class AppContext:
 				user_idx=uid,
 				query="",
 				page=1,
-				page_size=20,
+				page_size=self._prewarm_feed_page_size,
 				refresh_key="",
 				exclude_note_ids=None,
 			)
@@ -571,6 +582,7 @@ def create_app(
 			if user is None:
 				raise KeyError(f"user_idx not found: {_safe_int(user_idx)}")
 			homepage_feed = app.state.ctx.prewarm_user_homepage_sync(_safe_int(user_idx))
+			app.state.ctx.async_prewarm_scene_runtime(["search"])
 			app.state.ctx.async_prewarm_user_validation_examples(_safe_int(user_idx))
 			return {
 				"ok": True,
