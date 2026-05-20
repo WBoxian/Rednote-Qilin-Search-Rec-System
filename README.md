@@ -1,6 +1,6 @@
 # 小红书麒麟(Qilin)搜推系统个人项目
 
-![Qilin项目封面](Qilin个人项目封面头图.png)
+![Qilin项目封面](/Qilin_Cover_Image.png)
 
 Qilin 是一个面向“小红书搜索推荐一体化”场景的个人项目，采用接近业界主流搜推系统的三层架构：
 
