@@ -285,9 +285,8 @@ outputs/deploy/{scene}/{tag}/index
 outputs/serving_cache/{scene}/{tag}/
 ```
 
----
 
-<a id="english"></a>
+## 7. GitHub Star 趋势
 
-
+[![Star History Chart](https://api.star-history.com/svg?repos=WBoxian/Rednote-Qilin-Search-Rec-System&type=Date)](https://star-history.com/#WBoxian/Rednote-Qilin-Search-Rec-System&Date)
 
