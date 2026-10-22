@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageIntro from "../components/PageIntro.vue";
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, getScene, setScene, setUserId } from '../services/api';
@@ -155,6 +156,7 @@ function formatPlain(v: any) {
   <div>
     <TopBar title="小红书麒麟搜推系统项目" :latency-ms="latencyMs" />
     <main class="container login-page">
+    <PageIntro eyebrow="GET STARTED" title="进入 Qilin 工作台" description="选择体验用户，探索搜索、推荐与离线评测。" />
       <section class="panel login-panel">
         <h3>用户登录</h3>
         <div class="meta">输入 user_idx 进入系统</div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageIntro from "../components/PageIntro.vue";
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import TopBar from '../components/TopBar.vue';
@@ -7,6 +8,7 @@ import { api } from '../services/api';
 const route = useRoute();
 const router = useRouter();
 const detail = ref<any>(null);
+const detailError = ref('');
 const currentUser = ref<any>(null);
 const latencyMs = ref<number | null>(null);
 const sceneRef = ref('search');
@@ -160,8 +162,12 @@ onMounted(async () => {
     api.note(scene, userIdx, requestId, noteIdx, query),
     api.user(scene, userIdx),
   ]);
+  if (noteRes.status === 'rejected') {
+    detailError.value = noteRes.reason?.message || '内容加载失败，请返回首页重试。';
+  }
   if (noteRes.status === 'fulfilled') {
     detail.value = noteRes.value.detail;
+    if (!detail.value) detailError.value = '暂未找到这篇内容。';
     imageIdx.value = 0;
     brokenImages.value = {};
     imageOrientations.value = {};
@@ -258,7 +264,14 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
 
 <template>
   <TopBar :title="pageTitle" :latency-ms="latencyMs" />
-  <main class="container" v-if="detail">
+  <main class="container">
+    <PageIntro eyebrow="CONTENT" title="内容详情" description="阅读内容，查看推荐链路与互动反馈。" />
+    <section v-if="!detail" class="panel detail-status" role="status">
+      <h3>{{ detailError ? '暂时无法展示内容' : '正在加载内容' }}</h3>
+      <p class="meta">{{ detailError || '正在读取内容详情与用户近期行为，请稍候。' }}</p>
+      <button v-if="detailError" class="btn" @click="goHomeKeepFeed">返回首页</button>
+    </section>
+    <template v-if="detail">
     <section class="panel detail-panel detail-panel-hero">
       <div style="display:flex;justify-content:flex-start;margin-bottom:8px;">
         <button class="btn" @click="goHomeKeepFeed">{{ copy.backHome }}</button>
@@ -349,6 +362,7 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
       </table>
       <div v-else class="meta">&#x6682;&#x65E0;&#x6700;&#x8FD1;&#x884C;&#x4E3A;&#x6570;&#x636E;</div>
     </section>
+    </template>
   </main>
 
   <div v-if="fullImage" class="full-mask" @click.self="closeFullImage" @wheel.prevent="onImageWheel">
@@ -361,23 +375,9 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
 </template>
 
 <style scoped>
-.detail-panel {
-  background:
-    linear-gradient(145deg, rgba(248, 250, 252, 0.98), rgba(234, 239, 244, 0.95) 54%, rgba(242, 245, 248, 0.96)),
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.68), transparent 28%),
-    radial-gradient(circle at 100% 0%, rgba(189, 205, 222, 0.20), transparent 26%);
-  border: 1px solid rgba(86, 102, 121, 0.11);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.78),
-    0 18px 36px rgba(24, 33, 43, 0.07);
-}
+.detail-panel { background: var(--surface); border-color: var(--line); box-shadow: var(--shadow-md); }
 
-.detail-panel-hero {
-  background:
-    linear-gradient(145deg, rgba(246, 249, 251, 0.99), rgba(232, 237, 242, 0.95) 52%, rgba(244, 247, 249, 0.96)),
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.72), transparent 24%),
-    radial-gradient(circle at 100% 0%, rgba(194, 210, 228, 0.16), transparent 24%);
-}
+.detail-panel-hero { background: var(--surface); border-color: var(--line); box-shadow: var(--shadow-md); }
 
 .img-pager {
   display: grid;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageIntro from "../components/PageIntro.vue";
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import TopBar from '../components/TopBar.vue';
 import { api, getScene, getUserId } from '../services/api';
@@ -276,6 +277,7 @@ onUnmounted(() => {
 <template>
   <TopBar :title="pageTitle" :latency-ms="latencyMs" />
   <main class="container">
+    <PageIntro eyebrow="AUDIENCE" title="用户画像与行为" description="查看用户兴趣，追踪跨搜索与推荐的互动记录。" />
     <section class="panel shell-panel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
       <div class="meta">{{ loading ? copy.loading : copy.profile }}</div>
       <div class="meta">scene={{ getScene() }} | user={{ getUserId() ?? '-' }}</div>
@@ -415,18 +417,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.shell-panel {
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0) 24%),
-    radial-gradient(circle at 10% 0%, rgba(255, 255, 255, 0.80), transparent 22%),
-    radial-gradient(circle at 100% 16%, rgba(207, 220, 231, 0.28), transparent 28%),
-    radial-gradient(circle at 80% 100%, rgba(224, 231, 238, 0.34), transparent 26%),
-    linear-gradient(180deg, rgba(244, 246, 248, 0.98), rgba(237, 241, 244, 0.95) 42%, rgba(249, 248, 245, 0.96));
-  border-color: rgba(212, 219, 227, 0.90);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.66),
-    0 16px 36px rgba(94, 112, 130, 0.08);
-}
+.shell-panel { background: var(--surface); border-color: var(--line); box-shadow: var(--shadow-md); }
 
 .empty-state {
   display: flex;
@@ -444,7 +435,7 @@ onUnmounted(() => {
 }
 
 .behavior-row:hover {
-  background: rgba(203, 58, 34, 0.04);
+  background: var(--accent-soft);
 }
 
 .behavior-toolbar {
@@ -517,7 +508,7 @@ onUnmounted(() => {
 
 .scene-search {
   background: rgba(203, 58, 34, 0.10);
-  color: #8d2414;
+  color: var(--accent);
 }
 
 .scene-rec {

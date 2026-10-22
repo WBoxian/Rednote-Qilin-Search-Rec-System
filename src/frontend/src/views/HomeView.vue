@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageIntro from "../components/PageIntro.vue";
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api, getUserId } from '../services/api';
@@ -408,6 +409,7 @@ watch(
   </TopBar>
 
   <main class="container">
+    <PageIntro eyebrow="DISCOVERY" title="发现与你相关的内容" description="搜索与个性化推荐，在一个工作台中探索内容。" />
     <div v-if="errorMsg" class="panel" style="margin-bottom:10px;">{{ errorMsg }}</div>
     <section class="grid">
       <article v-for="it in items" :key="`${it.request_id}-${it.note_idx}`" class="card" @click="openDetail(it)">
