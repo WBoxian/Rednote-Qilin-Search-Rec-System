@@ -46,11 +46,11 @@ Qilin is organized around the common serving path of **data preprocessing → fe
 - Online serving
   - Stable online latency around `~150ms`
 - Search offline metrics
-  - Recall: `HitRate@500 = 0.88`, `Recall@500 = 0.65`, `MRR@100 = 0.11`, `MedianFirstHitRank = 47`
-  - Ranking: `NDCG@10 = 0.69`, `AUC = 0.77`, `GAUC = 0.85`
+  - Recall (test set): `HitRate@500 = 0.8995`, `Recall@500 = 0.7467`, `MRR@100 = 0.2524`, `MedianFirstHitRank = 8`
+  - Ranking (DIEN, test exposures): `NDCG@10 = 0.6433`, `AUC = 0.6479`, `GAUC = 0.6404`
 - Recommendation offline metrics
-  - Recall: `HitRate@500 = 0.99`, `Recall@500 = 0.99`, `MRR@100 = 0.007`, `MedianFirstHitRank = 101`
-  - Ranking: `NDCG@10 = 0.87`, `AUC = 0.84`, `GAUC = 0.90`
+  - Recall (test set): `HitRate@500 = 0.0919`, `Recall@500 = 0.0274`, `MRR@100 = 0.0025`, `MedianFirstHitRank = 262`
+  - Ranking (DIEN, test exposures): `NDCG@10 = 0.5791`, `AUC = 0.4976`, `GAUC = 0.5034`
 
 ### 0.3 Pipeline
 

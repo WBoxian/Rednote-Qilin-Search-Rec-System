@@ -45,11 +45,11 @@ Qilin 围绕小红书场景下的 **数据预处理 → 特征工程 → 召回 
 - 在线服务
   - 搜推系统线上服务延迟稳定在 `~150ms`
 - Search 离线指标
-  - 召回：`HitRate@500 = 0.88`，`Recall@500 = 0.65`，`MRR@100 = 0.11`，`MedianFirstHitRank = 47`
-  - 排序：`NDCG@10 = 0.69`，`AUC = 0.77`，`GAUC = 0.85`
+  - 召回（测试集）：`HitRate@500 = 0.8995`，`Recall@500 = 0.7467`，`MRR@100 = 0.2524`，`MedianFirstHitRank = 8`
+  - 排序（DIEN，测试曝光）：`NDCG@10 = 0.6433`，`AUC = 0.6479`，`GAUC = 0.6404`
 - Recommendation 离线指标
-  - 召回：`HitRate@500 = 0.99`，`Recall@500 = 0.99`，`MRR@100 = 0.007`，`MedianFirstHitRank = 101`
-  - 排序：`NDCG@10 = 0.87`，`AUC = 0.84`，`GAUC = 0.90`
+  - 召回（测试集）：`HitRate@500 = 0.0919`，`Recall@500 = 0.0274`，`MRR@100 = 0.0025`，`MedianFirstHitRank = 262`
+  - 排序（DIEN，测试曝光）：`NDCG@10 = 0.5791`，`AUC = 0.4976`，`GAUC = 0.5034`
 
 ### 0.3 核心流程
 
