@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from backend.online.api.main import AppContext
+from backend.online.metrics_snapshot import load_metrics_snapshot
 from backend.online.config import DEFAULT_GBDT_TOPN, DEFAULT_RECALL_RANK_CAP
 
 
@@ -32,7 +33,7 @@ def main() -> None:
     use_tag = ctx.resolve_scene_tag(args.scene, explicit_tag=args.tag)
     state = ctx.get_runtime(use_tag).get_pipeline(args.scene).state
 
-    metrics = state.compute_validation_metrics(sample_n=max(2, int(args.sample_n)))
+    metrics = load_metrics_snapshot(args.scene, use_tag)
     ctx._save_json_snapshot(
         ctx._metrics_snapshot_path(
             scene=args.scene,

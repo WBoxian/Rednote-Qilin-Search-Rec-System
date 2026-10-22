@@ -25,8 +25,9 @@ const formulaModal = ref<{ title: string; lines: string[]; desc: string[] } | nu
 const pageTitle = '评测中心';
 const activeSplit = ref<'test' | 'validation'>('test');
 const activeSnapshot = computed(() => metricsByScene.value[currentScene.value]);
+const isFullTestSnapshot = computed(() => activeSnapshot.value?.protocol?.full_test === true);
 const isHeldOut = computed(() => activeSnapshot.value?.protocol?.held_out === true);
-const splitLabel = computed(() => isHeldOut.value ? (activeSplit.value === 'test' ? '测试集' : '验证集') : (activeSnapshot.value?.protocol ? '训练诊断' : '离线快照'));
+const splitLabel = computed(() => isFullTestSnapshot.value ? '全量测试集' : isHeldOut.value ? (activeSplit.value === 'test' ? '测试集' : '验证集') : (activeSnapshot.value?.protocol ? '训练诊断' : '离线快照'));
 const partition = computed(() => activeSnapshot.value?.partition);
 const splitTime = (value: any) => value == null ? '—' : new Date(Number(value) * 1000).toLocaleString('zh-CN', { hour12: false });
 
@@ -63,7 +64,7 @@ const unifiedRecallMetricDefs = [
   { key: 'Recall@500', label: 'Recall@500' },
   { key: 'Recall@1000', label: 'Recall@1000' },
   { key: 'MRR@100', label: 'MRR@100' },
-  { key: 'MedianFirstHitRank', label: 'MedianFirstHitRank', digits: 1 },
+  { key: 'MedianFirstHitRank', label: 'MedianFirstHitRank（命中请求）', digits: 1 },
 
 ] as const;
 
@@ -176,6 +177,7 @@ function fmtNum(v: any, digits = 4) {
 function metric(scene: 'search' | 'rec', area: 'recall' | 'preranking' | 'ranking') {
   const snapshot = metricsByScene.value[scene];
   const bundle = area === 'recall' ? snapshot?.recall : snapshot?.ranking?.[area];
+  if (snapshot?.protocol?.full_test) return bundle?.test || {};
   if (snapshot?.protocol?.held_out) return bundle?.[activeSplit.value] || {};
   if (snapshot?.protocol) return bundle?.train_diagnostic || {};
   return bundle?.validation || bundle?.val || {};
@@ -192,7 +194,8 @@ function metricSampleMeta(scene: 'search' | 'rec', area: 'recall' | 'preranking'
   const effective = Number(obj?.effective_groups || 0);
   if (!Number.isFinite(sampled) || sampled <= 0) return '该阶段暂无可用评测';
   if (!Number.isFinite(effective) || effective <= 0) return `${splitLabel.value} · ${sampled.toLocaleString()} 个请求`;
-  return `${splitLabel.value} · ${effective.toLocaleString()}/${sampled.toLocaleString()} 个请求`;
+  const exposureMeta = obj?.rows ? ` · ${Number(obj.rows).toLocaleString()} 条曝光` : '';
+  return `${splitLabel.value} · ${effective.toLocaleString()}/${sampled.toLocaleString()} 个请求${exposureMeta}`;
 }
 
 function behaviorTime(row: any) {
@@ -591,8 +594,8 @@ onUnmounted(stopValidationProgress);
       <section v-if="activeSnapshot?.protocol" class="panel protocol-panel" :class="{ 'protocol-warning': !isHeldOut }">
         <div class="protocol-heading">
           <div>
-            <span class="protocol-badge">{{ isHeldOut ? '时间隔离评测 · V2' : '历史训练诊断' }}</span>
-            <h3>{{ isHeldOut ? '验证集选择策略，测试集报告效果' : '此快照不能代表独立验证效果' }}</h3>
+            <span class="protocol-badge">{{ isFullTestSnapshot ? '全量测试集快照' : isHeldOut ? '时间隔离评测 · V2' : '历史训练诊断' }}</span>
+            <h3>{{ isFullTestSnapshot ? '完整测试请求与曝光，统一指标口径' : isHeldOut ? '验证集选择策略，测试集报告效果' : '此快照不能代表独立验证效果' }}</h3>
             <p class="meta">{{ isHeldOut ? '按完整请求时间划分；未召回正样本计入漏召回，候选按物品去重。' : activeSnapshot?.protocol?.warning }}</p>
           </div>
           <div v-if="isHeldOut" class="split-control" aria-label="评测数据集">
@@ -638,7 +641,7 @@ onUnmounted(stopValidationProgress);
           <div class="section-title">排序指标</div>
           <div class="rank-stage-list single-stage-list">
             <div class="rank-stage">
-              <div class="rank-stage-title">粗排 · GBDT <span v-if="isHeldOut" class="scope-tag">日志曝光条件评估</span></div>
+              <div class="rank-stage-title">粗排 · GBDT <span v-if="isHeldOut || isFullTestSnapshot" class="scope-tag">日志曝光条件评估</span></div>
               <div class="split-meta">{{ metricSampleMeta(currentScene, 'preranking') }}</div>
               <div class="metric-row compact-row">
                 <button
@@ -654,7 +657,7 @@ onUnmounted(stopValidationProgress);
             </div>
 
             <div class="rank-stage">
-              <div class="rank-stage-title">精排 · DIEN <span v-if="isHeldOut" class="scope-tag">待时间隔离重训</span></div>
+              <div class="rank-stage-title">精排 · DIEN <span v-if="isHeldOut || isFullTestSnapshot" class="scope-tag">日志曝光条件评估</span></div>
               <div class="split-meta">{{ metricSampleMeta(currentScene, 'ranking') }}</div>
               <div class="metric-row compact-row">
                 <button
@@ -672,7 +675,7 @@ onUnmounted(stopValidationProgress);
         </div>
       </section>
 
-      <p v-if="isHeldOut" class="meta evaluation-footnote">首命中中位排名仅统计 Top1000 内命中的请求。排序以日志曝光候选为范围，使用二值点击标签；无法直接与旧多级相关性指标比较。旧样例仅用于链路诊断。</p>
+      <p v-if="isHeldOut || isFullTestSnapshot" class="meta evaluation-footnote">首命中中位排名仅统计 Top1000 内命中的请求。排序以日志曝光候选为范围，使用二值点击标签；无法直接与旧多级相关性指标比较。旧样例仅用于链路诊断。</p>
       <section class="panel example-panel shell-panel">
         <div class="example-head">
           <div>

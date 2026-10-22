@@ -35,3 +35,6 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.setuptools.package-data]
+"backend.online" = ["full_test_metrics.json"]

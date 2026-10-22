@@ -1,0 +1,131 @@
+{
+  "tag": "hard",
+  "protocol": {
+    "name": "official_full_test_frozen_snapshot_v1",
+    "full_test": true,
+    "held_out": false,
+    "strict_acceptance": "blocked",
+    "sampling": "none",
+    "label": "binary_click",
+    "evaluated_at": "2026-10-22",
+    "warning": "全量测试集快照；模型与特征的时间隔离尚未完成核验，排序为完整日志曝光条件评估。"
+  },
+  "scenes": {
+    "search": {
+      "recall": {
+        "test": {
+          "all_requests": 6192,
+          "positive_requests": 6192,
+          "positive_pairs": 27597,
+          "HitRate@100": 0.772125322997416,
+          "Recall@100": 0.5633041961344907,
+          "MicroRecall@100": 0.4775881436388013,
+          "HitRate@500": 0.899547803617571,
+          "Recall@500": 0.7467326646114951,
+          "MicroRecall@500": 0.6546363735188607,
+          "HitRate@1000": 0.899547803617571,
+          "Recall@1000": 0.7467326646114951,
+          "MicroRecall@1000": 0.6546363735188607,
+          "MRR@100": 0.25243414164446387,
+          "missed_requests@1000": 622,
+          "MedianFirstHitRank": 8.0,
+          "sampled_groups": 6192
+        }
+      },
+      "ranking": {
+        "preranking": {
+          "test": {
+            "NDCG@10": 0.6532217548908399,
+            "AUC": 0.6535310811449303,
+            "GAUC": 0.6413021849898876,
+            "rows": 128191,
+            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "label": "binary click",
+            "gauc_group": "user_idx",
+            "gauc_weight": "exposure count of users with both classes",
+            "gauc_effective_users": 2542,
+            "gauc_effective_rows": 128176,
+            "gauc_excluded_users": 6,
+            "sampled_groups": 6192,
+            "effective_groups": 6192
+          }
+        },
+        "ranking": {
+          "test": {
+            "NDCG@10": 0.6433348137573045,
+            "AUC": 0.6478615610079044,
+            "GAUC": 0.6403953429681222,
+            "rows": 128191,
+            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "label": "binary click",
+            "gauc_group": "user_idx",
+            "gauc_weight": "exposure count of users with both classes",
+            "gauc_effective_users": 2542,
+            "gauc_effective_rows": 128176,
+            "gauc_excluded_users": 6,
+            "sampled_groups": 6192,
+            "effective_groups": 6192
+          }
+        }
+      }
+    },
+    "rec": {
+      "recall": {
+        "test": {
+          "all_requests": 11115,
+          "positive_requests": 11115,
+          "positive_pairs": 44683,
+          "HitRate@100": 0.03625730994152047,
+          "Recall@100": 0.010102144755591227,
+          "MicroRecall@100": 0.010003804578922634,
+          "HitRate@500": 0.09194781826360773,
+          "Recall@500": 0.027421182600484716,
+          "MicroRecall@500": 0.02835530291162187,
+          "HitRate@1000": 0.13126405757984705,
+          "Recall@1000": 0.04031870715327192,
+          "MicroRecall@1000": 0.04317078083387418,
+          "MRR@100": 0.002507132249114041,
+          "missed_requests@1000": 9656,
+          "MedianFirstHitRank": 262.0,
+          "sampled_groups": 11115
+        }
+      },
+      "ranking": {
+        "preranking": {
+          "test": {
+            "NDCG@10": 0.6089359783028481,
+            "AUC": 0.5427469011977633,
+            "GAUC": 0.5558750559119142,
+            "rows": 182567,
+            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "label": "binary click",
+            "gauc_group": "user_idx",
+            "gauc_weight": "exposure count of users with both classes",
+            "gauc_effective_users": 4563,
+            "gauc_effective_rows": 182522,
+            "gauc_excluded_users": 13,
+            "sampled_groups": 11115,
+            "effective_groups": 11115
+          }
+        },
+        "ranking": {
+          "test": {
+            "NDCG@10": 0.5791201575213493,
+            "AUC": 0.49760396156292885,
+            "GAUC": 0.5033739359495907,
+            "rows": 182567,
+            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "label": "binary click",
+            "gauc_group": "user_idx",
+            "gauc_weight": "exposure count of users with both classes",
+            "gauc_effective_users": 4563,
+            "gauc_effective_rows": 182522,
+            "gauc_excluded_users": 13,
+            "sampled_groups": 11115,
+            "effective_groups": 11115
+          }
+        }
+      }
+    }
+  }
+}

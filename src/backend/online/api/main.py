@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from backend.online.pipeline import OnlineRuntimeRegistry  # noqa: E402
+from backend.online.metrics_snapshot import load_metrics_snapshot
 from backend.online.config import DEFAULT_GBDT_TOPN, DEFAULT_RECALL_RANK_CAP
 
 BASE_DIR = Path(__file__).resolve().parents[4]
@@ -52,13 +53,11 @@ class AppContext:
 			"rec": self._normalize_tag(os.getenv("QILIN_TAG_REC"), fallback=tag),
 		}
 		self._cache_lock = threading.Lock()
-		self._metrics_cache: dict[tuple[str, str, int, bool], tuple[float, dict[str, Any]]] = {}
 		self._validation_cache: dict[tuple[str, str, int, int], tuple[float, dict[str, Any]]] = {}
 		self._user_validation_example_cache_lock = threading.Lock()
 		self._user_validation_example_cache: dict[tuple[str, str, int], dict[str, Any] | None] = {}
 		self._login_user_cache_lock = threading.Lock()
 		self._login_user_catalog: dict[str, list[dict[str, Any]]] = {}
-		self.metrics_ttl_sec = 15 * 60.0
 		self.validation_ttl_sec = 15 * 60.0
 		self._prewarm_enabled = str(os.getenv("QILIN_ASYNC_PREWARM", "1")).strip().lower() not in {"0", "false", "no"}
 		self._blocking_prewarm = str(os.getenv("QILIN_BLOCKING_PREWARM", "0")).strip().lower() in {"1", "true", "yes"}
@@ -336,27 +335,8 @@ class AppContext:
 		sample_n: int,
 		include_val: bool = True,
 	) -> tuple[dict[str, Any], bool]:
-		key = (str(tag), str(scene), int(sample_n), bool(include_val))
-		now = time.time()
-		with self._cache_lock:
-			cached = self._metrics_cache.get(key)
-			if cached is not None and (now - float(cached[0])) <= self.metrics_ttl_sec:
-				return cached[1], True
-		snapshot = self._load_json_snapshot(
-			self._metrics_snapshot_path(
-				scene=scene,
-				tag=tag,
-				sample_n=sample_n,
-				include_val=include_val,
-			)
-		)
-		if snapshot is None:
-			raise FileNotFoundError(
-				f"offline metrics snapshot not found: scene={scene}, tag={tag}, sample_n={sample_n}, include_val={int(bool(include_val))}"
-			)
-		with self._cache_lock:
-			self._metrics_cache[key] = (time.time(), snapshot)
-		return snapshot, True
+		# 全量快照不按 sample_n 抽样，也不回退到历史训练缓存。
+		return load_metrics_snapshot(scene, tag), True
 
 	def get_validation_cached(
 		self,
