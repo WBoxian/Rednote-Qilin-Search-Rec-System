@@ -569,6 +569,9 @@ class SceneServingState:
         self.deploy_tag_dir = DEPLOY_DIR / scene / tag
         self.gbdt_topn = int(gbdt_topn)
         self.recall_rank_cap = int(recall_rank_cap)
+        self.search_filter_policy = os.getenv("QILIN_SEARCH_FILTER_POLICY", "soft").strip().lower()
+        if self.search_filter_policy not in {"legacy", "soft"}:
+            raise ValueError("Invalid QILIN_SEARCH_FILTER_POLICY")
 
         self.scene_test_path = _scene_test_dataset_path(scene)
         self.scene_train_path = _scene_request_dataset_path(scene, "train")
@@ -2144,6 +2147,7 @@ class SceneServingState:
                 fetch_item_features=self.fetch_item_features,
                 predict_gbdt=self.predict_gbdt,
                 linkage_ctx=linkage_ctx,
+                search_filter_policy=self.search_filter_policy,
             )
             if len(prerank) <= 0:
                 continue
@@ -2155,6 +2159,7 @@ class SceneServingState:
                 page_size=20,
                 predict_dien=self.predict_dien,
                 history_note_ids=self.get_user_history_notes(user_idx=int(user_idx), feat_req=feat_req, prefer_realtime=False),
+                search_filter_policy=self.search_filter_policy,
             )
             ranked = ranked.reset_index(drop=True)
             ranked["ranking_rank"] = np.arange(1, len(ranked) + 1, dtype=np.int32)
@@ -2406,6 +2411,7 @@ class SceneServingState:
                             fetch_item_features=self.fetch_item_features,
                             predict_gbdt=self.predict_gbdt,
                             linkage_ctx=linkage_ctx,
+                            search_filter_policy=self.search_filter_policy,
                         )
                         if len(online_pre) > 0:
                             online_pre = online_pre.reset_index(drop=True)
@@ -2433,6 +2439,7 @@ class SceneServingState:
                                 page_size=20,
                                 predict_dien=self.predict_dien,
                                 history_note_ids=self.get_user_history_notes(user_idx=int(source_uid), feat_req=feat_req, prefer_realtime=False),
+                                search_filter_policy=self.search_filter_policy,
                             )
                             if len(ranked) > 0:
                                 ranked = ranked.reset_index(drop=True)
@@ -3179,6 +3186,7 @@ class OnlineScenePipeline:
             fetch_item_features=self.state.fetch_item_features,
             predict_gbdt=self.state.predict_gbdt,
             linkage_ctx=linkage_ctx,
+            search_filter_policy=self.state.search_filter_policy,
         )
         if len(prerank_cand) > 0:
             prerank_cand = prerank_cand.reset_index(drop=True)
@@ -3191,6 +3199,7 @@ class OnlineScenePipeline:
             page_size=page_size,
             predict_dien=self.state.predict_dien,
             history_note_ids=history_note_ids,
+            search_filter_policy=self.state.search_filter_policy,
         )
         if len(cand) > 0:
             cand = cand.reset_index(drop=True)
