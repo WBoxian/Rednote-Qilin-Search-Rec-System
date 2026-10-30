@@ -12,6 +12,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from recall.fusion import weighted_rrf
 from backend.online.cold_start.popular import build_hot_candidates
 from backend.online.recall.dssm import DSSMRecaller
 
@@ -369,7 +370,13 @@ def _merge_scores(
     merge_order: list[str],
     route_weights: dict[str, float],
     rrf_k: int,
+    fusion_strategy: str = "legacy",
 ):
+    if fusion_strategy == "rrf":
+        return weighted_rrf(ann_scores, swing_scores, usercf_scores, topk=topk,
+                            route_weights=route_weights, rrf_k=rrf_k)
+    if fusion_strategy != "legacy":
+        raise ValueError(f"Unknown recall fusion strategy: {fusion_strategy}")
     route2scores = {
         "ann": ann_scores,
         "swing": swing_scores,

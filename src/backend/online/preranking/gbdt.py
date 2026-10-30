@@ -53,9 +53,9 @@ class GBDTPredictor:
                 X[c] = pd.to_numeric(X[c], errors="coerce")
         return X.fillna(0.0)
 
-    def predict(self, cand: pd.DataFrame) -> np.ndarray:
+    def predict_with_components(self, cand: pd.DataFrame) -> dict[str, np.ndarray]:
         if cand.empty:
-            return np.zeros(0, dtype=np.float32)
+            return {key: np.zeros(0, dtype=np.float32) for key in ('lgb_score', 'xgb_score', 'gbdt_score')}
         X = self._prepare_scoring_frame(cand)
 
         lgb_pred = np.zeros(len(X), dtype=np.float32)
@@ -76,17 +76,33 @@ class GBDTPredictor:
                 xgb_pred = np.asarray(self.xgb_model.predict(dtest, iteration_range=(0, int(best_iter) + 1)), dtype=np.float32)
 
         if self.lgb_model is not None and self.xgb_model is not None:
-            return (0.5 * lgb_pred + 0.5 * xgb_pred).astype(np.float32)
-        if self.lgb_model is not None:
-            return lgb_pred
-        if self.xgb_model is not None:
-            return xgb_pred
-        return np.zeros(len(X), dtype=np.float32)
+            combined = .5 * lgb_pred + .5 * xgb_pred
+        elif self.lgb_model is not None:
+            combined = lgb_pred
+        else:
+            combined = xgb_pred
+        return {"lgb_score": lgb_pred, "xgb_score": xgb_pred,
+                "gbdt_score": combined.astype(np.float32)}
+
+    def predict(self, cand: pd.DataFrame) -> np.ndarray:
+        return self.predict_with_components(cand)["gbdt_score"]
 
 
 def run_preranking_gbdt(cand: pd.DataFrame, gbdt_topn: int, predict_gbdt) -> pd.DataFrame:
     out = cand.copy()
-    out["gbdt_score"] = predict_gbdt(out)
+    if "first_route" in out:
+        out["first_route_id"] = out["first_route"].map({"ann": 1, "swing": 2, "usercf": 3}).fillna(0).astype(np.int16)
+    predictor = getattr(predict_gbdt, "__self__", None)
+    predictor = getattr(predictor, "gbdt_predictor", predictor)
+    if isinstance(predictor, GBDTPredictor):
+        for name, values in predictor.predict_with_components(out).items():
+            out[name] = values
+    else:
+        out["gbdt_score"] = predict_gbdt(out)
+    # 保留训练使用的树模型分数与排名，业务融合不能覆盖模型输入契约。
+    out["dien_preranking_score"] = out["gbdt_score"]
+    base_order = out.sort_values(["gbdt_score", "rank"], ascending=[False, True], kind="mergesort").index
+    out.loc[base_order, "dien_preranking_rank"] = np.arange(1, len(out) + 1, dtype=np.int32)
     out["preranking_score"] = (0.8 * out["gbdt_score"] + 0.2 * out["dssm_score"]).astype(np.float32)
     if "linkage_boost" in out.columns:
         out["preranking_score"] = (

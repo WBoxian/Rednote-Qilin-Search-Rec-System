@@ -43,7 +43,7 @@ Qilin 围绕小红书场景下的 **数据预处理 → 特征工程 → 召回 
 ### 0.2 项目成果
 
 - 在线服务
-  - 搜推系统线上服务延迟稳定在 `~150ms`
+  - 单机串行实测（每场景固定请求、20次缓存命中）：Search P95约 `26ms`、首次加载约 `10.1s`；Rec P95约 `21ms`、首次加载约 `11.4s`。不代表并发吞吐，可用 `scripts/benchmark_serving.py --scene search|rec` 分别复测
 - Search 离线指标
   - 召回（测试集）：`HitRate@500 = 0.8995`，`Recall@500 = 0.7467`，`MRR@100 = 0.2524`，`MedianFirstHitRank = 8`
   - 排序（DIEN，测试曝光）：`NDCG@10 = 0.6433`，`AUC = 0.6479`，`GAUC = 0.6404`

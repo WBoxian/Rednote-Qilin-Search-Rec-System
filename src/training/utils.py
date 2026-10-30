@@ -5,6 +5,56 @@ import torch
 import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
 
+# 新训练只消费可明确解释的内容特征和上游打分；旧模型按 checkpoint 自带字段加载。
+# 物品发布时间、类别词表和召回模型仍需独立时间血缘核验，此白名单不构成无泄露证明。
+RANKING_STATIC_FEATURES = (
+    "note_type", "video_duration", "video_height", "video_width", "image_num",
+    "content_length", "commercial_flag", "taxonomy1_id_enc", "taxonomy2_id_enc",
+    "taxonomy3_id_enc",
+)
+RANKING_RECALL_FEATURES = (
+    "rank", "recall_score", "score_ann", "score_swing", "score_usercf",
+    "from_ann", "from_swing", "from_usercf", "first_route_id",
+)
+RANKING_DIEN_FEATURES = ("lgb_score", "xgb_score", "preranking_score", "preranking_rank")
+
+
+def split_groups_temporally(frame: pd.DataFrame, group_key: str, valid_ratio: float = 0.2):
+    """完整请求前向切分，跨越边界的请求排除，不回退到随机分组。"""
+    if not 0 < valid_ratio < 1:
+        raise ValueError("valid_ratio must be between 0 and 1")
+    if "event_timestamp" not in frame:
+        raise ValueError("Temporal split requires event_timestamp")
+    timestamps = pd.to_numeric(frame["event_timestamp"], errors="coerce")
+    if not np.isfinite(timestamps.to_numpy(dtype=float)).all() or frame[group_key].isna().any():
+        raise ValueError("Temporal split requires finite timestamps and group IDs")
+    intervals = frame[[group_key]].copy()
+    intervals["_time"] = timestamps.to_numpy()
+    intervals = intervals.groupby(group_key)["_time"].agg(["min", "max"])
+    if len(intervals) < 2:
+        raise ValueError("Temporal split requires at least two groups")
+    index = max(1, min(len(intervals) - 1, int(len(intervals) * (1 - valid_ratio))))
+    boundary = float(np.sort(intervals["max"].to_numpy())[index])
+    fit = np.flatnonzero(frame[group_key].isin(intervals.index[intervals["max"] < boundary]).to_numpy())
+    val = np.flatnonzero(frame[group_key].isin(intervals.index[intervals["min"] >= boundary]).to_numpy())
+    if not len(fit) or not len(val):
+        raise ValueError("No non-overlapping forward train/validation split exists")
+    print(f"[Temporal Split] boundary={boundary}, excluded_rows={len(frame)-len(fit)-len(val)}")
+    return fit, val
+
+
+def select_ranking_features(frame: pd.DataFrame, stage: str) -> list[str]:
+    """未知数值列默认不入模，避免新加入的标签、曝光位置和汇总统计自动成为输入。"""
+    if stage not in {"gbdt", "dien"}:
+        raise ValueError(f"Unknown ranking stage: {stage}")
+    allowed = RANKING_STATIC_FEATURES + RANKING_RECALL_FEATURES
+    if stage == "dien":
+        allowed += RANKING_DIEN_FEATURES
+    selected = [name for name in allowed if name in frame and pd.api.types.is_numeric_dtype(frame[name])]
+    if not selected:
+        raise ValueError("No supported ranking features in training frame")
+    return selected
+
 # =============================
 # Utils
 # =============================

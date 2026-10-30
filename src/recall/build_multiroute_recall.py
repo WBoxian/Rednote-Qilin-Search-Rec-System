@@ -61,6 +61,7 @@ SRC_DIR = BASE_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from recall.fusion import weighted_rrf
 from backend.online.search_query import detect_query_intents, normalize_query_text, seed_query_terms
 
 ROW_FLUSH_SIZE = 200_000
@@ -658,7 +659,13 @@ def _merge_scores(
     route_min_quota: int,
     route_max_share: float,
     route_weights: dict[str, float] | None = None,
+    fusion_strategy: str = "legacy",
 ):
+    if fusion_strategy == "rrf":
+        return weighted_rrf(ann_scores, swing_scores, usercf_scores, topk=topk,
+                            route_weights=route_weights, rrf_k=60)
+    if fusion_strategy != "legacy":
+        raise ValueError(f"Unknown recall fusion strategy: {fusion_strategy}")
     all_routes = ["ann", "swing", "usercf"]
     route2scores = {
         "ann": ann_scores,

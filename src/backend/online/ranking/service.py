@@ -23,8 +23,12 @@ def run_ranking(
     if cand.empty:
         return cand, cand
 
-    if "rank" in cand.columns:
-        cand = cand.sort_values(["rank"], ascending=[True], kind="mergesort")
+    if "preranking_rank" in cand:
+        cand = cand.sort_values("preranking_rank", ascending=True, kind="mergesort")
+    elif "preranking_score" in cand:
+        cand = cand.sort_values("preranking_score", ascending=False, kind="mergesort")
+    elif "rank" in cand:
+        cand = cand.sort_values("rank", ascending=True, kind="mergesort")
     cand = cand.drop_duplicates(subset=["note_idx"], keep="first").reset_index(drop=True)
     cand = cand.head(int(RANK_TOPN)).copy()
 

@@ -34,6 +34,8 @@ import pyarrow.parquet as pq
 try:
     from .utils import (
         build_group_sizes,
+        select_ranking_features,
+        split_groups_temporally,
         discretize_relevance,
         eval_ndcg_by_group,
         sort_by_group,
@@ -42,6 +44,8 @@ try:
 except ImportError:
     from utils import (
         build_group_sizes,
+        select_ranking_features,
+        split_groups_temporally,
         discretize_relevance,
         eval_ndcg_by_group,
         sort_by_group,
@@ -333,25 +337,8 @@ def _build_preranking_scored_frame(
     return out
 
 
-def _group_val_split(group: np.ndarray, valid_ratio: float = VALID_RATIO) -> tuple[np.ndarray, np.ndarray]:
-    unique_groups = np.unique(group)
-    if len(unique_groups) < 2:
-        raise ValueError(f"Not enough groups for val split: group_cnt={len(unique_groups)}")
-
-    rng = np.random.RandomState(SEED)
-    shuffled = unique_groups.copy()
-    rng.shuffle(shuffled)
-
-    val_cnt = int(round(len(shuffled) * float(valid_ratio)))
-    val_cnt = max(1, min(val_cnt, len(shuffled) - 1))
-    val_groups = set(shuffled[:val_cnt].tolist())
-
-    val_mask = np.isin(group, list(val_groups))
-    val_idx = np.where(val_mask)[0]
-    tr_idx = np.where(~val_mask)[0]
-    if len(tr_idx) == 0 or len(val_idx) == 0:
-        raise ValueError("invalid val split: empty train or valid index")
-    return tr_idx, val_idx
+def _group_val_split(df: pd.DataFrame, group_key: str, valid_ratio: float = VALID_RATIO) -> tuple[np.ndarray, np.ndarray]:
+    return split_groups_temporally(df, group_key, valid_ratio)
 
 
 def _export_dien_dataset(
@@ -504,17 +491,26 @@ def main(
     if len(df) == 0:
         raise ValueError("No training rows left after recall/group filtering.")
 
+    tr_idx, val_idx = _group_val_split(df=df, group_key=group_key, valid_ratio=VALID_RATIO)
+    # 越界请求不能作为零分 OOF 行继续流入精排训练集。
+    keep = np.sort(np.concatenate([tr_idx, val_idx]))
+    df = df.iloc[keep].reset_index(drop=True)
+    tr_idx, val_idx = np.searchsorted(keep, tr_idx), np.searchsorted(keep, val_idx)
     group = df[group_key].to_numpy()
     y_cont = df["y_multi"].to_numpy()
-    y_disc = discretize_relevance(y_cont)
+    # 阈值只从训练折拟合，不读取验证标签分布。
+    train_positive = y_cont[tr_idx][y_cont[tr_idx] > 0]
+    thresholds = np.unique(np.quantile(train_positive, np.linspace(0, 1, 6))) if len(train_positive) else np.array([])
+    y_disc = np.zeros(len(y_cont), dtype=np.int32)
+    positive = y_cont > 0
+    y_disc[positive] = np.digitize(y_cont[positive], thresholds[1:-1]) + 1
 
-    drop_cols = ["click", "y_multi", "note_idx", group_key, "recent_clicked_note_idxs", "first_route"]
-    drop_cols = [c for c in drop_cols if c in df.columns]
-    X = df.drop(columns=drop_cols)
+    feature_cols = select_ranking_features(df, stage="gbdt")
+    X = df[feature_cols]
+    print(f"[Feature Contract] conservative_v1: {feature_cols}")
     X = X.astype(np.float32, copy=False)
     print(f"[Mem] feature matrix shape={X.shape}, mem={_df_mem_mb(X):.2f}MB")
 
-    tr_idx, val_idx = _group_val_split(group=group, valid_ratio=VALID_RATIO)
     print(f"[Split] val by group: train={len(tr_idx)}, valid={len(val_idx)}, valid_ratio={VALID_RATIO}")
 
     tag_suffix = f"_{output_tag}" if output_tag else ""

@@ -44,7 +44,7 @@ Qilin is organized around the common serving path of **data preprocessing → fe
 ### 0.2 Results
 
 - Online serving
-  - Stable online latency around `~150ms`
+  - Single-machine serial measurements (one fixed case and 20 cache hits per scene): Search P95 about `26ms`, first load about `10.1s`; Rec P95 about `21ms`, first load about `11.4s`. Not a concurrency benchmark; reproduce separately with `scripts/benchmark_serving.py --scene search|rec`
 - Search offline metrics
   - Recall (test set): `HitRate@500 = 0.8995`, `Recall@500 = 0.7467`, `MRR@100 = 0.2524`, `MedianFirstHitRank = 8`
   - Ranking (DIEN, test exposures): `NDCG@10 = 0.6433`, `AUC = 0.6479`, `GAUC = 0.6404`

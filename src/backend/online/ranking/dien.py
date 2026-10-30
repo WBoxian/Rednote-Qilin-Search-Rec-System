@@ -232,7 +232,11 @@ class DIENPredictor:
         if self.model is None or cand.empty:
             return np.zeros(len(cand), dtype=np.float32)
 
-        df = cand.reset_index(drop=True)
+        df = cand.reset_index(drop=True).copy()
+        for feature in ("preranking_score", "preranking_rank"):
+            alias = f"dien_{feature}"
+            if alias in df:
+                df[feature] = df[alias]
         preds = np.zeros(len(df), dtype=np.float32)
         with torch.no_grad():
             for i in range(0, len(df), batch_size):

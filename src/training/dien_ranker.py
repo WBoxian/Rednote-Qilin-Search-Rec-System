@@ -28,6 +28,7 @@ from pathlib import Path
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score
 try:
     from .utils import *
 except ImportError:
@@ -230,23 +231,7 @@ def _fit_apply_zscore_by_train(
 
 
 def _group_val_split(df: pd.DataFrame, group_key: str, valid_ratio: float = VALID_RATIO) -> tuple[np.ndarray, np.ndarray]:
-    groups = df[group_key].drop_duplicates().to_numpy()
-    if len(groups) < 2:
-        raise ValueError(f"Not enough groups for val split: group_cnt={len(groups)}")
-
-    rng = np.random.RandomState(SEED)
-    shuffled = groups.copy()
-    rng.shuffle(shuffled)
-    val_cnt = int(round(len(shuffled) * float(valid_ratio)))
-    val_cnt = max(1, min(val_cnt, len(shuffled) - 1))
-    val_groups = set(shuffled[:val_cnt].tolist())
-
-    val_mask = df[group_key].isin(val_groups).to_numpy()
-    val_idx = np.where(val_mask)[0]
-    tr_idx = np.where(~val_mask)[0]
-    if len(tr_idx) == 0 or len(val_idx) == 0:
-        raise ValueError("invalid val split: empty train or valid index")
-    return tr_idx, val_idx
+    return split_groups_temporally(df, group_key, valid_ratio)
 
 
 # =============================
@@ -762,12 +747,7 @@ def _binary_auc_local(y_true: np.ndarray, y_score: np.ndarray) -> float:
     neg = int((y == 0).sum())
     if pos == 0 or neg == 0:
         return 0.5
-    order = np.argsort(s, kind="mergesort")
-    ranks = np.empty_like(order, dtype=np.float64)
-    ranks[order] = np.arange(1, len(s) + 1, dtype=np.float64)
-    pos_rank_sum = float(ranks[y == 1].sum())
-    auc = (pos_rank_sum - pos * (pos + 1) / 2.0) / float(pos * neg)
-    return float(max(0.0, min(1.0, auc)))
+    return float(roc_auc_score(y, s))
 
 
 def _choose_fused_scores(
@@ -867,9 +847,7 @@ def main(
 
     raw_df = pd.read_parquet(train_path)
     df = raw_df.copy()
-    drop_feats = ["click", "y_multi", "note_idx", group_key, "recent_clicked_note_idxs", "first_route"]
-    candidate_num_feats = [c for c in raw_df.columns if c not in drop_feats]
-    num_feats = [c for c in candidate_num_feats if pd.api.types.is_numeric_dtype(raw_df[c])]
+    num_feats = select_ranking_features(raw_df, stage="dien")
     raw_df[num_feats] = raw_df[num_feats].fillna(0.0).replace([np.inf, -np.inf], 0.0)
     print(f"原始样本数: {len(df)}")
 
@@ -889,9 +867,7 @@ def main(
         )
     
     # 基础特征处理
-    drop_feats = ["click", "y_multi", "note_idx", group_key, "recent_clicked_note_idxs", "first_route"]
-    candidate_num_feats = [c for c in df.columns if c not in drop_feats]
-    num_feats = [c for c in candidate_num_feats if pd.api.types.is_numeric_dtype(df[c])]
+    num_feats = select_ranking_features(df, stage="dien")
     df[num_feats] = df[num_feats].fillna(0.0).replace([np.inf, -np.inf], 0.0)
 
     before_groups = int(df[group_key].nunique())
@@ -925,6 +901,12 @@ def main(
         if not ckpt_path.exists():
             raise FileNotFoundError(f"checkpoint not found for export-only mode: {ckpt_path}")
         _state = torch.load(ckpt_path, map_location=DEVICE)
+        # 历史模型导出必须沿用其字段，不把新训练白名单套到旧 checkpoint 上。
+        num_feats = [key.split(".")[1] for key in _state if key.startswith("num_proj.") and key.endswith(".weight")]
+        missing = sorted(set(num_feats) - set(eval_df.columns))
+        if missing:
+            raise ValueError(f"Missing checkpoint features for export: {missing}")
+        eval_df[num_feats] = eval_df[num_feats].fillna(0.0).replace([np.inf, -np.inf], 0.0)
         _tmp_model = DIENRanker(scene=scene, num_feats=num_feats).to(DEVICE)
         _tmp_model.load_state_dict(_state)
         full_raw_scores = _score_frame(_tmp_model, eval_df, stores, num_feats, scene, group_key)

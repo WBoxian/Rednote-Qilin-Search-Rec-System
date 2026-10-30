@@ -3035,16 +3035,6 @@ class OnlineScenePipeline:
         exclude_note_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         t0 = time.perf_counter()
-        def _display_latency(total_ms: float, stage_ms: dict[str, Any] | None) -> float:
-            if not stage_ms or not isinstance(stage_ms, dict):
-                return float(total_ms)
-            stage_total = 0.0
-            for key in ("coldstart", "recall", "preranking", "ranking"):
-                try:
-                    stage_total += max(0.0, float(stage_ms.get(key, 0.0)))
-                except Exception:
-                    continue
-            return float(max(float(total_ms), stage_total))
         query_ctx = self.state.preprocess_search_query(query, user_idx=int(user_idx)) if self.state.scene == "search" else {
             "input_query": str(query or ""),
             "normalized_query": str(query or ""),
@@ -3082,9 +3072,11 @@ class OnlineScenePipeline:
                 "total": int(len(cand)),
                 "page": int(page),
                 "page_size": int(page_size),
-                "stage_ms": dict(cached_meta.get("stage_ms", {})),
-                "pipeline_ms": float(cached_meta.get("pipeline_ms", 0.0)),
-                "latency_ms": _display_latency(total_ms, cached_meta.get("stage_ms")),
+                "stage_ms": {},
+                "pipeline_ms": 0.0,
+                "cached_stage_ms": dict(cached_meta.get("stage_ms", {})),
+                "cached_pipeline_ms": float(cached_meta.get("pipeline_ms", 0.0)),
+                "latency_ms": float(total_ms),
                 "cache_hit": True,
                 "items": self._build_cards(req_id=int(req_id), user_idx=int(user_idx), page_df=page_df),
             }
@@ -3133,9 +3125,11 @@ class OnlineScenePipeline:
                 "total": int(len(cand)),
                 "page": int(page),
                 "page_size": int(page_size),
-                "stage_ms": dict(cached_meta.get("stage_ms", {})),
-                "pipeline_ms": float(cached_meta.get("pipeline_ms", 0.0)),
-                "latency_ms": _display_latency(total_ms, cached_meta.get("stage_ms")),
+                "stage_ms": {},
+                "pipeline_ms": 0.0,
+                "cached_stage_ms": dict(cached_meta.get("stage_ms", {})),
+                "cached_pipeline_ms": float(cached_meta.get("pipeline_ms", 0.0)),
+                "latency_ms": float(total_ms),
                 "cache_hit": True,
                 "items": self._build_cards(req_id=int(req_id), user_idx=int(user_idx), page_df=page_df),
             }
@@ -3260,7 +3254,7 @@ class OnlineScenePipeline:
             "page_size": int(page_size),
             "stage_ms": stage_ms,
             "pipeline_ms": float(stage_ms["recall"] + stage_ms["preranking"] + stage_ms["ranking"]),
-            "latency_ms": _display_latency(total_ms, stage_ms),
+            "latency_ms": float(total_ms),
             "cache_hit": False,
             "items": self._build_cards(req_id=int(req_id), user_idx=int(user_idx), page_df=page_df),
         }
