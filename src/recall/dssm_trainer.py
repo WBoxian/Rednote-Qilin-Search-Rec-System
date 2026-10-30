@@ -15,6 +15,7 @@ Qilin DSSM 双塔召回训练脚本 (Search & Rec)
 """
 
 import os
+import sys
 import json
 import argparse
 import logging
@@ -56,6 +57,10 @@ if torch.cuda.is_available():
     torch.backends.cudnn.allow_tf32 = True
 
 BASE_DIR = Path(__file__).resolve().parents[2]  # Qilin/
+if str(BASE_DIR / "src") not in sys.path:
+    sys.path.insert(0, str(BASE_DIR / "src"))
+from recall.query_encoding import build_search_query_store
+
 EMB_DIR = BASE_DIR / "embeddings"
 FEAT_DIR = BASE_DIR / "features"
 CAT_MAP_DIR = FEAT_DIR / "vocab_dict"
@@ -116,21 +121,67 @@ def load_category_sizes():
             sizes[k] = max(mp.values()) + 1
     return sizes
 
-def log1p_and_zscore(df: pd.DataFrame, cols_log, cols_norm):
-    """
-    - log1p + zscore：先 log1p(x) 压缩长尾，再做 z-score（用于计数类）
-    - zscore：直接 (x-μ)/σ（用于比率、dense）
-    """
+def fit_numeric_preprocessing(df: pd.DataFrame, cols_log, cols_norm):
+    """Fit finite numeric statistics on fit rows only; never mutate the source frame."""
+    if df.empty:
+        raise ValueError("Cannot fit preprocessing on an empty frame")
+    logs = set(cols_log)
     stats = {}
-    for c in cols_log:
-        df[c] = np.log1p(df[c].astype(float))
-    for c in cols_norm:
-        mu = df[c].mean()
-        std = df[c].std()
-        std = std if std > 1e-6 else 1.0
-        df[c] = (df[c] - mu) / std
-        stats[c] = (mu, std)
-    return df, stats
+    for col in cols_norm:
+        values = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=np.float64)
+        values = np.nan_to_num(values, nan=0., posinf=0., neginf=0.)
+        if col in logs:
+            values = np.log1p(np.maximum(values, 0.))
+        mean, scale = float(values.mean()), float(values.std(ddof=0))
+        stats[col] = {"mean": mean, "scale": scale if scale > 1e-6 else 1., "log1p": col in logs}
+    return {"version": 1, "fit_rows": len(df), "columns": stats}
+
+
+def log1p_and_zscore(df: pd.DataFrame, cols_log, cols_norm):
+    """Legacy DataFrame API; new towers transform raw input using saved buffers."""
+    contract = fit_numeric_preprocessing(df, cols_log, cols_norm)
+    out = df.copy()
+    for col, spec in contract["columns"].items():
+        values = pd.to_numeric(out[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.)
+        if spec["log1p"]:
+            values = np.log1p(values.clip(lower=0.))
+        out[col] = (values - spec["mean"]) / spec["scale"]
+    return out, contract
+
+
+class NumericPreprocessor(nn.Module):
+    """Persistent tensor transform shared by training, export, and online inference.
+
+    Identity defaults preserve old checkpoints. New checkpoints carry the complete
+    transform as buffers, including when loaded by the existing online constructor.
+    """
+    def __init__(self, columns, preprocessing=None):
+        super().__init__()
+        specs = (preprocessing or {}).get("columns", {})
+        if preprocessing is not None and any(col not in specs for col in columns):
+            raise ValueError("Preprocessing contract is missing model input columns")
+        self.register_buffer("mean", torch.tensor([specs.get(c, {}).get("mean", 0.) for c in columns], dtype=torch.float32))
+        self.register_buffer("scale", torch.tensor([specs.get(c, {}).get("scale", 1.) for c in columns], dtype=torch.float32))
+        self.register_buffer("log_mask", torch.tensor([specs.get(c, {}).get("log1p", False) for c in columns], dtype=torch.bool))
+
+    def forward(self, values):
+        values = torch.nan_to_num(values.float(), nan=0., posinf=0., neginf=0.)
+        values = torch.where(self.log_mask, torch.log1p(values.clamp_min(0.)), values)
+        return (values - self.mean) / self.scale
+
+
+def numeric_feature_columns(scene):
+    counts = ["imp_num", "click_num", "like_num", "collect_num", "comment_num", "share_num",
+              "accum_like_num", "accum_collect_num", "accum_comment_num", "view_time", "valid_view_times",
+              "full_view_times", f"imp_{scene}_num", f"click_{scene}_num", f"{scene}_like_num",
+              f"{scene}_collect_num", f"{scene}_comment_num", f"{scene}_share_num", f"{scene}_follow_num", f"{scene}_view_time"]
+    rates = ["ctr", "like_rate", "collect_rate", "comment_rate", "share_rate", "valid_view_time_rate",
+             "full_view_time_rate", f"{scene}_ctr", f"{scene}_like_rate", f"{scene}_collect_rate",
+             f"{scene}_share_rate", f"{scene}_follow_rate", f"{scene}_view_time_rate"]
+    basic = ["video_duration", "video_height", "video_width", "image_num", "content_length", "commercial_flag"]
+    user = ["fans_num", "follows_num"] + [f"dense_feat{i}" for i in range(1, 41)]
+    item = basic + counts + rates
+    return user, item, counts + basic + user[:2]
 
 
 def split_by_session_idx(df: pd.DataFrame, val_ratio: float = 0.2, seed: int = SEED):
@@ -148,6 +199,40 @@ def split_by_session_idx(df: pd.DataFrame, val_ratio: float = 0.2, seed: int = S
     val_df = df[df["session_idx"].isin(val_sessions)].copy()
     return train_df, val_df
 
+
+
+def split_by_time(df, req_col, test_start, val_ratio=0.2):
+    """Whole-session chronological split; exclude sessions crossing either boundary."""
+    if not 0 < val_ratio < 1 or not np.isfinite(test_start):
+        raise ValueError("Invalid chronological split configuration")
+    if df.groupby(req_col)["session_idx"].nunique().gt(1).any():
+        raise ValueError("A request belongs to multiple sessions")
+    timestamps = pd.to_numeric(df["event_timestamp"], errors="coerce")
+    if not np.isfinite(timestamps).all():
+        raise ValueError("Missing request timestamps")
+    sessions = df.assign(_time=timestamps).groupby("session_idx")._time.agg(["min", "max"])
+    historical = sessions[sessions["max"] < test_start].sort_values("max")
+    if len(historical) < 2:
+        raise ValueError("Insufficient historical sessions")
+    index = max(1, min(len(historical)-1, int(len(historical)*(1-val_ratio))))
+    boundary = float(historical.iloc[index]["max"])
+    fit_ids = sessions.index[sessions["max"] < boundary]
+    val_ids = sessions.index[(sessions["min"] >= boundary) & (sessions["max"] < test_start)]
+    fit, val = df[df.session_idx.isin(fit_ids)].copy(), df[df.session_idx.isin(val_ids)].copy()
+    if fit.empty or val.empty or fit.event_timestamp.max() >= val.event_timestamp.min():
+        raise ValueError("Chronological split is empty or overlaps")
+    return fit, val
+
+
+def disable_unverified_item_statistics(frame, scene):
+    """No point-in-time lineage exists for cumulative item count/rate snapshots."""
+    out = frame.copy()
+    _, item_cols, _ = numeric_feature_columns(scene)
+    basic = {"video_duration", "video_height", "video_width", "image_num", "content_length", "commercial_flag"}
+    for col in item_cols:
+        if col not in basic:
+            out[col] = 0.
+    return out
 
 def resolve_neg_mode(df: pd.DataFrame, requested_mode: str):
     """解析负样本模式：auto/easy/hard，并返回 (resolved_mode, hard_col)。"""
@@ -327,6 +412,12 @@ class MMapStore:
         return torch.from_numpy(batch)
 
 
+def query_store_for_split(split, cache_dir=None, device="cpu"):
+    raw_path = BASE_DIR / "datasets" / f"search_{split}" / "train-00000-of-00001.parquet"
+    requests = pd.read_parquet(raw_path, columns=["search_idx", "query"])
+    return build_search_query_store(requests, cache_dir or RESULT_DIR / "query_text_cache", device=device)
+
+
 # =============================
 # 4. 数据集
 # =============================
@@ -462,9 +553,12 @@ class DSSMDataset(Dataset):
 # 5. 模型
 # =============================
 class DSSMModel(nn.Module):
-    def __init__(self, scene, cat_vocabs, item_dense_dim, user_dense_dim):
+    def __init__(self, scene, cat_vocabs, item_dense_dim, user_dense_dim, preprocessing=None):
         super().__init__()
         self.scene = scene
+        user_cols, item_cols, _ = numeric_feature_columns(scene)
+        self.user_numeric = NumericPreprocessor(user_cols, preprocessing)
+        self.item_numeric = NumericPreprocessor(item_cols[:item_dense_dim], preprocessing)
         if self.scene == "rec":
             self.seq_input_proj = nn.Linear(EMB_DIM, SEQ_TOWER_DIM)
             self.seq_gru = nn.GRU(SEQ_TOWER_DIM, SEQ_TOWER_DIM // 2, batch_first=True, bidirectional=True)
@@ -530,6 +624,7 @@ class DSSMModel(nn.Module):
             dim=1,
         )
 
+        u_dense = self.user_numeric(u_dense)
         seq_repr = None
         if self.scene == "rec":
             if seq_tokens is None:
@@ -567,7 +662,7 @@ class DSSMModel(nn.Module):
             dim=1,
         )
 
-        combined = torch.cat([e1, e2, e3, batch_data["dense_stats"], text_vecs, img_vecs], dim=1)
+        combined = torch.cat([e1, e2, e3, self.item_numeric(batch_data["dense_stats"]), text_vecs, img_vecs], dim=1)
         return F.normalize(self.item_mlp(combined), p=2, dim=1)
 
     @staticmethod
@@ -1047,6 +1142,7 @@ def export_request_embeddings(model, stores, scene, model_tag, batch_size=2048):
             continue
 
         req_df = pd.read_parquet(feat_path, columns=use_cols)
+        query_store = query_store_for_split(split) if scene == "search" else None
         req_df["recent_clicked_note_idxs"] = req_df["recent_clicked_note_idxs"].apply(
             lambda x: x.tolist() if isinstance(x, np.ndarray) else (x if isinstance(x, list) else [])
         )
@@ -1100,11 +1196,7 @@ def export_request_embeddings(model, stores, scene, model_tag, batch_size=2048):
                     ),
                 }
                 if scene == "search":
-                    sq_store = stores.get("search_query")
-                    if sq_store is not None:
-                        user_batch["query_vec"] = sq_store.get_batch_vecs(req_ids.tolist()).to(DEVICE, non_blocking=True)
-                    else:
-                        user_batch["query_vec"] = torch.zeros((len(batch_df), EMB_DIM), dtype=torch.float32, device=DEVICE)
+                    user_batch["query_vec"] = query_store.get_batch_vecs(req_ids.tolist()).to(DEVICE, non_blocking=True)
                 with torch.amp.autocast("cuda", enabled=False):
                     req_vec = model.forward_user(user_batch, hist_vecs, seq_tokens=hist_seq_vecs, seq_mask=hist_seq_masks)
                 mmap_arr[start:end] = req_vec.detach().float().cpu().numpy()
@@ -1155,10 +1247,14 @@ def save_tower_checkpoints(
     cat_vocabs: dict[str, int],
     item_dense_dim: int,
     user_dense_dim: int,
+    preprocessing: dict | None = None,
+    output_dir: Path | None = None,
 ) -> None:
-    full_path = MODEL_DIR / f"dssm_{scene}_{model_tag}.pt"
-    user_path = MODEL_DIR / f"dssm_{scene}_{model_tag}_user_tower.pt"
-    item_path = MODEL_DIR / f"dssm_{scene}_{model_tag}_item_tower.pt"
+    destination = Path(output_dir) if output_dir is not None else MODEL_DIR
+    destination.mkdir(parents=True, exist_ok=True)
+    full_path = destination / f"dssm_{scene}_{model_tag}.pt"
+    user_path = destination / f"dssm_{scene}_{model_tag}_user_tower.pt"
+    item_path = destination / f"dssm_{scene}_{model_tag}_item_tower.pt"
 
     torch.save(state_dict, full_path)
 
@@ -1170,11 +1266,12 @@ def save_tower_checkpoints(
         or k.startswith("seq_input_proj")
         or k.startswith("seq_gru")
         or k.startswith("seq_attn")
+        or k.startswith("user_numeric.")
     }
     item_state = {
         k: v
         for k, v in state_dict.items()
-        if k.startswith("i_emb_") or k.startswith("item_mlp")
+        if k.startswith("i_emb_") or k.startswith("item_mlp") or k.startswith("item_numeric.")
     }
 
     common_meta = {
@@ -1186,6 +1283,8 @@ def save_tower_checkpoints(
         "cat_vocabs": cat_vocabs,
         "user_dense_dim": user_dense_dim,
         "item_dense_dim": item_dense_dim,
+        "numeric_preprocessing": preprocessing,
+        "input_contract": "raw_numeric_with_saved_transform_v1" if preprocessing else "legacy",
     }
     torch.save({"state_dict": user_state, "meta": common_meta}, user_path)
     torch.save({"state_dict": item_state, "meta": common_meta}, item_path)
@@ -1219,7 +1318,7 @@ def export_request_embeddings_from_checkpoint(scene: str, model_tag: str) -> Non
         "note_img": MMapStore("note_img_emb", "note_img"),
     }
     if scene == "search":
-        stores["search_query"] = MMapStore("query_text_emb", "search_query")
+        stores["search_query"] = query_store_for_split("train")
     export_request_embeddings(model, stores, scene=scene, model_tag=model_tag)
 
 
@@ -1244,57 +1343,9 @@ def main(
     df = df_all[df_all["click"] == 1].copy()
     logger.info(f"Positive samples after filter: {df.shape}")
 
-    # item 列定义
-    count_cols = [
-        "imp_num",
-        "click_num",
-        "like_num",
-        "collect_num",
-        "comment_num",
-        "share_num",
-        "accum_like_num",
-        "accum_collect_num",
-        "accum_comment_num",
-        "view_time",
-        "valid_view_times",
-        "full_view_times",
-        f"imp_{scene}_num",
-        f"click_{scene}_num",
-        f"{scene}_like_num",
-        f"{scene}_collect_num",
-        f"{scene}_comment_num",
-        f"{scene}_share_num",
-        f"{scene}_follow_num",
-        f"{scene}_view_time",
-    ]
-
-    rate_cols = [
-        "ctr",
-        "like_rate",
-        "collect_rate",
-        "comment_rate",
-        "share_rate",
-        "valid_view_time_rate",
-        "full_view_time_rate",
-        f"{scene}_ctr",
-        f"{scene}_like_rate",
-        f"{scene}_collect_rate",
-        f"{scene}_share_rate",
-        f"{scene}_follow_rate",
-        f"{scene}_view_time_rate",
-    ]
-
-    # 基础计时/长度等也是计数类，按 log1p + z-score
-    item_basic_cols = ["video_duration", "video_height", "video_width", "image_num", "content_length", "commercial_flag"]
-
-    dense_feat_cols = [f"dense_feat{i}" for i in range(1, 41)]
-    item_dense_cols = item_basic_cols + count_cols + rate_cols
-    user_norm_cols = ["fans_num", "follows_num"] + dense_feat_cols
-
-    # 需要 log1p 的列：计数类 + 用户计数 + item_basic
-    log_cols = list(dict.fromkeys(count_cols + item_basic_cols + ["fans_num", "follows_num"]))
-    # 需要 z-score 的列：计数（含 log 后）、比率、dense_feat
-    norm_cols = list(dict.fromkeys(item_dense_cols + user_norm_cols + rate_cols))
+    user_norm_cols, item_dense_cols, log_cols = numeric_feature_columns(scene)
+    dense_feat_cols = user_norm_cols[2:]
+    norm_cols = item_dense_cols + user_norm_cols
 
     # 填充缺失
     df_all["recent_clicked_note_idxs"] = df_all["recent_clicked_note_idxs"].apply(
@@ -1318,22 +1369,31 @@ def main(
     model_tag = "hard" if resolved_neg_mode == "hard" else "easy"
     logger.info(f"Negative mode: requested={neg_mode}, resolved={resolved_neg_mode}, hard_col={hard_neg_col}")
 
+    # Official test establishes only the cutoff; its labels never enter fitting/selection.
+    raw_test_name = "search_test" if scene == "search" else "recommendation_test"
+    details_col = "search_result_details_with_idx" if scene == "search" else "rec_result_details_with_idx"
+    time_key = "search_timestamp" if scene == "search" else "request_timestamp"
+    raw_test = pd.read_parquet(BASE_DIR / "datasets" / raw_test_name / "train-00000-of-00001.parquet", columns=[details_col])
+    test_start = min(float(item[time_key]) for details in raw_test[details_col] for item in details)
+    df_all = disable_unverified_item_statistics(df_all, scene)
+    fit_raw, val_raw = split_by_time(df_all, req_col, test_start, val_ratio=0.2)
+    overlap = set(fit_raw[req_col]) & set(val_raw[req_col])
+    if overlap:
+        raise ValueError("A request crosses the fit/validation session boundary")
+    preprocessing = fit_numeric_preprocessing(fit_raw, log_cols, norm_cols)
+    train_df = fit_raw[fit_raw["click"] == 1].copy()
+    val_df = val_raw[val_raw["click"] == 1].copy()
+
     # 负样本采样分布（Easy Neg）：基于原始 imp_num，优先使用 click=0
-    neg_df_raw = df_all[df_all["click"] == 0]
+    neg_df_raw = fit_raw[fit_raw["click"] == 0]
     if len(neg_df_raw) == 0:
-        neg_df_raw = df_all  # 兜底
+        neg_df_raw = fit_raw  # 兜底
     neg_item_counts = neg_df_raw.groupby("note_idx")["imp_num"].sum().fillna(0) + 1
     item_pool = neg_item_counts.index.tolist()
     neg_sampling_probs = torch.tensor(np.power(neg_item_counts.values, 0.75), dtype=torch.float32)
     neg_sampling_probs = torch.clamp(neg_sampling_probs, min=1e-8)
     neg_sampling_probs /= neg_sampling_probs.sum()
 
-    # 归一化 (用全量数据估计均值方差，再切分正样本子集)
-    df_all, _ = log1p_and_zscore(df_all, cols_log=log_cols, cols_norm=norm_cols)
-    df = df_all[df_all["click"] == 1].copy()
-
-    # 训练/验证划分：按 session_idx 分组切分
-    train_df, val_df = split_by_session_idx(df, val_ratio=0.2, seed=SEED)
     logger.info(f"Train {train_df.shape}, Val {val_df.shape}")
 
     # 向量内存索引
@@ -1342,14 +1402,14 @@ def main(
         "note_img": MMapStore("note_img_emb", "note_img"),
     }
     if scene == "search":
-        stores["search_query"] = MMapStore("query_text_emb", "search_query")
+        stores["search_query"] = query_store_for_split("train")
 
     # item_meta 构建：用特征表填充已知统计特征，并扩展到全量 note 向量集合
     full_note_ids = sorted({
         int(k)
         for k in set(stores["note_text"].id2pos.keys()) | set(stores["note_img"].id2pos.keys())
     })
-    item_meta = build_item_meta(df_all, scene, item_dense_cols, full_note_ids=full_note_ids)
+    item_meta = build_item_meta(fit_raw, scene, item_dense_cols, full_note_ids=full_note_ids)
     logger.info(
         "Item meta coverage: feature_items=%d, full_items=%d",
         int(df_all["note_idx"].nunique()),
@@ -1443,7 +1503,7 @@ def main(
         user_dense_dim += SEQ_TOWER_DIM  # + rec sequence tower
     item_dense_dim = len(item_dense_cols)
 
-    model = DSSMModel(scene, cat_vocabs, item_dense_dim, user_dense_dim).to(DEVICE)
+    model = DSSMModel(scene, cat_vocabs, item_dense_dim, user_dense_dim, preprocessing=preprocessing).to(DEVICE)
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=2, factor=0.5)
     scaler = torch.amp.GradScaler("cuda", enabled=DEVICE.type == "cuda")
@@ -1521,6 +1581,7 @@ def main(
             cat_vocabs=cat_vocabs,
             item_dense_dim=item_dense_dim,
             user_dense_dim=user_dense_dim,
+            preprocessing=preprocessing,
         )
         logger.info(
             f"Best model saved after training: dssm_{scene}_{model_tag}.pt "

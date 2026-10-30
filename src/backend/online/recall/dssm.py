@@ -142,7 +142,7 @@ class DSSMRecaller:
             except Exception:
                 pass
 
-        self._load_precomputed_request_vecs(train_mod=train_mod)
+        # Rebuild towers from current request inputs; historical vectors may use another query/history.
 
         self.enabled = True
 
@@ -269,6 +269,10 @@ class DSSMRecaller:
     def _get_request_query_vec(self, request_id: int, query_text: str, ref_request_id: int | None = None) -> np.ndarray | None:
         if self.scene != "search":
             return None
+        # A typed query may differ from the reference request. Never reuse another query's vector.
+        q = str(query_text or "").strip()
+        if q:
+            return self._encode_query_vec(q)
         ref_id = int(ref_request_id) if ref_request_id is not None else int(request_id)
         sq_store = self.user_store.get("search_query")
         if sq_store is not None:
@@ -278,10 +282,7 @@ class DSSMRecaller:
                     return qv
             except Exception:
                 pass
-        q = str(query_text or "").strip()
-        if not q:
-            return None
-        return self._encode_query_vec(q)
+        return None
 
     def _build_user_vec(
         self,
@@ -338,10 +339,10 @@ class DSSMRecaller:
             if qvec is not None:
                 user_batch["query_vec"] = torch.from_numpy(qvec)
             else:
-                user_batch["query_vec"] = torch.zeros(1, self.train_mod.EMB_DIM, dtype=torch.float32)
+                return None
 
         with torch.no_grad():
-            user_vec = self.model.forward_user(user_batch, hist)
+            user_vec = self.model.forward_user(user_batch, hist, seq_tokens=hist_seq, seq_mask=hist_mask)
         return user_vec.detach().float().cpu().numpy().astype(np.float32)
 
     def _build_query_only_vec(self, query_text: str) -> np.ndarray | None:
@@ -594,14 +595,11 @@ class DSSMRecaller:
         if self.scene == "search" and len(feat_req) > 0:
             if len(req_cur) > 0 and "query" in req_cur.columns:
                 query_text = str(req_cur.iloc[0].get("query") or "")
+            if not query_text:
+                query_text = str(feat_req.iloc[0].get("query") or "")
             if query_text:
-                need_fill_query = (
-                    "query" not in feat_req.columns
-                    or str(feat_req.iloc[0].get("query") or "").strip() == ""
-                )
-                if need_fill_query:
-                    feat_req = feat_req.copy()
-                    feat_req["query"] = query_text
+                feat_req = feat_req.copy()
+                feat_req["query"] = query_text
         if len(req_cur) > 0:
             user_idx = int(req_cur.iloc[0]["user_idx"])
         elif len(feat_req) > 0 and "user_idx" in feat_req.columns:
@@ -617,15 +615,12 @@ class DSSMRecaller:
                 ref_request_id = int(pd.to_numeric(feat_req.iloc[0].get("query_ref_request_id", request_id), errors="coerce"))
             except Exception:
                 ref_request_id = int(request_id)
-        # Prefer pre-computed user tower vector; fall back to runtime build
-        user_vec = self._get_precomp_user_vec(int(ref_request_id))
-        if user_vec is None:
-            user_vec = self._build_user_vec(
-                feat_req=feat_req,
-                request_id=int(request_id),
-                user_idx=user_idx,
-                ref_request_id=int(ref_request_id),
-            )
+        user_vec = self._build_user_vec(
+            feat_req=feat_req,
+            request_id=int(request_id),
+            user_idx=user_idx,
+            ref_request_id=int(ref_request_id),
+        )
         if user_vec is None:
             return pd.DataFrame()
 
