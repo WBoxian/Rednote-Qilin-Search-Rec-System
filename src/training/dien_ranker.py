@@ -346,11 +346,20 @@ class AUGRUCell(nn.Module): # 兴趣演化层 (Interest Evolution Layer)
         return h_new
 
 class DIENRanker(nn.Module):
-    def __init__(self, scene, num_feats, embed_dim=768, hidden_dim=256, mlp_dims=[128, 64], dropout=0.2):
+    def __init__(self, scene, num_feats, embed_dim=768, hidden_dim=256, mlp_dims=[128, 64], dropout=0.2, mask_padded_history=False, auxiliary_gradients=False, mask_missing_aux_negatives=True, inference_precision="bf16"):
         super().__init__()
         self.scene = scene
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
+        self.mask_padded_history = bool(mask_padded_history)
+        self.auxiliary_gradients = bool(auxiliary_gradients)
+        self.mask_missing_aux_negatives = bool(mask_missing_aux_negatives)
+        if inference_precision not in {"bf16", "fp32"}:
+            raise ValueError(f"Unknown inference precision: {inference_precision}")
+        self.inference_precision = inference_precision
+        if inference_precision == "fp32":
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
         
         # 1. 数值特征投影
         self.num_feats = num_feats
@@ -432,18 +441,32 @@ class DIENRanker(nn.Module):
         note_img = torch.where(img_missing, note_txt, note_img)
         batch_size, seq_len, _ = seq_embs.shape
 
+        if self.mask_padded_history:
+            # Compact valid history while preserving chronological order, then pack it.
+            valid = seq_embs.abs().sum(dim=-1) > 0
+            lengths = valid.sum(dim=1)
+            positions = torch.arange(seq_len, device=seq_embs.device).expand(batch_size, -1)
+            order = torch.argsort(positions + (~valid).long() * seq_len, dim=1, stable=True)
+            seq_embs = seq_embs.gather(1, order.unsqueeze(-1).expand(-1, -1, self.embed_dim))
         # B. 兴趣抽取层 (Interest Extractor)
         # interest_states: [B, T, H]
-        interest_states, _ = self.gru(seq_embs)
+        if self.mask_padded_history:
+            packed = nn.utils.rnn.pack_padded_sequence(seq_embs, lengths.clamp(min=1).cpu(), batch_first=True, enforce_sorted=False)
+            states, _ = self.gru(packed)
+            interest_states, _ = nn.utils.rnn.pad_packed_sequence(states, batch_first=True, total_length=seq_len)
+        else:
+            interest_states, _ = self.gru(seq_embs)
         
         # C. 计算辅助损失 (Auxiliary Loss)
-        aux_loss = torch.tensor(0.0, device=DEVICE, dtype=torch.float32)
+        aux_loss = torch.tensor(0.0, device=seq_embs.device, dtype=torch.float32)
         if seq_len > 1:
             # 1. 构造正样本对 (Pair)
             current_interests = interest_states[:, :-1, :]   # [B, T-1, H]
             pos_next = seq_embs[:, 1:, :]           # [B, T-1, E]
             # 2. 构造负样本对 (In-group Negative Sampling)
+            aux_negative_valid = None
             if "aux_neg_note_text_emb" in features:
+                aux_negative_valid = features["aux_neg_note_text_emb"].abs().sum(dim=-1) > 1e-6
                 # 使用曝光未点击候选抽样得到的 hard negatives（同请求）
                 neg_next = features["aux_neg_note_text_emb"].unsqueeze(1).expand(-1, seq_len - 1, -1)
             elif batch_y is not None and batch_g is not None:
@@ -451,6 +474,7 @@ class DIENRanker(nn.Module):
                 group_mask = (batch_g.unsqueeze(0) == batch_g.unsqueeze(1)) # [B, B]
                 label_mask = (batch_y <= 0).unsqueeze(0).expand(batch_size, batch_size) # [B, B]
                 valid_neg_mask = group_mask & label_mask # [B, B]
+                aux_negative_valid = valid_neg_mask.any(dim=1)
                 prob_mask = valid_neg_mask.float()
                 prob_mask[:, 0] += 1e-9 
                 neg_indices = torch.multinomial(prob_mask, 1).squeeze()
@@ -459,9 +483,13 @@ class DIENRanker(nn.Module):
                 neg_next = pos_next[torch.randperm(batch_size)]   # [B, T-1, E]
             # 3. Aux Loss 掩码
             valid_mask = (pos_next.abs().sum(dim=-1) > 1e-6).float().unsqueeze(-1)  # [B, T-1, 1]
+            if self.auxiliary_gradients and self.mask_missing_aux_negatives and aux_negative_valid is not None:
+                # All-click requests have no observed negative: never train against the fallback batch row.
+                valid_mask = valid_mask * aux_negative_valid[:, None, None]
             # 4. 计算 Logits
-            pos_logits = self.aux_net(torch.cat([current_interests.detach(), pos_next], dim=-1))
-            neg_logits = self.aux_net(torch.cat([current_interests.detach(), neg_next], dim=-1))
+            aux_interests = current_interests if self.auxiliary_gradients else current_interests.detach()
+            pos_logits = self.aux_net(torch.cat([aux_interests, pos_next], dim=-1))
+            neg_logits = self.aux_net(torch.cat([aux_interests, neg_next], dim=-1))
             # 5. Masked BCE Loss
             pos_loss = F.binary_cross_entropy_with_logits(
                 pos_logits, torch.ones_like(pos_logits), reduction="none"
@@ -483,12 +511,12 @@ class DIENRanker(nn.Module):
         attn_scores = torch.clamp(F.softmax(attn_scores.masked_fill(~seq_mask, -1e9), dim=1), 1e-6, 1.0) # [B, T]
 
         # E. 兴趣演化层 (Interest Evolution - AUGRU)
-        h_t = torch.zeros(batch_size, self.hidden_dim).to(DEVICE)
+        h_t = torch.zeros(batch_size, self.hidden_dim, device=seq_embs.device)
         for t in range(seq_len):
             current_interests = interest_states[:, t, :] # [B, H]
             current_score = attn_scores[:, t].unsqueeze(1) # [B, 1]
-            h_t = self.augru_cell(current_interests, h_t, current_score)
-            h_t = self.ln_h(h_t)
+            updated = self.ln_h(self.augru_cell(current_interests, h_t, current_score))
+            h_t = torch.where(seq_mask[:, t:t + 1], updated, h_t) if self.mask_padded_history else updated
 
         # F. 特征拼接与 MLP
         # num_feats 先经模型内置 z-score 归一化（buffer 来自训练统计量），再投影。
@@ -497,10 +525,7 @@ class DIENRanker(nn.Module):
         for f in self.num_feats:
             x = features[f]  # [B, 1]
             sd = getattr(self, f"zscore_std_{f}")
-            if sd.item() >= 1e-6:
-                x = (x - getattr(self, f"zscore_mean_{f}")) / (sd + 1e-6)
-            else:
-                x = torch.zeros_like(x)
+            x = torch.where(sd >= 1e-6, (x - getattr(self, f"zscore_mean_{f}")) / (sd + 1e-6), torch.zeros_like(x))
             feat_list.append(self.num_proj[f](x))
             
         if self.scene == "search":
@@ -963,6 +988,7 @@ def main(
         print(f"[ZScore] 统计量已注入 checkpoint ({len(zscore_stats)} 个特征) → {ckpt_path}")
 
     print(f"[DIEN Val] Best NDCG: {score:.6f}\n")
+    val_groups = set(val_fold_df[group_key].astype(int).tolist())
     del tr_fold_df, val_fold_df, val_pred
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -974,7 +1000,6 @@ def main(
         _state = torch.load(ckpt_path, map_location=DEVICE)
         _tmp_model = DIENRanker(scene=scene, num_feats=num_feats).to(DEVICE)
         _tmp_model.load_state_dict(_state)
-        val_groups = set(val_fold_df[group_key].astype(int).tolist())
         val_eval = eval_df[eval_df[group_key].isin(val_groups)].copy()
         val_raw_scores = _score_frame(_tmp_model, val_eval, stores, num_feats, scene, group_key)
         _fused_val, blend_weight, blend_ndcg = _choose_fused_scores(val_eval, val_raw_scores, group_key)
