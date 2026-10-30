@@ -1138,6 +1138,10 @@ class SceneServingState:
             )
         return out
 
+    def fetch_item_features(self, note_ids) -> pd.DataFrame:
+        from backend.online.item_features import get_item_feature_store
+        return get_item_feature_store(BASE_DIR).get(note_ids)
+
     def predict_gbdt(self, cand: pd.DataFrame) -> np.ndarray:
         return self.gbdt_predictor.predict(cand)
 
@@ -2137,6 +2141,7 @@ class SceneServingState:
                 feat_req=feat_req,
                 gbdt_topn=self.gbdt_topn,
                 fetch_notes=self._fetch_notes,
+                fetch_item_features=self.fetch_item_features,
                 predict_gbdt=self.predict_gbdt,
                 linkage_ctx=linkage_ctx,
             )
@@ -2398,6 +2403,7 @@ class SceneServingState:
                             feat_req=feat_req,
                             gbdt_topn=self.gbdt_topn,
                             fetch_notes=self._fetch_notes,
+                            fetch_item_features=self.fetch_item_features,
                             predict_gbdt=self.predict_gbdt,
                             linkage_ctx=linkage_ctx,
                         )
@@ -3170,6 +3176,7 @@ class OnlineScenePipeline:
             feat_req=feat_req,
             gbdt_topn=live_gbdt_topn,
             fetch_notes=self.state._fetch_notes,
+            fetch_item_features=self.state.fetch_item_features,
             predict_gbdt=self.state.predict_gbdt,
             linkage_ctx=linkage_ctx,
         )

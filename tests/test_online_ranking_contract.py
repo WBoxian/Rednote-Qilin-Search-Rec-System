@@ -20,6 +20,17 @@ class OnlineRankingTests(unittest.TestCase):
         self.assertEqual(seen,[3,2])
         self.assertEqual(full.note_idx.tolist(),[3,2])
 
+    def test_soft_search_policy_keeps_semantic_tail(self):
+        frame=pd.DataFrame({"note_idx":[1,2,3],"rank":[1,2,3],"gbdt_score":[.9,.8,.7],
+                            "preranking_score":[.9,.8,.7],"query_exact_hit":[1,0,0],
+                            "query_match_score":[3.,0.,0.],"query_term_cover":[1.,0.,0.]})
+        soft,_=run_ranking(frame,1,3,None,enable_dien=False,search_filter_policy="soft")
+        legacy,_=run_ranking(frame,1,3,None,enable_dien=False,search_filter_policy="legacy")
+        self.assertEqual(set(soft.note_idx),{1,2,3})
+        self.assertEqual(legacy.note_idx.tolist(),[1])
+        with self.assertRaises(ValueError):
+            run_ranking(frame,1,3,None,search_filter_policy="unknown")
+
     def test_business_fusion_preserves_dien_training_features(self):
         frame=pd.DataFrame({"note_idx":[1,2],"rank":[1,2],"dssm_score":[1.,0.],
                             "first_route":["ann","swing"]})

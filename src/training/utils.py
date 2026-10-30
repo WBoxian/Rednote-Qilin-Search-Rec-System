@@ -7,11 +7,9 @@ from sklearn.preprocessing import StandardScaler
 
 # 新训练只消费可明确解释的内容特征和上游打分；旧模型按 checkpoint 自带字段加载。
 # 物品发布时间、类别词表和召回模型仍需独立时间血缘核验，此白名单不构成无泄露证明。
-RANKING_STATIC_FEATURES = (
-    "note_type", "video_duration", "video_height", "video_width", "image_num",
-    "content_length", "commercial_flag", "taxonomy1_id_enc", "taxonomy2_id_enc",
-    "taxonomy3_id_enc",
-)
+from backend.online.item_features import STATIC_ITEM_FEATURES
+
+RANKING_STATIC_FEATURES = STATIC_ITEM_FEATURES
 RANKING_RECALL_FEATURES = (
     "rank", "recall_score", "score_ann", "score_swing", "score_usercf",
     "from_ann", "from_swing", "from_usercf", "first_route_id",

@@ -18,8 +18,11 @@ def run_ranking(
     predict_dien,
     history_note_ids: list[int] | None = None,
     enable_dien: bool = True,
+    search_filter_policy: str = "legacy",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """DIEN 精排服务：按 GBDT 候选顺序进入 DIEN，再按 DIEN 分数排序。"""
+    if search_filter_policy not in {"legacy", "soft"}:
+        raise ValueError(f"Unknown Search filter policy: {search_filter_policy}")
     if cand.empty:
         return cand, cand
 
@@ -90,7 +93,7 @@ def run_ranking(
         sort_cols = ["query_strong_match", "final_score", "query_exact_hit", "query_term_cover", "rank"]
         sort_asc = [False, False, False, False, True]
     cand = cand.sort_values(sort_cols, ascending=sort_asc, kind="mergesort").reset_index(drop=True)
-    if "query_strong_match" in cand.columns:
+    if search_filter_policy == "legacy" and "query_strong_match" in cand.columns:
         strong_mask = pd.to_numeric(cand.get("query_strong_match", 0), errors="coerce").fillna(0).astype(int) > 0
         strong_df = cand[strong_mask].copy()
         weak_df = cand[~strong_mask].copy()
