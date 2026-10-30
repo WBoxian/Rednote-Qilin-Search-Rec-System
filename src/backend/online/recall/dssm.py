@@ -58,7 +58,6 @@ class DSSMRecaller:
         self.query_model = None
         self._query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._query_cache_max = 2048
-        self._precomp_user_blocks: list[tuple[np.ndarray, dict[str, int]]] = []
         self.enabled = False
         self._load_assets()
 
@@ -145,57 +144,6 @@ class DSSMRecaller:
         # Rebuild towers from current request inputs; historical vectors may use another query/history.
 
         self.enabled = True
-
-    def _get_precomp_user_vec(self, request_id: int) -> np.ndarray | None:
-        """Return pre-exported request/user tower vector for this request_id."""
-        key = str(int(request_id))
-        for arr, row_map in self._precomp_user_blocks:
-            row = row_map.get(key)
-            if row is None:
-                continue
-            vec = arr[row]
-            if not np.isfinite(vec).all():
-                return None
-            return vec.reshape(1, -1).astype(np.float32)
-        return None
-
-    def _load_precomputed_request_vecs(self, train_mod) -> None:
-        def _candidate_files(split: str) -> list[tuple[Path, Path]]:
-            out = [
-                (
-                    self.deploy_tag_dir / "index" / f"dssm_{self.scene}_{self.tag}_{split}_request_emb.bin",
-                    self.deploy_tag_dir / "index" / f"dssm_{self.scene}_{self.tag}_{split}_request_map.json",
-                )
-            ]
-            if self.scene == "search":
-                out.append(
-                    (
-                        self.deploy_tag_dir / "index" / f"dssm_search_{self.tag}_{split}_query_emb.bin",
-                        self.deploy_tag_dir / "index" / f"dssm_search_{self.tag}_{split}_query_map.json",
-                    )
-                )
-            return out
-
-        seen: set[tuple[str, str]] = set()
-        for split in ["test", "train"]:
-            for emb_p, map_p in _candidate_files(split):
-                key = (str(emb_p), str(map_p))
-                if key in seen or not (emb_p.exists() and map_p.exists()):
-                    continue
-                seen.add(key)
-                try:
-                    with open(map_p, encoding="utf-8") as f:
-                        row_map = {str(k): int(v) for k, v in json.load(f).items()}
-                    n_rows = len(row_map)
-                    if n_rows <= 0:
-                        continue
-                    arr = np.memmap(str(emb_p), dtype="float32", mode="r", shape=(n_rows, train_mod.HIDDEN_DIM))
-                    finite_rate = float(np.isfinite(arr).all(axis=1).mean())
-                    if finite_rate < 0.95:
-                        continue
-                    self._precomp_user_blocks.append((arr, row_map))
-                except Exception:
-                    continue
 
     def _load_query_encoder(self) -> None:
         self.query_tokenizer, self.query_model = get_shared_query_encoder()
