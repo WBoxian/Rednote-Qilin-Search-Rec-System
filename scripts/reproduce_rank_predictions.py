@@ -14,15 +14,21 @@ spec=importlib.util.spec_from_file_location('rank_training',ROOT/'scripts/train_
 training=importlib.util.module_from_spec(spec);spec.loader.exec_module(training)
 
 
+def verify_input_files(root, records):
+    """Content identifies data across machines; touching/copying a file is harmless."""
+    for name, record in records.items():
+        path = Path(root) / name
+        if not path.is_file() or path.stat().st_size != record['bytes'] or sha256(path) != record['sha256']:
+            raise ValueError(f'Frozen data content changed: {name}')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--run',type=Path,required=True)
     parser.add_argument('--query-cache',type=Path);parser.add_argument('--input-manifest',type=Path,required=True)
     args=parser.parse_args();run=args.run.resolve();manifest=json.loads((run/'manifest.json').read_text())
     frozen=json.loads(args.input_manifest.read_text());started=time.monotonic()
-    for name,record in frozen['inputs'].items():
-        path=ROOT/name
-        if path.stat().st_size!=record['bytes'] or path.stat().st_mtime_ns!=record['mtime_ns']:
-            raise ValueError(f'Frozen data changed: {name}')
+    verify_input_files(ROOT, frozen['inputs'])
+
     scene=manifest['scene'];key=manifest['key']
     frame=pd.read_parquet(ROOT/f'features/{scene}_test_features.parquet',columns=[key,'user_idx','note_idx','event_timestamp','click'])
     context=training.contexts(scene,'test',args.query_cache)
