@@ -19,6 +19,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from training.history import HISTORY_ORDER, recent_history_ids
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "outputs/evaluation/optimization_20261031/rec"
@@ -105,7 +106,7 @@ def prepare(out):
         requests["positives"] = requests.positives.apply(lambda x: [] if x is None else list(x))
         requests.to_parquet(out / f"requests_{split}.parquet", index=False)
         con.execute("""SELECT l.* FROM labels l JOIN partitions p USING(gid)
-            WHERE p.partition=?""", [split]).fetchdf().to_parquet(out/f"labels_{split}.parquet",index=False)
+            WHERE p.partition=? ORDER BY l.gid,l.note_idx""", [split]).fetchdf().to_parquet(out/f"labels_{split}.parquet",index=False)
     # Feature row/label audit is exhaustive on the official train before any fit.
     mismatch = con.execute("""WITH f AS (
         SELECT request_idx gid,note_idx,max(click)::INT positive
@@ -144,7 +145,9 @@ def build_graph(clicks, requests, history_weight, max_items=200):
     """Only fit requests enter this weighted implicit-feedback graph."""
     edges = defaultdict(dict)
     for row in clicks[clicks.positive > 0].itertuples():
-        edges[int(row.user_idx)][int(row.note_idx)] = (1., float(row.hi))
+        user, item = int(row.user_idx), int(row.note_idx)
+        previous = edges[user].get(item, (0., -np.inf))
+        edges[user][item] = max(previous, (1., float(row.hi)))
     if history_weight > 0:
         for row in requests.itertuples():
             for item in row.history:
@@ -207,80 +210,58 @@ def build_swing(graph, users, items, topk=200, min_common=2, max_users=200):
 
 
 def query_cf(requests, graph, users, items, swing, config, output, support_path=None):
-    user_pos={int(u):i for i,u in enumerate(users)}
-    item_pos={int(item):i for i,item in enumerate(items)}
-    pop=np.diff(graph.tocsc().indptr)
-    idf=1./np.maximum(np.log1p(pop),1e-6)
-    weighted=graph.multiply(np.sqrt(idf)).tocsr()
-    norms=np.sqrt(weighted.power(2).sum(axis=1)).A1
-    normalized=sparse.diags(1./np.maximum(norms,1e-12))@weighted
-    rows={"swing":[],"usercf":[]}
-    support=[]
+    """Offline and serving share exactly the same fixed-graph CF implementation."""
+    from recall.cf_retrieval import CFGraphRecaller
+    recaller = CFGraphRecaller.from_arrays(graph, users, items, swing, config)
+    rows = {"swing": [], "usercf": []}
+    support = []
     for request in requests.itertuples():
-        history=[int(i) for i in request.history]
-        q=defaultdict(float)
-        for offset,item in enumerate(reversed(history)):
-            if item in item_pos:
-                q[item_pos[item]]+=1./(1.+offset)
-        qcols=np.array(sorted(q),np.int32)
-        qvec=sparse.csr_matrix((np.array([q[x] for x in qcols],np.float32),
-            (np.zeros(len(qcols),np.int32),qcols)),shape=(1,len(items)))
-        sw=(qvec@swing).tocsr()
-        if config["fold_in"]:
-            # Standard history-profile fold-in against a fixed fit user index.
-            query=qvec.multiply(np.sqrt(idf)).tocsr()
-            qnorm=np.sqrt(query.power(2).sum())
-            similarities=(query@normalized.T).tocsr()
-            if qnorm>0: similarities.data/=qnorm
-        elif int(request.user_idx) in user_pos:
-            similarities=(normalized[user_pos[int(request.user_idx)]]@normalized.T).tocsr()
-        else:
-            similarities=sparse.csr_matrix((1,len(users)),dtype=np.float32)
-        # Never make the query user's own fit positives a self-neighbor shortcut.
-        own=user_pos.get(int(request.user_idx))
-        if own is not None:
-            similarities.data[similarities.indices==own]=0.
-            similarities.eliminate_zeros()
-        chosen=top_indices(users[similarities.indices],similarities.data,config["neighbors"])
-        neighbors=similarities.indices[chosen]
-        neigh_scores=similarities.data[chosen]
-        uq=sparse.csr_matrix((neigh_scores,(np.zeros(len(neighbors),np.int32),neighbors)),shape=(1,len(users)))
-        uc=(uq@graph).tocsr()
-        for name,scores in (("swing",sw),("usercf",uc)):
-            order=top_indices(items[scores.indices],scores.data,ROUTE_K)
-            rows[name].extend((int(request.gid),int(items[scores.indices[i]]),float(scores.data[i]),rank)
-                for rank,i in enumerate(order,1))
-        support.append((int(request.gid),len(history),len(q),sum(swing.indptr[i+1]>swing.indptr[i] for i in q),
-            int(request.user_idx) in user_pos,len(neighbors),sw.nnz,uc.nnz))
-    for name,records in rows.items():
-        pd.DataFrame(records,columns=["gid","note_idx","score","rank"]).to_parquet(
-            output/f"{name}.parquet",index=False)
+        routes, info = recaller.score_with_support(int(request.user_idx), request.history, ROUTE_K)
+        for route, scores in routes.items():
+            rows[route].extend((int(request.gid), item, score, rank)
+                for rank, (item, score) in enumerate(scores.items(), 1))
+        support.append({"gid": int(request.gid), **info})
+    for route, records in rows.items():
+        pd.DataFrame(records, columns=["gid", "note_idx", "score", "rank"]).to_parquet(
+            output / f"{route}.parquet", index=False)
     if support_path:
-        pd.DataFrame(support,columns=["gid","history_items","history_items_in_graph","history_items_with_swing_edges",
-            "user_in_fit_graph","user_neighbors","swing_pool_size","usercf_pool_size"]).to_parquet(support_path,index=False)
+        pd.DataFrame(support).to_parquet(support_path, index=False)
 
 
 def metrics(requests, candidates, k=500):
-    # Every positive request remains in denominator even if its route is empty.
-    positives={int(r.gid):set(map(int,r.positives)) for r in requests.itertuples()}
-    ranked=defaultdict(list)
+    """Known-click retention; all original requests retained, not CTR on unexposed negatives."""
+    ranked = defaultdict(dict)
     for row in candidates.itertuples():
-        ranked[int(row.gid)].append((int(row.note_idx),float(row.score)))
-    records=[]
+        gid, item, score = int(row.gid), int(row.note_idx), float(row.score)
+        if item < 0 or not np.isfinite(score):
+            raise ValueError("Invalid candidate")
+        ranked[gid][item] = max(score, ranked[gid].get(item, -np.inf))
+    records = []
     for row in requests.itertuples():
-        truth=positives[int(row.gid)]
-        order=sorted(ranked[int(row.gid)],key=lambda pair:(-pair[1],pair[0]))
-        ranks=[rank for rank,(item,_) in enumerate(order,1) if item in truth]
-        hit=sum(rank<=k for rank in ranks)
-        first=min(ranks,default=10**12)
-        records.append((int(row.gid),int(row.user_idx),len(truth),hit,first,
-            hit/len(truth) if truth else np.nan,1./first if first<=100 else 0.))
-    frame=pd.DataFrame(records,columns=["gid","user_idx","positives","hits","first_hit","recall","mrr100"])
-    valid=frame[frame.positives>0]
-    return {"all_requests":len(frame),"positive_requests":len(valid),
-        "Recall@500":float(valid.recall.mean()),"HitRate@500":float((valid.hits>0).mean()),
-        "MRR@100":float(valid.mrr100.mean()),"positive_hits":int(valid.hits.sum()),
-        "positive_pairs":int(valid.positives.sum())},frame
+        truth = set(map(int, row.positives))
+        order = sorted(ranked[int(row.gid)].items(), key=lambda pair: (-pair[1], pair[0]))
+        ranks = [rank for rank, (item, _) in enumerate(order, 1) if item in truth]
+        first = min(ranks, default=np.inf)
+        hit = sum(rank <= k for rank in ranks)
+        npos = len(truth)
+        dcg = sum(1. / np.log2(rank + 1.) for rank in ranks if rank <= 10)
+        idcg = sum(1. / np.log2(rank + 1.) for rank in range(1, min(npos, 10) + 1))
+        records.append((int(row.gid), int(row.user_idx), npos, hit, first,
+            hit / npos if npos else 0., 1. / first if first <= 100 else 0.,
+            int(first <= 50), sum(rank <= 100 for rank in ranks) / npos if npos else 0.,
+            dcg / idcg if idcg else 0., 1. / first if first <= 10 else 0.,
+            sum(rank <= 500 for rank in ranks) / npos if npos else 0., int(first <= 500)))
+    frame = pd.DataFrame(records, columns=["gid", "user_idx", "positives", "hits", "first_hit",
+        "recall", "mrr100", "hit50", "recall100", "ndcg10", "mrr10", "recall500", "hit500"])
+    result = {"all_requests": len(frame), "positive_requests": int((frame.positives > 0).sum()),
+        "Recall@500": float(frame.recall500.mean()), "HitRate@500": float(frame.hit500.mean()),
+        "MRR@100": float(frame.mrr100.mean()), "MRR@10": float(frame.mrr10.mean()),
+        "HitRate@50": float(frame.hit50.mean()), "Recall@100": float(frame.recall100.mean()),
+        "known_positive_NDCG@10": float(frame.ndcg10.mean()),
+        "positive_hits": int(frame.hits.sum()), "positive_pairs": int(frame.positives.sum())}
+    if k != 500:
+        result[f"Recall@{k}"] = float(frame.recall.mean())
+    return result, frame
 
 
 def cf(out):
@@ -308,6 +289,7 @@ def cf(out):
             sparse.save_npz(cache/"swing.npz",swing)
             write_json(cache/"meta.json",{"history_weight":history_weight,"users":len(users),"items":len(items),
                 "edges":graph.nnz,"swing_edges":swing.nnz,"seconds":time.monotonic()-start,
+                "builder_contract":"max-score-then-latest-time-v2",
                 "fit_requests_sha256":digest(out/"requests_fit.parquet"),
                 "fit_labels_sha256":digest(out/"labels_fit.parquet")})
         swing=sparse.load_npz(cache/"swing.npz")
@@ -446,8 +428,9 @@ def multi_positive_inbatch_loss(user_vectors, item_vectors, item_ids, request_id
 
 
 def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store=None, batch_size=256,
-        loss_contract="same_request_or_same_item_v2"):
-    """Fit only on supplied train fold; choose checkpoint with full-catalog val Recall500.
+        loss_contract="same_request_or_same_item_v2", selection_objective="recall500",
+        mask_unverified_user_dense=False, mask_sequence_padding=False):
+    """Fit only on supplied train fold; choose the caller-declared full-catalog validation objective.
 
     Returns selected metadata. The exact full-catalog validation route is retained;
     a deployable FAISS index is built later from the selected vectors.
@@ -458,6 +441,8 @@ def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store
     from recall import dssm_trainer as trainer
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     if (output/"selected.json").exists(): raise RuntimeError("DSSM selection is already frozen")
+    if selection_objective not in {"recall500", "recall100"}:
+        raise ValueError("Unsupported DSSM validation objective")
     if loss_contract not in {"same_request_or_same_item_v2","same_item_only_v1"}:
         raise ValueError("Unsupported loss contract")
     trainer.set_seed(SEED)
@@ -473,6 +458,9 @@ def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store
     store=get_item_feature_store(ROOT)
     fit=raw_model_frame(fit_frame,store,trainer,scene)
     val=raw_model_frame(validation_frame,store,trainer,scene)
+    if mask_unverified_user_dense:
+        for target in (fit, val):
+            target[["fans_num", "follows_num"] + [f"dense_feat{i}" for i in range(1, 41)]] = 0.
     user_cols,item_cols,log_cols=trainer.numeric_feature_columns(scene)
     preprocessing=trainer.fit_numeric_preprocessing(fit,log_cols,user_cols+item_cols)
     stores={"note_text":trainer.MMapStore("note_text_emb","note_text"),
@@ -495,7 +483,8 @@ def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store
         # Category dictionaries are fixed source preprocessing artifacts, never refitted on validation/test.
         vocabs[name]=max(observed,cat_sizes.get(name,0))
     model=trainer.DSSMModel(scene,vocabs,len(item_cols),42+trainer.EMB_DIM+
-        (trainer.EMB_DIM if scene=="search" else trainer.SEQ_TOWER_DIM),preprocessing=preprocessing).to(device)
+        (trainer.EMB_DIM if scene=="search" else trainer.SEQ_TOWER_DIM),preprocessing=preprocessing,
+        mask_sequence_padding=mask_sequence_padding,mask_user_profile=mask_unverified_user_dense).to(device)
     # ID-only cold entities stay neutral. Fit entities learn offsets from content.
     with torch.no_grad():
         model.u_emb_user.weight.zero_();model.i_emb_item.weight.zero_()
@@ -522,10 +511,12 @@ def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store
         "validation_first_event":float(val.event_timestamp.min()),
         "input_contract":"raw numeric; saved fit-only transform; shared full-catalog static fields; aggregate statistics disabled",
         "loss":"multi-positive in-batch InfoNCE; duplicate item IDs always positive; request positives enabled only for v2; temperature=.07",
-        "loss_contract":loss_contract,
+        "loss_contract":loss_contract, "history_contract":HISTORY_ORDER,
+        "masked_user_dense":bool(mask_unverified_user_dense), "selection_objective":selection_objective,
+        "sequence_padding_contract":"packed_masked_v1" if mask_sequence_padding else "legacy_attention_only_v0",
         "cold_id_policy":"user/item ID tables initialize zero; unseen user mapped to reserved zero-trained ID",
         "unknown_user_id":unknown_user,"known_user_ids":sorted(known_users),"cat_vocabs":vocabs,
-        "normalizer":preprocessing,"selection":"validation full-catalog exact Recall500; epoch tie uses MRR100",
+        "normalizer":preprocessing,"selection":f"validation full-catalog exact {selection_objective}; documented north-star ties",
         "catalog_availability":"snapshot; publication timestamp unavailable",
         "history_time_legality":"provider snapshots without event-level timestamps, not independently verified",
         "source_hashes":{str(path.relative_to(ROOT)):digest(path) for path in
@@ -549,7 +540,9 @@ def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store
         epoch_dir=output/f"epoch_{epoch}";epoch_dir.mkdir(exist_ok=True)
         trainer.save_tower_checkpoints(model.state_dict(),scene,"optimized",vocabs,len(item_cols),
             42+trainer.EMB_DIM+(trainer.EMB_DIM if scene=="search" else trainer.SEQ_TOWER_DIM),
-            preprocessing=preprocessing,output_dir=epoch_dir)
+            preprocessing=preprocessing,output_dir=epoch_dir,
+            extra_meta={"masked_user_dense":bool(mask_unverified_user_dense),"loss_contract":loss_contract,
+                "unknown_user_id":unknown_user,"known_user_ids":sorted(known_users)})
         vectors=export_catalog(model,store,item_ids,stores,trainer,scene,epoch_dir/"item_vectors.bin")
         ids,queries=encode_requests(model,val,stores,scene,unknown_user,known_users)
         np.save(epoch_dir/"validation_request_ids.npy",ids);np.save(epoch_dir/"validation_vectors.npy",queries)
@@ -560,7 +553,8 @@ def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store
         entry={"epoch":epoch,"mean_loss":float(np.mean(losses)),"seconds":time.monotonic()-start,**score}
         logs.append(entry);write_json(output/"epochs.json",logs)
         print(scene,"epoch result",entry,flush=True)
-        objective=(score["Recall@500"],score["MRR@100"])
+        objective=((score["Recall@100"],score["HitRate@50"],score["known_positive_NDCG@10"],score["MRR@100"])
+            if selection_objective == "recall100" else (score["Recall@500"],score["MRR@100"]))
         if best is None or objective>best:
             best=objective
             selected={"epoch":epoch,"directory":str(epoch_dir),"validation":score,
@@ -571,14 +565,17 @@ def train_dssm(scene, fit_frame, validation_frame, output, epochs=3, query_store
     return selected
 
 
-def train(out,epochs=3,loss_contract="same_request_or_same_item_v2"):
+def train(out,epochs=3,loss_contract="same_request_or_same_item_v2", feature_path=None,
+        selection_objective="recall500",mask_unverified_user_dense=False,mask_sequence_padding=False):
     parts=pd.read_parquet(out/"partitions.parquet")
-    frame=pd.read_parquet(ROOT/"features/rec_train_features.parquet")
+    frame=pd.read_parquet(feature_path or ROOT/"features/rec_train_features.parquet")
     selected={}
     for split in ("fit","validation"):
         ids=set(parts.loc[parts.partition==split,"gid"])
         selected[split]=frame[frame.request_idx.isin(ids)].copy()
-    train_dssm("rec",selected["fit"],selected["validation"],out/"dssm",epochs=epochs,loss_contract=loss_contract)
+    train_dssm("rec",selected["fit"],selected["validation"],out/"dssm",epochs=epochs,loss_contract=loss_contract,
+        selection_objective=selection_objective,mask_unverified_user_dense=mask_unverified_user_dense,
+        mask_sequence_padding=mask_sequence_padding)
 
 
 def retrieve_index(index, request_ids, query_vectors, item_ids, output):
@@ -595,7 +592,7 @@ def retrieve_index(index, request_ids, query_vectors, item_ids, output):
     return result
 
 
-def index_dssm(out):
+def index_dssm(out, selection_objective="recall500"):
     """Index centroids train on fit exposure item vectors; nprobe selected on validation."""
     import faiss
     selected=json.loads((out/"dssm/selected.json").read_text())
@@ -640,7 +637,8 @@ def index_dssm(out):
         values.append({"nprobe":nprobe,**metric})
         write_json(directory/"validation_grid.json",values)
         print("index nprobe",nprobe,metric,flush=True)
-    choice=max(values,key=lambda row:(row["Recall@500"],row["MRR@100"],-row["nprobe"]))
+    choice=max(values,key=lambda row: ((row["Recall@100"],row["HitRate@50"],row["known_positive_NDCG@10"],-row["nprobe"])
+        if selection_objective == "recall100" else (row["Recall@500"],row["MRR@100"],-row["nprobe"])))
     write_json(directory/"selected.json",choice)
 
 

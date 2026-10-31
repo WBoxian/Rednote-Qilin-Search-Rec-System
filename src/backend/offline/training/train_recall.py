@@ -39,7 +39,6 @@ def run_train_recall(
     skip_faiss: bool,
 ) -> None:
     from recall.build_faiss_ivfpq import build_faiss_index  # noqa: PLC0415
-    from recall.build_seq_transition_index import build_seq_transition_for_scene
     from recall.build_swing_index import build_swing_for_scene
     from recall.build_usercf_index import build_usercf_for_scene
     from recall.cf_shared_index import ensure_user_item_index
@@ -50,9 +49,6 @@ def run_train_recall(
     if not skip_cf:
         print(f"[Offline/Training/Recall] ensure_user_item_index(scene={scene}, split=train)")
         ensure_user_item_index(scene=scene, split="train", use_cache=True, rebuild=False)
-        if scene == "rec":
-            print(f"[Offline/Training/Recall] build_seq_transition_for_scene(scene={scene}, split=train)")
-            build_seq_transition_for_scene(scene=scene, split="train", topk=400, max_hist_len=20)
         print(f"[Offline/Training/Recall] build_usercf_for_scene(scene={scene}, split=train)")
         build_usercf_for_scene(
             scene=scene,

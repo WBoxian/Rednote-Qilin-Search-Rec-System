@@ -60,6 +60,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]  # Qilin/
 if str(BASE_DIR / "src") not in sys.path:
     sys.path.insert(0, str(BASE_DIR / "src"))
 from recall.query_encoding import build_search_query_store
+from training.history import HISTORY_ORDER, recent_history_ids, history_ids_oldest_first
 
 EMB_DIR = BASE_DIR / "embeddings"
 FEAT_DIR = BASE_DIR / "features"
@@ -350,8 +351,14 @@ def summarize_history_sequence(vecs: torch.Tensor, recent_window: int = HIST_REC
     return F.normalize(summary, p=2, dim=0)
 
 
-def build_history_sequence_from_ids(history_ids: list[int], stores: dict[str, object], max_len: int = SEQ_MAX_LEN) -> tuple[torch.Tensor, torch.Tensor]:
-    ids = [int(x) for x in history_ids if int(x) >= 0]
+def build_history_sequence_from_ids(history_ids: list[int], stores: dict[str, object], max_len: int = SEQ_MAX_LEN,
+        history_contract: str = HISTORY_ORDER) -> tuple[torch.Tensor, torch.Tensor]:
+    if history_contract == HISTORY_ORDER:
+        ids = history_ids_oldest_first(history_ids, max_len)
+    elif history_contract == "legacy_raw_order_v0":
+        ids = recent_history_ids(history_ids, None)[-max(1, int(max_len)):]
+    else:
+        raise ValueError(f"Unknown DSSM history contract: {history_contract}")
     if not ids:
         return torch.zeros(max_len, EMB_DIM, dtype=torch.float32), torch.zeros(max_len, dtype=torch.float32)
     ids = ids[-max(1, int(max_len)) :]
@@ -367,8 +374,14 @@ def build_history_sequence_from_ids(history_ids: list[int], stores: dict[str, ob
     return seq, mask
 
 
-def build_history_summary_from_ids(history_ids: list[int], stores: dict[str, object]) -> torch.Tensor:
-    ids = [int(x) for x in history_ids if int(x) >= 0]
+def build_history_summary_from_ids(history_ids: list[int], stores: dict[str, object],
+        history_contract: str = HISTORY_ORDER) -> torch.Tensor:
+    if history_contract == HISTORY_ORDER:
+        ids = history_ids_oldest_first(history_ids, SEQ_MAX_LEN)
+    elif history_contract == "legacy_raw_order_v0":
+        ids = recent_history_ids(history_ids, None)
+    else:
+        raise ValueError(f"Unknown DSSM history contract: {history_contract}")
     if not ids:
         return torch.zeros(EMB_DIM, dtype=torch.float32)
     text_vecs = stores["note_text"].get_batch_vecs(ids)
@@ -478,8 +491,7 @@ class DSSMDataset(Dataset):
 
     def __getitem__(self, idx):
         # 用户侧输入
-        history_ids = self.history[idx] or []
-        history_ids = history_ids[-SEQ_MAX_LEN:]
+        history_ids = recent_history_ids(self.history[idx], SEQ_MAX_LEN)
         user_input = {
             "user_idx": self.user_idx[idx],
             "req_id": self.req_ids[idx],
@@ -553,9 +565,13 @@ class DSSMDataset(Dataset):
 # 5. 模型
 # =============================
 class DSSMModel(nn.Module):
-    def __init__(self, scene, cat_vocabs, item_dense_dim, user_dense_dim, preprocessing=None):
+    def __init__(self, scene, cat_vocabs, item_dense_dim, user_dense_dim, preprocessing=None,
+            mask_sequence_padding=False, mask_user_profile=False):
         super().__init__()
         self.scene = scene
+        self.register_buffer("user_mask_profile", torch.tensor(bool(mask_user_profile)))
+        if scene == "rec":
+            self.register_buffer("seq_mask_padding", torch.tensor(bool(mask_sequence_padding)))
         user_cols, item_cols, _ = numeric_feature_columns(scene)
         self.user_numeric = NumericPreprocessor(user_cols, preprocessing)
         self.item_numeric = NumericPreprocessor(item_cols[:item_dense_dim], preprocessing)
@@ -597,6 +613,16 @@ class DSSMModel(nn.Module):
             nn.Linear(512, HIDDEN_DIM),
         )
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs):
+        # Older checkpoints retain their actual trained behavior, including legacy padding.
+        for name in ("user_mask_profile", "seq_mask_padding"):
+            key = prefix + name
+            if hasattr(self, name) and key not in state_dict:
+                state_dict[key] = torch.zeros_like(getattr(self, name), dtype=torch.bool)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs)
+
     @staticmethod
     def _safe_index(x: torch.Tensor, vocab_size: int):
         # 将非法索引裁剪到合法区间，避免 CUDA embedding 越界
@@ -624,6 +650,8 @@ class DSSMModel(nn.Module):
             dim=1,
         )
 
+        if bool(self.user_mask_profile.item()):
+            u_dense = torch.zeros_like(u_dense)
         u_dense = self.user_numeric(u_dense)
         seq_repr = None
         if self.scene == "rec":
@@ -631,12 +659,32 @@ class DSSMModel(nn.Module):
                 seq_repr = torch.zeros(history_vecs.shape[0], SEQ_TOWER_DIM, dtype=history_vecs.dtype, device=history_vecs.device)
             else:
                 seq_x = self.seq_input_proj(seq_tokens.float())
-                seq_out, _ = self.seq_gru(seq_x)
-                attn_logits = self.seq_attn(seq_out).squeeze(-1)
-                if seq_mask is not None:
-                    attn_logits = attn_logits.masked_fill(seq_mask <= 0, -1e4)
-                attn = torch.softmax(attn_logits, dim=1).unsqueeze(-1)
-                seq_repr = (seq_out * attn).sum(dim=1)
+                if bool(self.seq_mask_padding.item()):
+                    valid = torch.ones(seq_tokens.shape[:2], dtype=torch.bool, device=seq_tokens.device) if seq_mask is None else seq_mask > 0
+                    if valid.shape != seq_tokens.shape[:2]:
+                        raise ValueError("Sequence mask shape mismatch")
+                    lengths = valid.sum(dim=1).long()
+                    expected = torch.arange(seq_tokens.shape[1], device=seq_tokens.device)[None, :] < lengths[:, None]
+                    if not torch.equal(valid, expected):
+                        raise ValueError("Packed history mask must be a valid-token prefix")
+                    packed = nn.utils.rnn.pack_padded_sequence(
+                        seq_x * valid.unsqueeze(-1), lengths.clamp_min(1).cpu(),
+                        batch_first=True, enforce_sorted=False)
+                    packed_out, _ = self.seq_gru(packed)
+                    seq_out, _ = nn.utils.rnn.pad_packed_sequence(
+                        packed_out, batch_first=True, total_length=seq_tokens.shape[1])
+                    logits = self.seq_attn(seq_out).squeeze(-1).masked_fill(~valid, -1e4)
+                    attention = torch.softmax(logits, dim=1) * valid.to(logits.dtype)
+                    attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-8)
+                    seq_repr = (seq_out * attention.unsqueeze(-1)).sum(dim=1)
+                else:
+                    # Explicit legacy branch for weights trained before the packed contract.
+                    seq_out, _ = self.seq_gru(seq_x)
+                    attn_logits = self.seq_attn(seq_out).squeeze(-1)
+                    if seq_mask is not None:
+                        attn_logits = attn_logits.masked_fill(seq_mask <= 0, -1e4)
+                    attn = torch.softmax(attn_logits, dim=1).unsqueeze(-1)
+                    seq_repr = (seq_out * attn).sum(dim=1)
 
         user_parts = [e1, e2, e3, e4, e5, u_dense, history_vecs]
         if seq_repr is not None:
@@ -1249,6 +1297,8 @@ def save_tower_checkpoints(
     user_dense_dim: int,
     preprocessing: dict | None = None,
     output_dir: Path | None = None,
+    history_contract: str = HISTORY_ORDER,
+    extra_meta: dict | None = None,
 ) -> None:
     destination = Path(output_dir) if output_dir is not None else MODEL_DIR
     destination.mkdir(parents=True, exist_ok=True)
@@ -1267,6 +1317,7 @@ def save_tower_checkpoints(
         or k.startswith("seq_gru")
         or k.startswith("seq_attn")
         or k.startswith("user_numeric.")
+        or k in {"seq_mask_padding", "user_mask_profile"}
     }
     item_state = {
         k: v
@@ -1284,8 +1335,13 @@ def save_tower_checkpoints(
         "user_dense_dim": user_dense_dim,
         "item_dense_dim": item_dense_dim,
         "numeric_preprocessing": preprocessing,
+        "history_contract": history_contract,
+        "sequence_padding_contract": "packed_masked_v1" if bool(state_dict.get("seq_mask_padding", torch.tensor(False)).item()) else "legacy_attention_only_v0",
+        "masked_user_dense": bool(state_dict.get("user_mask_profile", torch.tensor(False)).item()),
+        "sequence_order": "oldest_first_v1" if history_contract == HISTORY_ORDER else "legacy_raw_order_v0",
         "input_contract": "raw_numeric_with_saved_transform_v1" if preprocessing else "legacy",
     }
+    common_meta.update(extra_meta or {})
     torch.save({"state_dict": user_state, "meta": common_meta}, user_path)
     torch.save({"state_dict": item_state, "meta": common_meta}, item_path)
     logger.info(f"Tower checkpoints saved: {full_path}, {user_path}, {item_path}")

@@ -14,6 +14,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from training.history import recent_history_ids
+from recall.cf_shared_index import _official_cutoff
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 FEAT_DIR = BASE_DIR / "features"
@@ -41,8 +43,14 @@ def build_seq_transition_for_scene(
     if scene != "rec":
         raise ValueError("sequence transition index 目前只用于 rec 场景")
     feat_path = FEAT_DIR / f"{scene}_{split}_features.parquet"
-    cols = ["recent_clicked_note_idxs", "note_idx", "y_multi"]
+    cols = ["recent_clicked_note_idxs", "note_idx", "y_multi", "event_timestamp"]
     df = pd.read_parquet(feat_path, columns=cols)
+    cutoff = _official_cutoff(scene, split)
+    if cutoff is not None:
+        times = pd.to_numeric(df["event_timestamp"], errors="coerce")
+        if not np.isfinite(times).all():
+            raise ValueError("Transition source event times must be finite")
+        df = df.loc[times < cutoff].copy()
     df = df[df["y_multi"].fillna(0.0) > 0].copy()
 
     transitions: dict[int, dict[int, float]] = defaultdict(dict)
@@ -50,13 +58,12 @@ def build_seq_transition_for_scene(
         target = int(row.note_idx)
         if target < 0:
             continue
-        hist_items = _to_hist_list(row.recent_clicked_note_idxs)
+        hist_items = recent_history_ids(row.recent_clicked_note_idxs, max_hist_len)
         if not hist_items:
             continue
-        hist_items = hist_items[-max(1, int(max_hist_len)) :]
         label_gain = float(max(0.0, float(row.y_multi)))
         label_w = 1.0 + min(2.5, 0.22 * label_gain)
-        for idx, src in enumerate(reversed(hist_items)):
+        for idx, src in enumerate(hist_items):
             src = int(src)
             if src < 0 or src == target:
                 continue

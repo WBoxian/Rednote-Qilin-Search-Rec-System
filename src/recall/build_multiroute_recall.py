@@ -1,22 +1,8 @@
-﻿"""
-澶氳矾鍙洖鐢熸垚鑴氭湰锛圓NN + Swing + UserCF锛夛紝杈撳嚭鍙敤浜庣矖鎺掞紙LambdaMART锛夌殑鍊欓€夎〃銆?
-杈撳叆:
-- 鐢ㄦ埛璇锋眰鏉ヨ嚜 features/{scene}_{split}_features.parquet
-- 绱㈠紩鏉ヨ嚜 outputs/index:
-    - dssm_{scene}_{tag}_ivfpq.faiss
-    - dssm_{scene}_{tag}_row2note.npy
-    - dssm_{scene}_{tag}_item_emb.bin / item_meta.json
-    - (search鍙€? dssm_search_{tag}_{split}_query_emb.bin / query_map.json
-    - swing_{scene}*_i2i_topk.parquet
-    - usercf_{scene}*_u2u_topk.parquet
-    - cf_{scene}_train_user_item_index.pkl
+﻿"""Scene-specific recall builder.
 
-铻嶅悎绛栫暐:
-- 姣忎竴璺厛鍚勮嚜鍙洖 topk锛圓NN / Swing / UserCF锛?- 鍚勮矾鍒嗘暟鍏堝湪璇锋眰鍐呭仛褰掍竴鍖栵紙Min-Max 鍒?[0,1]锛夛紝鍐嶈繘鍏ヨ瀺鍚堬紝淇濊瘉閲忕翰鍙瘮
-- 閫氳繃姣忚矾鏈€灏忛厤棰?+ 鍗曡矾鍗犳瘮涓婇檺锛屾姂鍒跺崟璺富瀵硷紝鏈€鍚庢寜鎬?topk 鎴柇
-
-杈撳嚭:
-- outputs/data/recall_{scene}_{split}_{tag}_multiroute_top{topk}.parquet
+Search consumes DSSM ANN and BM25 only. Recommendation consumes DSSM ANN,
+Swing and UserCF only. Frozen north-star experiment manifests own selected
+model/graph versions and fusion policies; this utility never reads test labels.
 """
 
 from __future__ import annotations
@@ -62,27 +48,24 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from recall.fusion import weighted_rrf
+from training.history import recent_history_ids
 from backend.online.search_query import detect_query_intents, normalize_query_text, seed_query_terms
 
 ROW_FLUSH_SIZE = 200_000
 SEARCH_ROUTE_FUSE_WEIGHTS = {
     "ann": 0.14,
-    "dpr": 0.34,
     "bm25": 0.52,
 }
 SEARCH_SHORT_QUERY_WEIGHTS = {
     "ann": 0.12,
-    "dpr": 0.24,
     "bm25": 0.64,
 }
 SEARCH_LONG_QUERY_WEIGHTS = {
     "ann": 0.16,
-    "dpr": 0.52,
     "bm25": 0.32,
 }
 SEARCH_RECOMMEND_QUERY_WEIGHTS = {
     "ann": 0.20,
-    "dpr": 0.38,
     "bm25": 0.42,
 }
 SEARCH_MERGE_ROUTE_WEIGHTS = {"ann": 0.42, "swing": 1.68, "usercf": 2.28}
@@ -92,7 +75,7 @@ REC_MERGE_ROUTE_WEIGHTS = {"ann": 0.18, "swing": 2.46, "usercf": 2.24}
 def _normalize_weight_map(weights: dict[str, float]) -> dict[str, float]:
     total = float(sum(max(0.0, float(v)) for v in weights.values()))
     if total <= 1e-12:
-        return {"ann": 1.0, "dpr": 1.0, "bm25": 1.0}
+        return {"ann": 1.0, "bm25": 1.0}
     return {str(k): float(max(0.0, float(v)) / total) for k, v in weights.items()}
 
 
@@ -143,7 +126,7 @@ def _resolve_hist_items(
     user_items: dict[int, dict[int, float]],
     limit: int = 20,
 ) -> list[int]:
-    hist_items = _to_list(raw_hist_items)
+    hist_items = recent_history_ids(raw_hist_items, limit)
     if hist_items:
         return hist_items[: max(1, int(limit))]
     user_hist = user_items.get(int(user_idx)) or {}
@@ -249,7 +232,7 @@ def _load_requests(scene: str, split: str) -> tuple[pd.DataFrame, str]:
     if req_data_path is not None:
         req_cols = [req_col, "query"]
         if scene == "search":
-            req_cols += ["bm25_results", "dpr_results", "search_results"]
+            req_cols += ["bm25_results"]
         else:
             req_cols += ["rec_results"]
         try:
@@ -280,13 +263,6 @@ def _load_swing_index(scene: str) -> dict[int, np.ndarray]:
 
 
 
-def _load_seq_transition_index(scene: str) -> dict[int, np.ndarray]:
-    p = _resolve_existing([INDEX_DIR / f"seqtrans_{scene}_train_i2i_topk.parquet"])
-    df = pd.read_parquet(p)
-    out: dict[int, list[tuple[int, float]]] = defaultdict(list)
-    for i, j, s in df[["item_idx", "sim_item_idx", "score"]].itertuples(index=False):
-        out[int(i)].append([int(j), float(s)])
-    return {k: np.array(v, dtype=np.float32) for k, v in out.items()}
 
 
 def _load_usercf_index(scene: str) -> dict[int, np.ndarray]:
@@ -366,43 +342,6 @@ def _load_request_ann_vecs(scene: str, tag: str, split: str, dim: int):
     return None, None
 
 
-def _fuse_search_sources(
-    ann_scores: dict[int, float],
-    bm25_scores: dict[int, float],
-    dpr_scores: dict[int, float],
-    topk: int,
-    route_weights: dict[str, float] | None = None,
-) -> dict[int, float]:
-    weights = _normalize_weight_map(dict(route_weights or SEARCH_ROUTE_FUSE_WEIGHTS))
-    norm_ann = _normalize_route_scores(ann_scores)
-    norm_bm25 = _normalize_route_scores(bm25_scores)
-    norm_dpr = _normalize_route_scores(dpr_scores)
-    union = set(norm_ann) | set(norm_bm25) | set(norm_dpr)
-    if not union:
-        return {}
-    fused: dict[int, float] = {}
-    for note_idx in union:
-        score = (
-            weights["ann"] * float(norm_ann.get(note_idx, 0.0))
-            + weights["dpr"] * float(norm_dpr.get(note_idx, 0.0))
-            + weights["bm25"] * float(norm_bm25.get(note_idx, 0.0))
-        )
-        if note_idx in norm_bm25 and note_idx in norm_dpr:
-            score += 0.14
-        if note_idx in norm_ann and note_idx in norm_bm25:
-            score += 0.08
-        if note_idx in norm_ann and note_idx in norm_dpr:
-            score += 0.04
-        if note_idx in norm_ann and note_idx in norm_bm25 and note_idx in norm_dpr:
-            score += 0.08
-        if score > 0.0:
-            fused[int(note_idx)] = float(score)
-    if not fused:
-        return {}
-    ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)[: max(1, int(topk))]
-    return {int(k): float(v) for k, v in ranked}
-
-
 def _recall_swing(
     hist_items: list[int],
     swing_i2i: dict[int, np.ndarray],
@@ -418,7 +357,7 @@ def _recall_swing(
     n = len(hist_items)
     
     # Apply stronger weight to more recent history items.
-    for idx, it in enumerate(reversed(hist_items)):
+    for idx, it in enumerate(recent_history_ids(hist_items)):
         sim_arr = swing_i2i.get(int(it))
         if sim_arr is None or len(sim_arr) == 0:
             continue
@@ -463,6 +402,16 @@ def _recall_usercf(
         return {}
     import heapq
     return dict(heapq.nlargest(topk, scores.items(), key=lambda x: x[1]))
+
+
+def _ann_score(index, value: float) -> float:
+    """Canonical higher-is-better score for supported Faiss geometries."""
+    metric = int(getattr(index, "metric_type", faiss.METRIC_INNER_PRODUCT))
+    if metric == faiss.METRIC_INNER_PRODUCT:
+        return float(value)
+    if metric == faiss.METRIC_L2:
+        return 1.0 / (1.0 + max(float(value), 0.0))
+    raise ValueError(f"Unsupported ANN metric: {metric}")
 
 
 def _recall_ann(
@@ -518,90 +467,14 @@ def _recall_ann(
     for idx, s in zip(I[0].tolist(), D[0].tolist()):
         if idx < 0 or idx >= len(row2note):
             continue
-        scores[int(row2note[idx])] = float(s)
+        scores[int(row2note[idx])] = _ann_score(ann_index, s)
     return scores
 
 
-def _recall_ann_item_history(
-    hist_items: list[int],
-    ann_index,
-    row2note: np.ndarray,
-    note2row: dict[int, int],
-    item_emb: np.ndarray,
-    topk: int,
-    per_item_topk: int = 180,
-) -> dict[int, float]:
-    if not hist_items:
-        return {}
-    scores: dict[int, float] = {}
-    hist_set = {int(x) for x in hist_items}
-    for idx, item in enumerate(reversed(hist_items[:20])):
-        row = note2row.get(int(item))
-        if row is None:
-            continue
-        q = np.asarray(item_emb[int(row)], dtype=np.float32).reshape(1, -1)
-        q = q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
-        D, I = ann_index.search(q.astype(np.float32), int(max(20, per_item_topk)))
-        decay = 1.0 / (1.0 + idx)
-        for ann_idx, score in zip(I[0].tolist(), D[0].tolist()):
-            if ann_idx < 0 or ann_idx >= len(row2note):
-                continue
-            note_idx = int(row2note[ann_idx])
-            if note_idx in hist_set:
-                continue
-            scores[note_idx] = scores.get(note_idx, 0.0) + decay * float(score)
-    if not scores:
-        return {}
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[: max(1, int(topk))]
-    return {int(k): float(v) for k, v in ranked}
 
 
 
 
-def _recall_ann_from_seed_scores(
-    seed_scores: dict[int, float],
-    ann_index,
-    row2note: np.ndarray,
-    note2row: dict[int, int],
-    item_emb: np.ndarray,
-    topk: int,
-    max_seed: int = 80,
-) -> dict[int, float]:
-    if not seed_scores:
-        return {}
-    ranked_seed = sorted(seed_scores.items(), key=lambda x: x[1], reverse=True)[: max(1, int(max_seed))]
-    rows = []
-    weights = []
-    seed_set = set()
-    for note_idx, score in ranked_seed:
-        row = note2row.get(int(note_idx))
-        if row is None:
-            continue
-        rows.append(int(row))
-        weights.append(float(max(0.0, score)))
-        seed_set.add(int(note_idx))
-    if not rows:
-        return {}
-    vecs = np.asarray(item_emb[rows], dtype=np.float32)
-    ws = np.asarray(weights, dtype=np.float32)
-    if float(ws.sum()) <= 1e-12:
-        ws = np.ones_like(ws, dtype=np.float32)
-    ws = ws / np.maximum(ws.sum(), 1e-12)
-    q = (vecs * ws.reshape(-1, 1)).sum(axis=0, keepdims=True)
-    q = q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
-    dists, idxs = ann_index.search(q.astype(np.float32), int(max(20, topk)))
-    out: dict[int, float] = {}
-    for row_idx, score in zip(idxs[0].tolist(), dists[0].tolist()):
-        if row_idx < 0 or row_idx >= len(row2note):
-            continue
-        note_idx = int(row2note[row_idx])
-        if note_idx in seed_set:
-            continue
-        out[note_idx] = float(score)
-    if not out:
-        return {}
-    ranked = sorted(out.items(), key=lambda x: x[1], reverse=True)[: max(1, int(topk))]
-    return {int(k): float(v) for k, v in ranked}
 
 def _normalize_route_scores(scores: dict[int, float]) -> dict[int, float]:
     """Apply request-local min-max normalization for a single route."""
@@ -623,31 +496,6 @@ def _normalize_route_scores(scores: dict[int, float]) -> dict[int, float]:
     return dict(sorted(norm_scores.items(), key=lambda x: x[1], reverse=True))
 
 
-def _blend_route_scores(
-    primary_scores: dict[int, float],
-    secondary_scores: dict[int, float],
-    primary_weight: float = 1.0,
-    secondary_weight: float = 1.0,
-    overlap_bonus: float = 0.0,
-    topk: int | None = None,
-) -> dict[int, float]:
-    union = set(primary_scores) | set(secondary_scores)
-    if not union:
-        return {}
-    out: dict[int, float] = {}
-    for note_idx in union:
-        score = (
-            float(primary_scores.get(int(note_idx), 0.0)) * float(primary_weight)
-            + float(secondary_scores.get(int(note_idx), 0.0)) * float(secondary_weight)
-        )
-        if int(note_idx) in primary_scores and int(note_idx) in secondary_scores:
-            score += float(overlap_bonus)
-        if score > 0.0:
-            out[int(note_idx)] = float(score)
-    ranked = sorted(out.items(), key=lambda x: x[1], reverse=True)
-    if topk is not None and int(topk) > 0:
-        ranked = ranked[: int(topk)]
-    return {int(k): float(v) for k, v in ranked}
 
 
 def _merge_scores(
@@ -838,10 +686,12 @@ def build_multiroute_recall(
         raise ValueError(f"--merge-order contains invalid routes: {invalid}, allowed={sorted(allowed_routes)}")
 
     req_df, req_col = _load_requests(scene, split)
-    swing_i2i = _load_swing_index(scene)
-    seqtrans_i2i = _load_seq_transition_index(scene) if scene == "rec" else {}
-    usercf_u2u = _load_usercf_index(scene)
-    user_items = _load_user_items(scene)
+    if scene == "rec":
+        swing_i2i = _load_swing_index(scene)
+        usercf_u2u = _load_usercf_index(scene)
+        user_items = _load_user_items(scene)
+    else:
+        swing_i2i, usercf_u2u, user_items = {}, {}, {}
     ann_index, row2note, note2row, item_emb, ann_dim = _load_ann_assets(scene, tag)
     query_ann_emb = None
     req2row = None
@@ -876,15 +726,13 @@ def build_multiroute_recall(
             limit=20,
         )
         has_query_vec = req2row is not None and req_id in req2row
-        if (not hist_items) and (not has_query_vec):
-            continue
 
         req_vec = None
         if has_query_vec and query_ann_emb is not None and req2row is not None:
             req_vec = np.asarray(query_ann_emb[req2row[req_id]], dtype=np.float32)
         ann_scores = _recall_ann(
             scene,
-            [],
+            hist_items if req_vec is None else [],
             ann_index,
             row2note,
             note2row,
@@ -895,89 +743,18 @@ def build_multiroute_recall(
         route_weights = _resolve_merge_route_weights(scene, hist_len=len(hist_items), has_request_vec=has_query_vec)
         if scene == "search":
             bm25_scores = _parse_scored_results(getattr(row, "bm25_results", None), limit=ann_topk)
-            dpr_scores = _parse_scored_results(getattr(row, "dpr_results", None), limit=ann_topk)
             search_route_weights = _resolve_search_route_weights(getattr(row, "query", ""))
             route_weights = {
                 "ann": float(search_route_weights.get("ann", 0.2)),
-                "swing": float(search_route_weights.get("dpr", 0.3)),
+                "swing": 0.0,
                 "usercf": float(search_route_weights.get("bm25", 0.5)),
             }
-            swing_scores = dpr_scores
+            swing_scores = {}
             usercf_scores = bm25_scores
         else:
-            seq_transition_scores = _recall_swing(hist_items, seqtrans_i2i, topk=swing_topk) if seqtrans_i2i else {}
-            seq_transition_ann_scores = _recall_ann_from_seed_scores(
-                seed_scores=seq_transition_scores,
-                ann_index=ann_index,
-                row2note=row2note,
-                note2row=note2row,
-                item_emb=item_emb,
-                topk=swing_topk,
-                max_seed=80,
-            ) if seq_transition_scores else {}
-            seq_scores = _recall_ann_item_history(
-                hist_items,
-                ann_index,
-                row2note,
-                note2row,
-                item_emb,
-                topk=swing_topk,
-            )
-            seq_mean_scores = _recall_ann(
-                scene,
-                hist_items,
-                ann_index,
-                row2note,
-                note2row,
-                item_emb,
-                request_vec=None,
-                topk=swing_topk,
-            )
-            swing_scores = _blend_route_scores(
-                seq_transition_scores,
-                seq_transition_scores,
-                seq_transition_ann_scores,
-                primary_weight=1.0,
-                secondary_weight=0.82,
-                overlap_bonus=0.16,
-                topk=swing_topk,
-            )
-            swing_scores = _blend_route_scores(
-                swing_scores,
-                seq_scores,
-                primary_weight=1.0,
-                secondary_weight=0.78,
-                overlap_bonus=0.14,
-                topk=swing_topk,
-            )
-            swing_scores = _blend_route_scores(
-                swing_scores,
-                seq_mean_scores,
-                primary_weight=1.0,
-                secondary_weight=0.36,
-                overlap_bonus=0.10,
-                topk=swing_topk,
-            )
+            # The active Recommendation chain has exactly DSSM, Swing and UserCF.
+            swing_scores = _recall_swing(hist_items, swing_i2i, topk=swing_topk)
             usercf_scores = _recall_usercf(user_idx, usercf_u2u, user_items, topk=usercf_topk)
-            graph_scores = _recall_swing(hist_items, swing_i2i, topk=swing_topk)
-            if graph_scores:
-                usercf_scores = _blend_route_scores(
-                    usercf_scores,
-                    graph_scores,
-                    primary_weight=0.86,
-                    secondary_weight=0.94,
-                    overlap_bonus=0.08,
-                    topk=usercf_topk,
-                )
-            if swing_scores:
-                swing_scores = _blend_route_scores(
-                    swing_scores,
-                    ann_scores,
-                    primary_weight=1.0,
-                    secondary_weight=0.18,
-                    overlap_bonus=0.04,
-                    topk=swing_topk,
-                )
 
         # Normalize route scores onto a common scale before merging routes.
         ann_scores = _normalize_route_scores(ann_scores)
@@ -1004,10 +781,6 @@ def build_multiroute_recall(
             if scene == "search":
                 if first_route == "usercf":
                     first_route = "bm25"
-                elif first_route == "swing":
-                    first_route = "dpr"
-            elif scene == "rec" and first_route == "swing":
-                first_route = "seq"
             writer.add(
                 (
                     req_id,
