@@ -141,11 +141,12 @@ def package_bundle(args,root:Path=ROOT):
         'selection_split':'train_internal_validation','allow_dpr':False,'training_cutoff_exclusive':cutoff,
         'rank_dir':rank_out.relative_to(root).as_posix(),'recall_dir':recall_out.relative_to(root).as_posix(),
         'input_cap':args.input_cap,'coarse_cap':args.coarse_cap,'recall_policy':policy,
+        'ranking_strategy':getattr(args,'ranking_strategy','learned'),'schema_enabled':getattr(args,'ranking_strategy','learned')!='recall_only',
         'packaging_provenance':{'selected_epoch':selected['epoch'],'selected_dssm_source':str(selected_path.relative_to(root)),
             'selected_dssm_sha256':file_sha256(selected_path),'selected_index_source':str(index_selection_path.relative_to(root)),
             'selected_index_sha256':file_sha256(index_selection_path),'policy_source_sha256':file_sha256(policy_source),
             'rank_manifest_source_sha256':file_sha256(rank_meta),'full_checkpoint_source_sha256':selected['checkpoint_sha256'],
-            'publication':'offline package only; no active promotion'}}
+            'producer_script_sha256':file_sha256(Path(__file__)),'publication':'offline package only; no active promotion'}}
     if scene=='search':
         lexical_out=recall_out/'lexical/bm25.sqlite'
         copy_bound(lexical,lexical_out);copy_bound(lexical.with_suffix(lexical.suffix+'.manifest.json'),lexical_out.with_suffix(lexical_out.suffix+'.manifest.json'))
@@ -168,7 +169,18 @@ def package_bundle(args,root:Path=ROOT):
                 'configuration':policy['cf_config'],'assets':{name:file_sha256(graph/name) for name in ('graph.npz','users.npy','items.npy','swing.npz')}}
             (graph_out/'meta.json').write_text(json.dumps(graph_meta,indent=2))
         policy['cf_graph_dir']=graph_out.relative_to(root).as_posix()
+    if getattr(args,'validation_snapshot',None):
+        snapshot=contained(root,args.validation_snapshot)
+        snapshot_out=output/'evaluation/validation.json';copy_bound(snapshot,snapshot_out)
+        manifest['evaluation']={'validation_snapshot':{'path':snapshot_out.relative_to(root).as_posix(),'sha256':file_sha256(snapshot_out)}}
+        manifest['packaging_provenance']['validation_source_sha256']=file_sha256(snapshot)
     names=required_asset_names(manifest,root)
+    runtime_files=[
+        'backend/online/'+name for name in ['bundle.py','pipeline.py','live_context.py','shared_query_encoder.py','item_features.py',
+            'recall/service.py','recall/dssm.py','preranking/service.py','preranking/gbdt.py','ranking/service.py','ranking/stack.py']]
+    runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py']]
+    runtime_files += ['training/'+name for name in ['rank_stack.py','history.py','dien_ranker.py','scoring.py','recall_prior.py']]
+    names.update('src/'+name for name in runtime_files if (root/'src'/name).is_file())
     manifest['assets']={name:file_sha256(contained(root,name)) for name in sorted(names)}
     manifest['bundle_id']=bundle_identity(manifest)
     validate_manifest(manifest,scene,root,tag=tag)
@@ -182,6 +194,8 @@ def parser():
         result.add_argument('--'+name,type=Path,required=True)
     for name in ['selected-dssm','selected-index','ann-index','rank-manifest','output-dir','bm25-index','query-encoder-dir']:
         result.add_argument('--'+name,type=Path)
+    result.add_argument('--validation-snapshot',type=Path)
+    result.add_argument('--ranking-strategy',choices=['learned','recall_only'],default='learned')
     result.add_argument('--query-encoder-revision');result.add_argument('--nprobe',type=int)
     result.add_argument('--training-cutoff-exclusive',type=int,required=True)
     result.add_argument('--input-cap',type=int,required=True);result.add_argument('--coarse-cap',type=int,required=True)

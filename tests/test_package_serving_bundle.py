@@ -110,4 +110,15 @@ class PackageServingBundleTests(unittest.TestCase):
             source=fixture_root/'embeddings/note_text_emb/note_text.bin';source.write_bytes(b'tampered fixture')
             with self.assertRaisesRegex(ValueError,'asset mismatch'):validate_manifest(manifest,'rec',fixture_root)
 
+    def test_runtime_code_is_bound_and_recall_only_budget_is_explicit(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-package-test-') as temporary_test_dir:
+            fixture_root=Path(temporary_test_dir);args,_,_=fixture(fixture_root)
+            source=fixture_root/'src/backend/online/pipeline.py';source.parent.mkdir(parents=True);source.write_text('original runtime')
+            args.ranking_strategy='recall_only';args.input_cap=args.coarse_cap=500
+            _,manifest=package_bundle(args,fixture_root)
+            self.assertIn('src/backend/online/pipeline.py',manifest['assets'])
+            self.assertFalse(manifest['schema_enabled'])
+            source.write_text('modified runtime')
+            with self.assertRaisesRegex(ValueError,'asset mismatch'):validate_manifest(manifest,'rec',fixture_root)
+
 if __name__=='__main__':unittest.main()

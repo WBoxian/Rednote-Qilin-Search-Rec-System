@@ -10,7 +10,6 @@ const behaviorInflight = new Map<string, Promise<any>>();
 const behaviorLastTs = new Map<string, number>();
 const queryInflight = new Map<string, Promise<any>>();
 const queryCache = new Map<string, { ts: number; data: any }>();
-const METRICS_TTL_MS = 5 * 60_000;
 const VALIDATION_TTL_MS = 15 * 60_000;
 const NOTE_TTL_MS = 10 * 60_000;
 const USER_TTL_MS = 5 * 60_000;
@@ -274,17 +273,21 @@ export const api = {
       `/api/metrics?scene=${scene}`
       + `&sample_n=${Math.max(2, Math.min(2000, Number(sampleN) || 1000))}`
       + `&include_val=${includeVal ? 1 : 0}`;
-    return cachedReq(path, METRICS_TTL_MS);
+    return req(path);
   },
-  validation: (scene: string, maxGroups: number = 240, exampleLimit: number = 24, userIdx?: number | null) => {
+  validation: (scene: string, maxGroups: number = 240, exampleLimit: number = 24, userIdx?: number | null, bundleId: string = '', force = false) => {
     const path =
       `/api/validation?scene=${scene}`
       + `&shape_v=2`
       + `&max_groups=${Math.max(1, Math.min(1000, Number(maxGroups) || 240))}`
       + `&example_limit=${Math.max(0, Math.min(40, Number(exampleLimit) || 24))}`
-      + `${userIdx == null ? '' : `&user_idx=${Math.max(0, Number(userIdx) || 0)}`}`;
-    return cachedReq(path, VALIDATION_TTL_MS);
+      + `${userIdx == null ? '' : `&user_idx=${Math.max(0, Number(userIdx) || 0)}`}`
+      + `${bundleId ? `&bundle_id=${encodeURIComponent(bundleId)}` : ''}`;
+    return force ? req(path) : cachedReq(path, VALIDATION_TTL_MS);
   },
+  validationNote: (scene: string, requestId: number, noteIdx: number, bundleId: string = '') =>
+    req(`/api/validation/note?scene=${scene}&request_id=${requestId}&note_idx=${noteIdx}`
+      + `${bundleId ? `&bundle_id=${encodeURIComponent(bundleId)}` : ''}`),
   imageUrl: (path: string) => {
     const normalized = path.replace(/^\/+/, '').replace(/^image\//, '');
     return `${API_BASE}/image/${normalized}`;

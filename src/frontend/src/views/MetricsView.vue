@@ -57,20 +57,18 @@ function stopValidationProgress() {
   return;
 }
 
-const unifiedRecallMetricDefs = [
-  { key: 'HitRate@100', label: 'HitRate@100' },
+const sharedRecallMetricDefs = [
   { key: 'HitRate@500', label: 'HitRate@500' },
   { key: 'Recall@100', label: 'Recall@100' },
   { key: 'Recall@500', label: 'Recall@500' },
-  { key: 'Recall@1000', label: 'Recall@1000' },
   { key: 'MRR@100', label: 'MRR@100' },
-  { key: 'MedianFirstHitRank', label: 'MedianFirstHitRank（命中请求）', digits: 1 },
+  { key: 'MedianFirstHitRank', label: 'MedianFirstHitRank（Top500 命中请求）', digits: 1 },
 
 ] as const;
 
 const recallMetricDefsByScene = {
-  search: unifiedRecallMetricDefs,
-  rec: unifiedRecallMetricDefs,
+  search: [{ key: 'HitRate@10', label: 'HitRate@10' }, { key: 'MRR@10', label: 'MRR@10' }, ...sharedRecallMetricDefs],
+  rec: [{ key: 'HitRate@50', label: 'HitRate@50' }, ...sharedRecallMetricDefs],
 } as const;
 
 const rankingMetricDefs = [
@@ -80,6 +78,9 @@ const rankingMetricDefs = [
 ] as const;
 
 const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
+  'HitRate@10': { lines: ['HitRate@10 = mean(Top10 中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
+  'HitRate@50': { lines: ['HitRate@50 = mean(Top50 中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
+  'MRR@10': { lines: ['MRR@10 = mean(首个命中排名 ≤ 10 时取排名倒数，否则取 0)'], desc: ['分母保留全部原始测试请求。'] },
   'Recall@100': {
     lines: [
       'Recall@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>100</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
@@ -244,6 +245,7 @@ function normalizeSceneExamples(scene: 'search' | 'rec', rows: any[]) {
       collapsed_behaviors: collapsed,
     };
   });
+  if (normalized.some((row: any) => row.scope === 'frozen_full_test_examples')) return normalized;
   normalized.sort((a: any, b: any) => {
     const resultTierGap =
       (Number(b.result_count || 0) >= 20 ? 2 : Number(b.result_count || 0) >= 10 ? 1 : 0) -
@@ -263,6 +265,7 @@ function normalizeSceneExamples(scene: 'search' | 'rec', rows: any[]) {
 }
 
 function selectDisplayExamples(rows: any[], uid: number | null) {
+  if (rows.some((row: any) => row.scope === 'frozen_full_test_examples')) return rows.slice(0, displayedExampleLimit);
   const currentUid = Number(uid);
   const sorted = [...(rows || [])].sort((a: any, b: any) => {
     const selfGap = Number(b.source_user_idx === currentUid) - Number(a.source_user_idx === currentUid);
@@ -373,7 +376,8 @@ function whenBrowserIdle() {
 }
 
 function behaviorScene(row: any) {
-  return String(row?.scene || '').toLowerCase() === 'rec' ? 'REC' : 'SEARCH';
+  const scene = String(row?.scene || '').toLowerCase();
+  return scene === 'rec' ? 'REC' : scene === 'search' ? 'SEARCH' : 'HISTORY';
 }
 
 function behaviorPrimary(row: any) {
@@ -414,7 +418,7 @@ async function loadSceneMetrics(scene: 'search' | 'rec', force = false) {
 
 async function loadSceneValidation(scene: 'search' | 'rec', uid: number | null, force = false) {
   if (!force && validationByScene.value[scene]) return;
-  const res = await api.validation(scene, compareSampleGroups, candidateExampleLimit, uid);
+  const res = await api.validation(scene, compareSampleGroups, candidateExampleLimit, uid, String(metricsByScene.value[scene]?.model_bundle_id || ''), force);
   validationByScene.value = { ...validationByScene.value, [scene]: res.validation };
   examplesByScene.value = {
     ...examplesByScene.value,
@@ -442,7 +446,7 @@ async function load() {
   try {
     markValidationProgress(44, '正在读取离线样例快照');
     await loadSceneValidation(currentScene.value, uid, true);
-    markValidationProgress(84, '正在整理当前用户样例与近期行为');
+    markValidationProgress(84, '正在整理固定测试样例与请求历史');
     markValidationProgress(100, '样例对比已准备完成');
   } catch (e: any) {
     if (!examplesByScene.value[currentScene.value]?.length && !errorMsg.value) {
@@ -476,7 +480,7 @@ async function switchScene(scene: 'search' | 'rec') {
   try {
     markValidationProgress(44, scene === 'search' ? '正在读取 Search 样例快照' : '正在读取 Rec 样例快照');
     await loadSceneValidation(scene, uid, false);
-    markValidationProgress(84, '正在整理当前用户样例与近期行为');
+    markValidationProgress(84, '正在整理固定测试样例与请求历史');
     markValidationProgress(100, '样例对比已准备完成');
   } catch (e: any) {
     if (!examplesByScene.value[scene]?.length && !errorMsg.value) {
@@ -514,7 +518,9 @@ async function openExampleDetail(item: any) {
   detailError.value = '';
   detailLoading.value = true;
   try {
-    const res = await api.note(
+    const res = ex.scope === 'frozen_full_test_examples'
+      ? await api.validationNote(ex.scene, Number(ex.request_id), Number(item?.note_idx), String(validationByScene.value[ex.scene]?.model_bundle_id || ''))
+      : await api.note(
       ex.scene,
       Number(ex.source_user_idx || 0),
       Number(ex.request_id || 0),
@@ -544,7 +550,9 @@ async function openBehaviorDetail(row: any) {
   detailError.value = '';
   detailLoading.value = true;
   try {
-    const res = await api.note(
+    const res = ex.scope === 'frozen_full_test_examples'
+      ? await api.validationNote(ex.scene, Number(ex.request_id), Number(row?.note_idx), String(validationByScene.value[ex.scene]?.model_bundle_id || ''))
+      : await api.note(
       String(row?.scene || ex.scene || 'search'),
       Number(ex.source_user_idx || 0),
       Number(row?.request_id || 0),
@@ -633,7 +641,7 @@ onUnmounted(stopValidationProgress);
 
           <div v-if="isHeldOut && metric(currentScene, 'recall')?.train_item_coverage != null" class="coverage-strip">
             <span>模型输出目标覆盖 <strong>{{ (metric(currentScene, 'recall').train_item_coverage * 100).toFixed(1) }}%</strong></span>
-            <span>Top1000 全未命中 <strong>{{ metric(currentScene, 'recall').missed_requests_at_1000?.toLocaleString() }}</strong> 个请求</span>
+            <span>Top500 全未命中 <strong>{{ metric(currentScene, 'recall').missed_requests_at_500?.toLocaleString() }}</strong> 个请求</span>
           </div>
         </div>
 
@@ -675,7 +683,7 @@ onUnmounted(stopValidationProgress);
         </div>
       </section>
 
-      <p v-if="isHeldOut || isFullTestSnapshot" class="meta evaluation-footnote">首命中中位排名仅统计 Top1000 内命中的请求。排序以日志曝光候选为范围，使用二值点击标签；无法直接与旧多级相关性指标比较。旧样例仅用于链路诊断。</p>
+      <p v-if="isHeldOut || isFullTestSnapshot" class="meta evaluation-footnote">首命中中位排名仅统计 Top500 内命中的请求。排序以日志曝光候选为范围，使用二值点击标签；无法直接与旧多级相关性指标比较。样例绑定当前模型与评测版本；✓ 表示已知点击，其余候选不据此标为负例。</p>
       <section class="panel example-panel shell-panel">
         <div class="example-head">
           <div>
@@ -686,7 +694,7 @@ onUnmounted(stopValidationProgress);
                 {{ activeExample.is_current_user ? copy.currentUser : copy.otherUser }}
               </span>
             </div>
-            <div class="meta">固定展示 5 条样例：当前登录用户优先 1 条，其余补其他用户；最近行为跨 Search / Rec 混合，最多 40 条。</div>
+            <div class="meta">固定展示 5 条测试样例，按预先确定的顺序展示，不按命中数筛选。</div>
           </div>
           <div v-if="activeExample" class="pager">
             <button class="btn" @click="prevExample">上一条</button>
@@ -716,14 +724,14 @@ onUnmounted(stopValidationProgress);
           </div>
 
           <div class="overlap-summary">
-            <span class="overlap-pill">DSSM 命中 {{ activeOverlap.dssm }}</span>
-            <span class="overlap-pill">GBDT 命中 {{ activeOverlap.preranking }}</span>
-            <span class="overlap-pill">DIEN 命中 {{ activeOverlap.ranking }}</span>
+            <span class="overlap-pill">召回命中 {{ activeOverlap.dssm }}</span>
+            <span class="overlap-pill">{{ activeExample.stage_enabled?.preranking === false ? '粗排未启用' : `粗排命中 ${activeOverlap.preranking}` }}</span>
+            <span class="overlap-pill">{{ activeExample.stage_enabled?.ranking === false ? '精排未启用' : `精排命中 ${activeOverlap.ranking}` }}</span>
           </div>
 
           <div class="source-head">
             <div class="section-title section-title-small">最近行为</div>
-            <div class="meta">最多 40 条，Search / Rec 已打通并按 note 去重</div>
+            <div class="meta">请求提供的历史，按 note 去重；未提供的事件时间和来源不作推断</div>
           </div>
           <div class="source-behavior-grid">
             <button
@@ -743,52 +751,52 @@ onUnmounted(stopValidationProgress);
 
           <div class="compare-grid">
             <div class="compare-cell">
-              <h4>真实 Top10</h4>
+              <h4>已知点击（最多 10 条）</h4>
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.true_top10" :key="`truth-${idx}`" class="compare-row" @click="openExampleDetail(item)">
                     <td class="rank-col"><strong>{{ formatTrueRank(item.rank_in_true, String(idx + 1)) }}</strong></td>
                     <td>{{ item.note_idx }}</td>
-                    <td>{{ item.title }}</td>
+                    <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
             <div class="compare-cell">
-              <h4>DSSM Top10</h4>
+              <h4>召回 Top10</h4>
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.dssm_top10" :key="`dssm-${idx}`" class="compare-row" @click="openExampleDetail(item)">
-                    <td class="rank-col"><strong>{{ formatTrueRank(item.rank_in_true) }}</strong></td>
+                    <td class="rank-col"><strong>{{ idx + 1 }}</strong></td>
                     <td>{{ item.note_idx }}</td>
-                    <td>{{ item.title }}</td>
+                    <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
             <div class="compare-cell">
-              <h4>GBDT Top10</h4>
+              <h4>粗排 Top10</h4>
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.preranking_top10" :key="`pre-${idx}`" class="compare-row" @click="openExampleDetail(item)">
-                    <td class="rank-col"><strong>{{ formatTrueRank(item.rank_in_true) }}</strong></td>
+                    <td class="rank-col"><strong>{{ idx + 1 }}</strong></td>
                     <td>{{ item.note_idx }}</td>
-                    <td>{{ item.title }}</td>
+                    <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
             <div class="compare-cell">
-              <h4>DIEN Top10</h4>
+              <h4>精排 Top10</h4>
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.ranking_top10" :key="`rank-${idx}`" class="compare-row" @click="openExampleDetail(item)">
-                    <td class="rank-col"><strong>{{ formatTrueRank(item.rank_in_true) }}</strong></td>
+                    <td class="rank-col"><strong>{{ idx + 1 }}</strong></td>
                     <td>{{ item.note_idx }}</td>
-                    <td>{{ item.title }}</td>
+                    <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>
                 </tbody>
               </table>

@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--bundle',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--reference-scores',type=Path)
+    parser.add_argument('--reference-recall',type=Path)
     parser.add_argument('--page-size',type=int,default=30)
     parser.add_argument('--max-requests',type=int,default=0,help='0=complete original test; otherwise fixed uniformly spaced regression smoke')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
@@ -49,7 +50,15 @@ def main():
         for gid,part in saved.groupby(key,sort=False):
             chosen=part.sort_values(['coarse_score','rank'],ascending=[False,True],kind='stable').head(manifest['coarse_cap']).copy()
             chosen['final_score']=blend_rank_scores(chosen.coarse_score,chosen.dien_raw_score,chosen[key],rank_meta['dien']['chosen']['weight'],rank_meta['dien'].get('score_contract','request_minmax_v1'))
+            if rank_meta['dien'].get('rank_prior'):
+                from training.recall_prior import blend_recall_prior
+                prior=rank_meta['dien']['rank_prior']
+                chosen['final_score']=blend_recall_prior(chosen['rank'].to_numpy(),chosen['final_score'].to_numpy(),prior['alpha'],prior.get('k',60))
             reference[int(gid)]=chosen.sort_values(['final_score','rank'],ascending=[False,True],kind='stable')
+    if args.reference_recall:
+        saved=pd.read_parquet(args.reference_recall)
+        if key not in saved:saved=saved.rename(columns={'gid':key})
+        reference={int(gid):part.sort_values('rank',kind='stable') for gid,part in saved.groupby(key,sort=False)}
     started=time.monotonic();validate_manifest(manifest,scene,ROOT,tag=manifest['tag'])
     ranker=RankStackPredictor(scene,ROOT/manifest['rank_dir'],root=ROOT,
         query_encoder_dir=ROOT/manifest['query_encoder_dir'] if scene=='search' else None,query_encoder_revision=manifest.get('query_encoder_revision'))
@@ -91,7 +100,7 @@ def main():
         'latency_ms':{'p50':float(requests.latency_ms.quantile(.5)),'p95':float(requests.latency_ms.quantile(.95)),'max':float(requests.latency_ms.max())},
         'latency_scope':'Local sequential replay including metadata/card construction; shared models progressively warm; not concurrent production SLO',
         'page_size':args.page_size,'cache_hits':int(requests.cache_hit.sum()),'reference_order_mismatches':mismatches,
-        'inputs':{str(path):sha256(path) for path in [source,args.bundle,Path(__file__),*([args.reference_scores] if args.reference_scores else [])]},'seconds':time.monotonic()-started,
+        'inputs':{str(path):sha256(path) for path in [source,args.bundle,Path(__file__),*([args.reference_scores] if args.reference_scores else []),*([args.reference_recall] if args.reference_recall else [])]},'seconds':time.monotonic()-started,
         'limitations':['Provider histories/catalog/static snapshots lack complete point-in-time lineage','Test has been observed before; regression benchmark only','No unexposed candidates treated as negatives; no AUC claim for this output']}
     (args.output/'metrics.json').write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps({k:v for k,v in result.items() if k not in ['inputs','reference_order_mismatches']}),flush=True)
