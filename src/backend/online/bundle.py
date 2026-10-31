@@ -103,6 +103,10 @@ def required_asset_names(manifest: dict, root: Path) -> set[str]:
         if not isinstance(diagnostic, dict) or set(diagnostic) != {"path", "sha256"}:
             raise ValueError("Invalid bound diagnostic snapshot")
         require(diagnostic["path"])
+    if manifest.get("note_metadata_index"):
+        metadata_index = resolve_asset(root, manifest["note_metadata_index"])
+        require(metadata_index)
+        require(metadata_index.with_suffix(metadata_index.suffix+'.manifest.json'))
     return required
 
 
@@ -162,6 +166,13 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     diagnostic = manifest.get("evaluation", {}).get("validation_snapshot")
     if diagnostic is not None and assets.get(resolve_asset(root, diagnostic["path"]).relative_to(root.resolve()).as_posix()) != diagnostic["sha256"]:
         raise ValueError("Diagnostic snapshot hash differs from the required asset binding")
+    if manifest.get('note_metadata_index'):
+        path = resolve_asset(root, manifest['note_metadata_index'])
+        metadata = json.loads(path.with_suffix(path.suffix+'.manifest.json').read_text())
+        source_hashes = {entry['name']: entry['sha256'] for entry in metadata.get('sources', [])}
+        bound_sources = {Path(name).name: expected for name, expected in assets.items() if name.startswith('datasets/notes/') and name.endswith('.parquet')}
+        if source_hashes != bound_sources or metadata.get('index_sha256') != assets.get(path.relative_to(root.resolve()).as_posix()):
+            raise ValueError('Note metadata index does not bind the same static catalog')
     # Check the small schema manifest before hashing gigabytes or constructing models.
     rank = resolve_asset(root, manifest["rank_dir"])
     metadata = json.loads((rank / "manifest.json").read_text())
@@ -236,6 +247,22 @@ class ServingBundle:
                 self._lexical = index
             return index
 
+    def _get_note_metadata_index(self):
+        from backend.online.note_metadata import NoteMetadataIndex
+        with self._lock:
+            index = getattr(self, '_note_metadata', None)
+            if index is None:
+                path = resolve_asset(self.root, self.manifest['note_metadata_index'])
+                sidecar = path.with_suffix(path.suffix+'.manifest.json')
+                expected = self.manifest['assets'][path.relative_to(self.root.resolve()).as_posix()]
+                verify_asset(path, expected)
+                verify_asset(sidecar, self.manifest['assets'][sidecar.relative_to(self.root.resolve()).as_posix()])
+                if json.loads(sidecar.read_text()).get('index_sha256') != expected:
+                    raise ValueError('Note metadata index differs from its bound hash')
+                index = NoteMetadataIndex(path)
+                self._note_metadata = index
+            return index
+
 
 def get_active_bundle(scene: str, tag: str, root: Path) -> ServingBundle | None:
     root = Path(root)
@@ -255,4 +282,6 @@ def get_active_bundle(scene: str, tag: str, root: Path) -> ServingBundle | None:
     bundle = ServingBundle(manifest, ranker, root)
     if scene == "search":
         bundle._get_bm25_index()
+    if manifest.get('note_metadata_index'):
+        bundle._get_note_metadata_index()
     return bundle

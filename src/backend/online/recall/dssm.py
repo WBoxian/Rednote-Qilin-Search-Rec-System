@@ -41,9 +41,41 @@ def _load_train_module():
         return module
 
 
+class _NoteRows:
+    """Compact immutable reverse lookup for the already bound ANN row array."""
+    def __init__(self, row2note):
+        values = np.asarray(row2note)
+        if values.ndim != 1 or values.dtype.kind not in "iu" or (values < 0).any():
+            raise ValueError("ANN row mapping requires nonnegative integer note IDs")
+        self.order = None if np.all(values[1:] > values[:-1]) else np.argsort(values, kind="stable")
+        self.ids = values if self.order is None else values[self.order]
+        if (self.ids[1:] <= self.ids[:-1]).any():
+            raise ValueError("ANN note IDs must be unique")
+
+    def get(self, note_id, default=None):
+        index = int(np.searchsorted(self.ids, int(note_id)))
+        if index >= len(self.ids) or self.ids[index] != int(note_id):
+            return default
+        return index if self.order is None else int(self.order[index])
+
+
+class _SharedNoteStore:
+    def __init__(self, modality):
+        from backend.online.ranking.stack import shared_mapped_vectors
+        self.vectors = shared_mapped_vectors(BASE_DIR/"embeddings"/f"note_{modality}_emb", f"note_{modality}")
+        self.dim = self.vectors.dimension
+
+    def get_batch_vecs(self, ids):
+        return torch.from_numpy(self.vectors.get(ids))
+
+    def get_vec(self, note_id):
+        return self.get_batch_vecs([note_id])[0]
+
+
 class DSSMRecaller:
-    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str, *, query_encoder_dir=None, query_encoder_revision=None):
+    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str, *, query_encoder_dir=None, query_encoder_revision=None, use_shared_note_vectors=False):
         self.scene = scene
+        self.use_shared_note_vectors = bool(use_shared_note_vectors)
         self.query_encoder_dir = query_encoder_dir
         self.query_encoder_revision = query_encoder_revision
         self.tag = tag
@@ -100,16 +132,21 @@ class DSSMRecaller:
         model.load_state_dict(user_state, strict=False)
         model.eval()
 
-        with open(item_map_path, "r", encoding="utf-8") as f:
-            note2row = json.load(f)
-        row2note = np.zeros(len(note2row), dtype=np.int64)
-        for note_id, row_idx in note2row.items():
-            idx = int(row_idx)
-            if 0 <= idx < len(row2note):
-                row2note[idx] = int(note_id)
-        note2row_map = {int(note_id): int(row_idx) for note_id, row_idx in note2row.items()}
+        row_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_row2note.npy")
+        if row_path.exists():
+            row2note = np.load(row_path, mmap_mode="r")
+            note2row_map = _NoteRows(row2note)
+        else:
+            with open(item_map_path, "r", encoding="utf-8") as stream:
+                note2row = json.load(stream)
+            row2note = np.zeros(len(note2row), dtype=np.int64)
+            for note_id, row_idx in note2row.items():
+                row2note[int(row_idx)] = int(note_id)
+            note2row_map = {int(note): int(row) for note, row in note2row.items()}
 
         index = faiss.read_index(str(ann_index_path))
+        if index.ntotal != len(row2note):
+            raise ValueError("ANN index and row mapping sizes differ")
         nprobe = 32
         if ann_meta_path.exists():
             try:
@@ -134,11 +171,14 @@ class DSSMRecaller:
                 self.item_emb = np.memmap(str(item_emb_path), dtype="float32", mode="r", shape=(n_items, dim))
             except Exception:
                 self.item_emb = None
-        self.user_store = {"note_text": train_mod.MMapStore("note_text_emb", "note_text")}
-        try:
-            self.user_store["note_img"] = train_mod.MMapStore("note_img_emb", "note_img")
-        except Exception:
-            pass
+        if self.use_shared_note_vectors:
+            self.user_store = {"note_text": _SharedNoteStore("text"), "note_img": _SharedNoteStore("img")}
+        else:
+            self.user_store = {"note_text": train_mod.MMapStore("note_text_emb", "note_text")}
+            try:
+                self.user_store["note_img"] = train_mod.MMapStore("note_img_emb", "note_img")
+            except Exception:
+                pass
         if self.scene == "search" and self.query_encoder_dir is None:
             try:
                 self.user_store["search_query"] = train_mod.MMapStore("query_text_emb", "search_query")

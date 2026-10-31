@@ -949,7 +949,8 @@ class SceneServingState:
             self.dien_model = bundle.ranker.model
             query_dir = BASE_DIR / bundle.manifest["query_encoder_dir"] if self.scene == "search" else None
             self.dssm_recaller = DSSMRecaller(self.scene, self.tag, bundle.recall_dir, self.group_key,
-                query_encoder_dir=query_dir, query_encoder_revision=bundle.manifest.get("query_encoder_revision"))
+                query_encoder_dir=query_dir, query_encoder_revision=bundle.manifest.get("query_encoder_revision"),
+                use_shared_note_vectors=True)
             self.dssm_model = self.dssm_recaller.model
             self.realtime_ann_enabled = bool(self.dssm_recaller.enabled)
             if not self.realtime_ann_enabled:
@@ -1062,20 +1063,24 @@ class SceneServingState:
             missing_ids = [x for x in uniq_ids if x not in self._note_meta_cache]
 
         if missing_ids:
-            ids_df = pd.DataFrame({"note_idx": missing_ids})
-            con = duckdb.connect(database=":memory:")
-            try:
-                con.register("ids", ids_df)
-                q = """
-                SELECT n.note_idx, n.note_title, n.note_content, n.image_path,
-                       n.accum_like_num, n.accum_collect_num, n.accum_comment_num,
-                       n.taxonomy1_id, n.taxonomy2_id, n.taxonomy3_id
-                FROM read_parquet(?) n
-                INNER JOIN ids USING(note_idx)
-                """
-                df_new = con.execute(q, [self.notes_glob]).df()
-            finally:
-                con.close()
+            bundle = getattr(self, "bundle", None)
+            if getattr(self, "bundle_active", False) and bundle.manifest.get("note_metadata_index"):
+                df_new = bundle._get_note_metadata_index().fetch(missing_ids)
+            else:
+                ids_df = pd.DataFrame({"note_idx": missing_ids})
+                con = duckdb.connect(database=":memory:")
+                try:
+                    con.register("ids", ids_df)
+                    q = """
+                    SELECT n.note_idx, n.note_title, n.note_content, n.image_path,
+                           n.accum_like_num, n.accum_collect_num, n.accum_comment_num,
+                           n.taxonomy1_id, n.taxonomy2_id, n.taxonomy3_id
+                    FROM read_parquet(?) n
+                    INNER JOIN ids USING(note_idx)
+                    """
+                    df_new = con.execute(q, [self.notes_glob]).df()
+                finally:
+                    con.close()
 
             if "image_path" in df_new.columns:
                 df_new["image_path"] = df_new["image_path"].apply(_to_path_list)
