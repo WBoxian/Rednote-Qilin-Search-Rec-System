@@ -58,6 +58,18 @@ def resign(manifest):
 
 
 class ServingBundleTests(unittest.TestCase):
+    def test_optional_f1_schema_only_accepts_the_fixed_rec_history_filter_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);manifest=fixture(root,'rec')
+            policy=manifest['recall_policy']
+            policy.update(context_policy='filter_history',weights={'ann':1.,'swing':2.,'usercf':1.})
+            validate_manifest(resign(manifest),'rec',root)
+            for changed in [{'context_policy':'filter_history_context'},{'route_topk':500},{'rrf_k':10},
+                            {'weights':{'ann':1.,'swing':4.,'usercf':1.}}]:
+                mutation=copy.deepcopy(manifest);mutation['recall_policy'].update(changed)
+                with self.assertRaisesRegex(ValueError,'context fusion contract'):
+                    validate_manifest(resign(mutation),'rec',root)
+
     def test_diagnostic_snapshot_requires_consistent_content_binding(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

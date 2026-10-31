@@ -144,6 +144,10 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
         raise ValueError("Recall-only serving must retain the full recall pool and explicitly disable learned schema")
     if int(policy.get("rrf_k", 60)) < 1:
         raise ValueError("Invalid reciprocal-rank smoothing")
+    context_policy = policy.get("context_policy")
+    if context_policy is not None and (scene != "rec" or context_policy != "filter_history" or strategy != "weighted_rrf" or
+            weights != {"ann": 1., "swing": 2., "usercf": 1.} or int(policy.get("rrf_k", 60)) != 60 or route_topk != 1000):
+        raise ValueError("Unsupported frozen request-context fusion contract")
     if strategy == "protected_headfill" and not 0 <= int(policy.get("head_cap", 100)) <= final_topk:
         raise ValueError("Invalid protected lexical head budget")
     if scene == "rec":

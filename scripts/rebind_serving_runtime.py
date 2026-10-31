@@ -18,7 +18,7 @@ def rebind(source,output,note_metadata_index=None):
         if path.is_relative_to(ROOT/'src') and path.suffix=='.py':updated['assets'][name]=file_sha256(path)
         else:verify_asset(path,expected)
     sources=list((ROOT/'src/backend/online').rglob('*.py'))
-    sources.extend(ROOT/name for name in ['src/recall/dssm_trainer.py','src/recall/cf_retrieval.py','src/recall/fusion.py','src/recall/lexical.py',
+    sources.extend(ROOT/name for name in ['src/recall/dssm_trainer.py','src/recall/cf_retrieval.py','src/recall/fusion.py','src/recall/lexical.py','src/recall/context_fusion.py','src/recall/residual_dssm.py',
         'src/training/rank_stack.py','src/training/history.py','src/training/dien_ranker.py','src/training/scoring.py','src/training/recall_prior.py'])
     for path in sources:updated['assets'][path.relative_to(ROOT).as_posix()]=file_sha256(path)
     if note_metadata_index:

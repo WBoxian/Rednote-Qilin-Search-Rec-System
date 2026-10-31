@@ -112,25 +112,24 @@ class DSSMRecaller:
         if not (user_tower_path.exists() and item_map_path.exists() and ann_index_path.exists()):
             return
 
-        ckpt = torch.load(user_tower_path, map_location="cpu")
-        user_state = ckpt.get("state_dict", {})
-        meta = ckpt.get("meta", {})
+        from recall.residual_dssm import model_from_checkpoint
+        model = model_from_checkpoint(user_tower_path, device="cpu", allow_partial=True)
+        meta = model.checkpoint_meta
+        if meta.get("scene", self.scene) != self.scene:
+            raise ValueError("DSSM checkpoint scene differs from the serving scene")
+        self.checkpoint_meta = meta
+        self.model_family = meta.get("model_family", "dssm_v1")
+        self.retrieval_dim = int(getattr(model, "retrieval_dim", 128))
+        if self.model_family == "residual_dssm_v1":
+            from training.history import HISTORY_ORDER
+            if self.scene != "rec" or meta.get("history_contract") != HISTORY_ORDER or not bool(model.seq_mask_padding) or not bool(model.user_mask_profile):
+                raise ValueError("Residual DSSM requires the canonical history and persistent sequence/profile masks")
+            known, unknown = meta.get("known_user_ids"), meta.get("unknown_user_id")
+            if not isinstance(known, list) or isinstance(unknown, bool) or not isinstance(unknown, int) or unknown != int(meta["cat_vocabs"]["user_idx"])-1:
+                raise ValueError("Residual DSSM requires an explicit reserved unknown-user contract")
+            self.known_user_ids = frozenset(map(int, known))
         self.history_contract = meta.get("history_contract", "legacy_raw_order_v0")
         self.masked_user_dense = bool(meta.get("masked_user_dense", False))
-        cat_vocabs = meta.get("cat_vocabs", {})
-        item_dense_dim = int(meta.get("item_dense_dim", 0))
-        user_dense_dim = int(meta.get("user_dense_dim", 0))
-        if not cat_vocabs or user_dense_dim <= 0:
-            return
-
-        model = train_mod.DSSMModel(
-            scene=self.scene,
-            cat_vocabs=cat_vocabs,
-            item_dense_dim=item_dense_dim,
-            user_dense_dim=user_dense_dim,
-        ).to("cpu")
-        model.load_state_dict(user_state, strict=False)
-        model.eval()
 
         row_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_row2note.npy")
         if row_path.exists():
@@ -147,6 +146,8 @@ class DSSMRecaller:
         index = faiss.read_index(str(ann_index_path))
         if index.ntotal != len(row2note):
             raise ValueError("ANN index and row mapping sizes differ")
+        if index.d != self.retrieval_dim or index.metric_type != faiss.METRIC_INNER_PRODUCT:
+            raise ValueError("DSSM model and inner-product ANN dimensions/metric differ")
         nprobe = 32
         if ann_meta_path.exists():
             try:
@@ -168,9 +169,11 @@ class DSSMRecaller:
                     item_meta = json.load(f)
                 n_items = int(item_meta["num_items"])
                 dim = int(item_meta["dim"])
+                if dim != self.retrieval_dim or n_items != len(row2note):
+                    raise ValueError("DSSM item vectors differ from the model/index shape")
                 self.item_emb = np.memmap(str(item_emb_path), dtype="float32", mode="r", shape=(n_items, dim))
-            except Exception:
-                self.item_emb = None
+            except (OSError, KeyError, TypeError, ValueError) as error:
+                raise ValueError("Invalid bound DSSM item vectors") from error
         if self.use_shared_note_vectors:
             self.user_store = {"note_text": _SharedNoteStore("text"), "note_img": _SharedNoteStore("img")}
         else:
@@ -330,6 +333,13 @@ class DSSMRecaller:
             "follows_num": torch.tensor([0.0 if masked else _fget("follows_num", 0.0)], dtype=torch.float32),
             "dense_feats": torch.tensor([dense_vals], dtype=torch.float32),
         }
+        if getattr(self, "model_family", "dssm_v1") == "residual_dssm_v1":
+            from recall.residual_dssm import raw_history_text_mean
+            meta = self.checkpoint_meta
+            if int(user_idx) not in self.known_user_ids:
+                user_batch["user_idx"] = torch.tensor([int(meta["unknown_user_id"])], dtype=torch.long)
+            content = raw_history_text_mean(hist_ids, self.user_store["note_text"])
+            user_batch["residual_history_text"] = torch.from_numpy(content.reshape(1, 768))
         if self.scene == "search":
             query_text = str(row.get("query", "") or "").strip()
             qvec = self._get_request_query_vec(
@@ -415,7 +425,11 @@ class DSSMRecaller:
             history_contract=getattr(self, "history_contract", "legacy_raw_order_v0")).reshape(1, -1).float()
 
     def _search_ann(self, user_vec: np.ndarray, max_rank: int) -> tuple[list[int], list[float]]:
-        dists, idxs = self.ann_index.search(user_vec, int(max_rank))
+        values = np.asarray(user_vec, dtype=np.float32)
+        if values.shape != (1, int(self.ann_index.d)) or not np.isfinite(values).all():
+            raise ValueError("DSSM query vector differs from its bound ANN dimensions")
+        # Residual towers deliberately retain sqrt(weight) norm for empty content; never renormalize.
+        dists, idxs = self.ann_index.search(np.ascontiguousarray(values), int(max_rank))
         note_ids: list[int] = []
         scores: list[float] = []
         for row_idx, score in zip(idxs[0].tolist(), dists[0].tolist()):
@@ -426,6 +440,8 @@ class DSSMRecaller:
         return note_ids, scores
 
     def _search_ann_by_history_items(self, hist_ids: list[int], max_rank: int, per_item_topk: int = 180) -> tuple[list[int], list[float]]:
+        if getattr(self, "model_family", "dssm_v1") == "residual_dssm_v1":
+            raise ValueError("Residual DSSM supports current-request IP retrieval without legacy normalized expansion")
         if self.ann_index is None or self.item_emb is None or not hist_ids:
             return [], []
         scores: dict[int, float] = {}
@@ -662,6 +678,8 @@ class DSSMRecaller:
         max_rank: int,
         max_seed: int = 80,
     ) -> tuple[list[int], list[float]]:
+        if getattr(self, "model_family", "dssm_v1") == "residual_dssm_v1":
+            raise ValueError("Residual DSSM supports current-request IP retrieval without legacy normalized expansion")
         if self.ann_index is None or self.item_emb is None or not seed_scores:
             return [], []
         ranked_seed = sorted(seed_scores.items(), key=lambda x: x[1], reverse=True)[: max(1, int(max_seed))]

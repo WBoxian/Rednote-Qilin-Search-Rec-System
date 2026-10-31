@@ -796,7 +796,27 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
         usercf = bm25
         weights = {"ann": weights.get("ann", 0.), "swing": 0., "usercf": weights.get("bm25", 0.)}
     strategy = policy.get("strategy", "weighted_rrf")
-    if strategy == "weighted_rrf":
+    context_policy = policy.get("context_policy")
+    if context_policy is not None:
+        if scene != "rec" or context_policy != "filter_history" or strategy != "weighted_rrf" or weights != {"ann": 1., "swing": 2., "usercf": 1.} or int(policy.get("rrf_k", 60)) != 60 or route_topk != 1000:
+            raise ValueError("Unsupported frozen request-context fusion contract")
+        from recall.context_fusion import fuse_request_routes
+        from training.history import recent_history_ids
+        recent = recent_history_ids(list(row["recent_clicked_note_idxs"]), 20)
+        consumed = set(recent)
+        route_scores = {"ann": ann, "swing": swing, "usercf": usercf}
+        route_ids = {name: np.asarray(sorted(scores, key=lambda note: (-scores[note], note)), dtype=np.int64)
+                     for name, scores in route_scores.items()}
+        fused = fuse_request_routes(route_ids, recent, (), context_policy, topk=final_topk)
+        # Only source attribution needs per-route positions; shared helper owns all final scoring/ranking.
+        positions = {name: {note: rank for rank, note in enumerate((int(note) for note in ids if int(note) not in consumed), 1)}
+                     for name, ids in route_ids.items()}
+        merged = []
+        for note, score, _rank in fused.itertuples(index=False, name=None):
+            source = max(route_scores, key=lambda name: weights[name]/(60.+positions[name][note]) if note in positions[name] else -1.)
+            merged.append((note, score, ann.get(note, 0.), swing.get(note, 0.), usercf.get(note, 0.),
+                           int(note in ann), int(note in swing), int(note in usercf), source))
+    elif strategy == "weighted_rrf":
         merged = weighted_rrf(ann, swing, usercf, topk=final_topk,
             route_weights=weights, rrf_k=int(policy.get("rrf_k", 60)))
     elif scene == "search" and strategy == "protected_headfill":
@@ -820,5 +840,7 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
     result.attrs["route_status"] = {"bundle_id": bundle.bundle_id, "provider_dpr": "excluded",
         "recipe": policy, "route_topk": route_topk, "counts": {"ann": len(ann),
         **({"bm25": len(bm25)} if scene == "search" else {"swing": len(swing), "usercf": len(usercf)})},
+        "context_policy": context_policy,
+        "history_filter_removed": {name: len(route_ids[name])-len(positions[name]) for name in route_ids} if context_policy else {},
         "merged_before_input_budget": len(merged), "input_budget": int(max_rank), "errors": errors}
     return result

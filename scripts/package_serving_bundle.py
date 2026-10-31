@@ -67,13 +67,13 @@ def package_bundle(args,root:Path=ROOT):
     selected_path=contained(root,args.selected_dssm or experiment/'dssm/selected.json')
     index_selection_path=contained(root,args.selected_index or experiment/'index/selected.json')
     index_selection=load_json(index_selection_path);selected=selected_entry(selected_path)
-    epoch=contained(root,selected['directory']);prefix=f'dssm_{scene}_{tag}';trained=f'dssm_{scene}_optimized'
+    epoch=contained(root,selected['directory']);prefix=f'dssm_{scene}_{tag}';trained=getattr(args,'model_prefix',None) or f'dssm_{scene}_optimized'
     full=contained(root,epoch/f'{trained}.pt');user=contained(root,epoch/f'{trained}_user_tower.pt');item=contained(root,epoch/f'{trained}_item_tower.pt')
     metadata=validate_towers(scene,full,user,item,selected)
-    vectors=contained(root,epoch/'item_vectors.bin');ids_path=contained(root,experiment/'dssm/item_ids.npy')
+    vectors=contained(root,getattr(args,'item_vectors',None) or epoch/'item_vectors.bin');ids_path=contained(root,getattr(args,'item_ids',None) or experiment/'dssm/item_ids.npy')
     ids=np.load(ids_path,allow_pickle=False)
     if ids.ndim!=1 or ids.dtype.kind not in 'iu' or len(ids)==0 or np.any(ids<0) or len(np.unique(ids))!=len(ids) or np.any(ids[1:]<=ids[:-1]) or int(ids[-1])>=int(metadata.get('cat_vocabs',{}).get('note_idx',0)):raise ValueError('Invalid catalog ID mapping')
-    dim=int(metadata.get('hidden_dim',0))
+    dim=int(metadata.get('retrieval_dim',metadata.get('hidden_dim',0)))
     if dim<=0 or vectors.stat().st_size!=len(ids)*dim*4 or file_sha256(vectors)!=selected['item_vectors_sha256']:
         raise ValueError('Selected catalog vectors do not match mapping/dimension/checksum')
     index_path=contained(root,args.ann_index or experiment/'index/ivfpq.faiss')
@@ -174,14 +174,20 @@ def package_bundle(args,root:Path=ROOT):
         snapshot_out=output/'evaluation/validation.json';copy_bound(snapshot,snapshot_out)
         manifest['evaluation']={'validation_snapshot':{'path':snapshot_out.relative_to(root).as_posix(),'sha256':file_sha256(snapshot_out)}}
         manifest['packaging_provenance']['validation_source_sha256']=file_sha256(snapshot)
+    if getattr(args,'release_evidence',None):
+        evidence=contained(root,args.release_evidence);evidence_out=output/'evaluation/release.json'
+        copy_bound(evidence,evidence_out)
+        manifest.setdefault('evaluation',{})['release_evidence']={'path':evidence_out.relative_to(root).as_posix(),'sha256':file_sha256(evidence_out)}
     if getattr(args,'note_metadata_index',None):
         catalog=contained(root,args.note_metadata_index)
         manifest['note_metadata_index']=catalog.relative_to(root).as_posix()
     names=required_asset_names(manifest,root)
+    if manifest.get('evaluation',{}).get('release_evidence'):
+        names.add(manifest['evaluation']['release_evidence']['path'])
     runtime_files=[
         'backend/online/'+name for name in ['bundle.py','pipeline.py','live_context.py','shared_query_encoder.py','item_features.py',
             'recall/service.py','recall/dssm.py','preranking/service.py','preranking/gbdt.py','ranking/service.py','ranking/stack.py']]
-    runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py']]
+    runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py','context_fusion.py','residual_dssm.py']]
     runtime_files += ['training/'+name for name in ['rank_stack.py','history.py','dien_ranker.py','scoring.py','recall_prior.py']]
     names.update('src/'+name for name in runtime_files if (root/'src'/name).is_file())
     names.update(path.relative_to(root).as_posix() for path in (root/'src/backend/online').rglob('*.py'))
@@ -196,8 +202,10 @@ def parser():
     result.add_argument('--scene',choices=['search','rec'],required=True);result.add_argument('--tag',choices=['easy','hard'],default='hard')
     for name in ['rank-dir','recall-experiment-dir','policy-file']:
         result.add_argument('--'+name,type=Path,required=True)
-    for name in ['selected-dssm','selected-index','ann-index','rank-manifest','output-dir','bm25-index','query-encoder-dir']:
+    for name in ['selected-dssm','selected-index','ann-index','rank-manifest','output-dir','bm25-index','query-encoder-dir','item-vectors','item-ids']:
         result.add_argument('--'+name,type=Path)
+    result.add_argument('--model-prefix',help='Frozen checkpoint basename, optionally relative to selected directory')
+    result.add_argument('--release-evidence',type=Path)
     result.add_argument('--validation-snapshot',type=Path)
     result.add_argument('--note-metadata-index',type=Path)
     result.add_argument('--ranking-strategy',choices=['learned','recall_only'],default='learned')

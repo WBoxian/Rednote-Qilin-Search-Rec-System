@@ -9,6 +9,26 @@ from backend.online.recall.service import fetch_bundle_recall_candidates
 
 
 class BundleRecallTests(unittest.TestCase):
+    def test_f1_filters_only_recent20_after_original_route_budget_and_uses_shared_fusion(self):
+        from recall.context_fusion import fuse_request_routes
+        context=pd.DataFrame({'request_idx':[123],'user_idx':[7],'query':[''], 'recent_clicked_note_idxs':[list(range(20))+[999]]})
+        ann=pd.DataFrame({'note_idx':[0,20,999],'score_ann':[3.,2.,1.]})
+        tower=SimpleNamespace(fetch_candidates=Mock(return_value=ann))
+        bundle=SimpleNamespace(bundle_id='frozen',manifest={'recall_policy':{'strategy':'weighted_rrf',
+            'weights':{'ann':1.,'swing':2.,'usercf':1.},'route_topk':1000,'topk':500,'rrf_k':60,'context_policy':'filter_history'}},
+            cf_candidates=Mock(return_value={'swing':{1:3.,20:2.,31:1.},'usercf':{2:3.,40:2.,999:1.}}))
+        actual=fetch_bundle_recall_candidates(bundle,tower,context,scene='rec',max_rank=500)
+        expected=fuse_request_routes({'ann':np.array([0,20,999]),'swing':np.array([1,20,31]),'usercf':np.array([2,40,999])},list(range(20)),(), 'filter_history')
+        self.assertEqual(actual.note_idx.tolist(),expected.note_idx.tolist())
+        np.testing.assert_array_equal(actual.recall_score.to_numpy(),expected.score.to_numpy())
+        self.assertIn(999,actual.note_idx.tolist());self.assertNotIn(0,actual.note_idx.tolist())
+        self.assertAlmostEqual(actual.loc[actual.note_idx==20,'recall_score'].iloc[0],3/61)
+        self.assertEqual(tower.fetch_candidates.call_args.args[1],1000)
+        self.assertEqual(bundle.cf_candidates.call_args.args[2],1000)
+        self.assertEqual(tower.fetch_candidates.call_count,1);self.assertEqual(bundle.cf_candidates.call_count,1)
+        self.assertEqual(actual.attrs['route_status']['context_policy'],'filter_history')
+        self.assertEqual(actual.attrs['route_status']['history_filter_removed'],{'ann':1,'swing':1,'usercf':1})
+
     def test_rec_complete_route_union_is_fused_before_small_input_budget(self):
         context = pd.DataFrame({"request_idx": [123], "user_idx": [7], "query": [""], "recent_clicked_note_idxs": [[8, 9]]})
         ann = pd.DataFrame({"note_idx": [10, 20], "score_ann": [.9, .8]})
