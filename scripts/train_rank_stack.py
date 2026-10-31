@@ -359,9 +359,9 @@ def evaluate(args):
     results['selected_weight']=weight
     results['scope']='All original test exposures; conditional ranking, not full-catalog retrieval or online CTR'
     write_json(out/'test_metrics.json',results)
-    manifest['final_test']={'input_sha256':digest(source),'rows':len(test),'requests':int(test[key].nunique()),
-                            'metrics_sha256':digest(out/'test_metrics.json'),'selection':'Frozen before official test labels scored'}
-    write_json(out/'manifest.json',manifest)
+    write_json(out/'test_manifest.json',{'input_sha256':digest(source),'rows':len(test),'requests':int(test[key].nunique()),
+        'metrics_sha256':digest(out/'test_metrics.json'),'frozen_training_manifest_sha256':digest(out/'manifest.json'),
+        'evaluation_source_sha256':digest(Path(__file__)),'selection':'Frozen before official test labels scored'})
     print(json.dumps(results),flush=True)
 
 
