@@ -675,6 +675,7 @@ onUnmounted(stopValidationProgress);
 
         <div class="panel shell-panel">
           <div class="section-title">日志曝光池排序</div>
+          <p v-if="activeSnapshot.ranking?.inference_contract === 'frozen_logged_exposure_fp32'" class="split-meta">下方数值保留为冻结的日志曝光池诊断，尚未按当前服务口径重新评测，不代表端到端服务效果。</p>
           <div class="rank-stage-list single-stage-list">
             <div class="rank-stage">
               <div class="rank-stage-title">粗排 · GBDT <span v-if="isHeldOut || isFullTestSnapshot" class="scope-tag">日志曝光条件评估</span></div>

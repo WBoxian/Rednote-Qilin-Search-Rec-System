@@ -57,7 +57,8 @@
           "selection_sha256": "7140aca7a397afb667afc903fd22636e943890d25747129519e9673152060fef",
           "nprobe": 128,
           "route_topk": 1000,
-          "final_topk": 500
+          "final_topk": 500,
+          "inference_contract": "request_fp32_v1"
         }
       },
       "ranking": {
@@ -119,7 +120,9 @@
           "weight": 1.0,
           "manifest_sha256": "e49fa4c088aad9fa7e00fba3f12508b4e05460fdb22ae37f1d0ac401ca4ab5f6"
         },
-        "serving_enabled": true
+        "serving_enabled": true,
+        "inference_contract": "frozen_logged_exposure_fp32",
+        "scope_note": "Frozen complete logged-exposure diagnostic; not rerun under the request-local serving numerical contract; not end-to-end serving quality."
       },
       "pipeline": {
         "test": {
@@ -133,10 +136,10 @@
           "positive_requests": 6192,
           "empty_candidate_requests": 0,
           "known_positive_pairs_pool": 15959,
+          "mean_candidates": 160.0,
           "known_positive_pairs_top10": 5887,
           "known_positive_pairs_top50": 12624,
           "known_positive_pairs_top100": 14982,
-          "mean_candidates": 160.0,
           "scope": "Full original test known-click retention after selected pipeline; all test positives form IDCG; unexposed candidates have no invented click labels"
         },
         "serving_strategy": "learned",
@@ -147,9 +150,47 @@
         "evaluated_recipe_stage": "final",
         "diagnostic_raw_pool_cap": 160,
         "label_scope": "Known positives from all original test requests; not conditional exposure NDCG or online CTR",
-        "independent_verification_sha256": "b710a14a1b122acc2a4721e35096d7b3734cec02bcdc96eaf9dd3c4af46af96f"
+        "independent_verification_sha256": "5fb0138d2d1ebf012a7bd73411f9ddff5f8eedf08d0cd57fc289c0d877393baa",
+        "numerical_replay": {
+          "path": "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/deployment_v1/numerical_release.json",
+          "sha256": "9962a0cae71151c2f182971a85ffa6a9e8d4923f4a3509db2620df54e7cc5e68"
+        },
+        "inference_contract": "request_fp32_v1",
+        "accepted_execution_scope": {
+          "fine_device": "cuda",
+          "cpu_query_threads": 4,
+          "contract": "request_fp32_v1",
+          "input_contract": "LiveContextBuilder_bound_user_profile_v2",
+          "cross_backend_accepted": false,
+          "environment": {
+            "inference_contract": "request_fp32_v1",
+            "scope": "Locally verified hardware/software numerical reproducibility; no claim of bitwise equality across CPU/GPU or GPU architectures",
+            "python": "3.10.16",
+            "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+            "torch": "2.9.1+cu128",
+            "torch_cuda": "12.8",
+            "cudnn": 91002,
+            "faiss": "1.7.4",
+            "transformers": "4.57.3",
+            "gpu": "NVIDIA GeForce RTX 5070 Ti",
+            "gpu_capability": [
+              12,
+              0
+            ],
+            "matmul_allow_tf32": false,
+            "cudnn_allow_tf32": false,
+            "cudnn_benchmark": false,
+            "torch_cpu_threads": 4,
+            "query_device": "CPU_FP32_single_query",
+            "fine_device": "cuda:0_FP32_canonical1024",
+            "autocast": false,
+            "query_max_length": 512,
+            "plan_sha256": "ada0545449eee37a9ee5179301525b2e4c6d05da13a178199541d2f14bf0629d"
+          },
+          "warning": "Accepted on this recorded machine/backend only. CPU/GPU or package-version equivalence is not established."
+        }
       },
-      "model_bundle_id": "b30d6f4f6784a9194231411f43f6177f0c004474425bf80397faed66d125eee2",
+      "model_bundle_id": "f322a33d96d31049724c5a8075ba08d2a1f9948e15a1cdc5b473c9a40a264245",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -162,11 +203,7 @@
               "current": 0.5523255813953488,
               "absolute_delta": 0.013081395348837233,
               "absolute_delta_pp": 1.3081395348837233,
-              "relative_delta_pct": 2.4258760107816757,
-              "ci95_delta": [
-                0.003239103804721355,
-                0.02275926537722248
-              ]
+              "relative_delta_pct": 2.4258760107816757
             },
             {
               "name": "Recall@100",
@@ -174,11 +211,7 @@
               "current": 0.6370592613868877,
               "absolute_delta": 0.025519930754297704,
               "absolute_delta_pp": 2.5519930754297704,
-              "relative_delta_pct": 4.173064507216456,
-              "ci95_delta": [
-                0.021564090078404374,
-                0.029120859941238364
-              ]
+              "relative_delta_pct": 4.173064507216456
             },
             {
               "name": "known_positive_NDCG@10",
@@ -186,11 +219,7 @@
               "current": 0.22252257141416532,
               "absolute_delta": 0.005435915402980135,
               "absolute_delta_pp": 0.5435915402980135,
-              "relative_delta_pct": 2.5040301890780676,
-              "ci95_delta": [
-                0.0009271430685299379,
-                0.010040429491335767
-              ]
+              "relative_delta_pct": 2.5040301890780676
             },
             {
               "name": "MRR@100",
@@ -198,11 +227,7 @@
               "current": 0.2904590795771922,
               "absolute_delta": 0.009212920873289066,
               "absolute_delta_pp": 0.9212920873289066,
-              "relative_delta_pct": 3.275749939393291,
-              "ci95_delta": [
-                0.0021169499898507005,
-                0.01630104173156066
-              ]
+              "relative_delta_pct": 3.275749939393291
             }
           ]
         },
@@ -253,6 +278,56 @@
             "label": "Frozen v3 recall order",
             "status": "baseline",
             "changed": "Reference before ranking-prior and subsequent recall iterations",
+            "metrics": {
+              "HitRate@10": 0.5392441860465116,
+              "HitRate@50": 0.7483850129198967,
+              "Recall@100": 0.61153933063259,
+              "known_positive_NDCG@10": 0.21708665601118518,
+              "MRR@100": 0.2812461587039031
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.5392441860465116,
+                "current": 0.5392441860465116,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "HitRate@50": {
+                "baseline": 0.7483850129198967,
+                "current": 0.7483850129198967,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "Recall@100": {
+                "baseline": 0.61153933063259,
+                "current": 0.61153933063259,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.21708665601118518,
+                "current": 0.21708665601118518,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "MRR@100": {
+                "baseline": 0.2812461587039031,
+                "current": 0.2812461587039031,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              }
+            }
+          },
+          {
+            "id": "canonical_raw",
+            "label": "Canonical request recall order",
+            "status": "diagnostic",
+            "changed": "Same frozen model and fusion; current-request numerical contract replay",
             "metrics": {
               "HitRate@10": 0.5392441860465116,
               "HitRate@50": 0.7483850129198967,
@@ -416,60 +491,40 @@
                 "current": 0.5523255813953488,
                 "absolute_delta": 0.013081395348837233,
                 "absolute_delta_pp": 1.3081395348837233,
-                "relative_delta_pct": 2.4258760107816757,
-                "ci95_delta": [
-                  0.003239103804721355,
-                  0.02275926537722248
-                ]
+                "relative_delta_pct": 2.4258760107816757
               },
               "HitRate@50": {
                 "baseline": 0.7483850129198967,
                 "current": 0.7842377260981912,
                 "absolute_delta": 0.035852713178294526,
                 "absolute_delta_pp": 3.5852713178294526,
-                "relative_delta_pct": 4.790677600345267,
-                "ci95_delta": [
-                  0.0287905140117475,
-                  0.04249550336566679
-                ]
+                "relative_delta_pct": 4.790677600345267
               },
               "Recall@100": {
                 "baseline": 0.61153933063259,
                 "current": 0.6370592613868877,
                 "absolute_delta": 0.025519930754297704,
                 "absolute_delta_pp": 2.5519930754297704,
-                "relative_delta_pct": 4.173064507216456,
-                "ci95_delta": [
-                  0.021564090078404374,
-                  0.029120859941238364
-                ]
+                "relative_delta_pct": 4.173064507216456
               },
               "known_positive_NDCG@10": {
                 "baseline": 0.21708665601118518,
                 "current": 0.22252257141416532,
                 "absolute_delta": 0.005435915402980135,
                 "absolute_delta_pp": 0.5435915402980135,
-                "relative_delta_pct": 2.5040301890780676,
-                "ci95_delta": [
-                  0.0009271430685299379,
-                  0.010040429491335767
-                ]
+                "relative_delta_pct": 2.5040301890780676
               },
               "MRR@100": {
                 "baseline": 0.2812461587039031,
                 "current": 0.2904590795771922,
                 "absolute_delta": 0.009212920873289066,
                 "absolute_delta_pp": 0.9212920873289066,
-                "relative_delta_pct": 3.275749939393291,
-                "ci95_delta": [
-                  0.0021169499898507005,
-                  0.01630104173156066
-                ]
+                "relative_delta_pct": 3.275749939393291
               }
             }
           }
         ],
-        "warning": "All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed."
+        "warning": "All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed. Canonical Search stages share one regenerated input pool; the frozen baseline retains its recorded numerical contract."
       }
     },
     "rec": {
@@ -488,26 +543,26 @@
           "scope": "All original test requests; unique clicked request-item pairs; actual top500 retrieval; no forced positives",
           "denominator": "All positive original test requests, including zero-hit and empty-candidate requests",
           "label": "binary click > 0; repeated positive impressions deduplicated per request-item",
-          "known_positive_NDCG@10": 0.002548425237756525,
-          "HitRate@10": 0.012415654520917679,
-          "known_positive_pairs_top10": 140,
-          "HitRate@50": 0.03832658569500675,
-          "known_positive_pairs_top50": 459,
-          "HitRate@100": 0.06585695006747638,
-          "known_positive_pairs_top100": 809,
-          "HitRate@500": 0.1623931623931624,
-          "known_positive_pairs_top500": 2216,
-          "Recall@100": 0.02319469201214716,
-          "MicroRecall@100": 0.01810531969652888,
-          "Recall@500": 0.06289128710427415,
-          "MicroRecall@500": 0.049593805250318916,
-          "MRR@10": 0.004051260630207999,
-          "MRR@100": 0.005561775410866889,
-          "MedianFirstHitRank": 138.0,
-          "MedianFirstHitRank_among_hits_at500": 138.0,
+          "known_positive_NDCG@10": 0.003236697834438843,
+          "HitRate@10": 0.015024741340530815,
+          "known_positive_pairs_top10": 172,
+          "HitRate@50": 0.0456140350877193,
+          "known_positive_pairs_top50": 559,
+          "HitRate@100": 0.07197480881691408,
+          "known_positive_pairs_top100": 892,
+          "HitRate@500": 0.1647323436797121,
+          "known_positive_pairs_top500": 2242,
+          "Recall@100": 0.026752250835630695,
+          "MicroRecall@100": 0.019962849405814293,
+          "Recall@500": 0.06548263519638632,
+          "MicroRecall@500": 0.05017568202672157,
+          "MRR@10": 0.004499817920870552,
+          "MRR@100": 0.006225164933763815,
+          "MedianFirstHitRank": 126.0,
+          "MedianFirstHitRank_among_hits_at500": 126.0,
           "median_scope": "Only requests with a hit in actual top500; misses excluded from median and reported separately",
-          "missed_requests_at_500": 9310,
-          "missed_requests@500": 9310
+          "missed_requests_at_500": 9284,
+          "missed_requests@500": 9284
         },
         "lineage": {
           "selection_sha256": "7ae4490598072ba7e87bc7f70aee63b3fb731ea3586465b636cf57e802817609",
@@ -517,7 +572,8 @@
           "model_family": "residual_dssm_v1",
           "residual_learned_weight": 0.25,
           "gradient_updates": 0,
-          "pca_fit_split": "original_train_fit"
+          "pca_fit_split": "original_train_fit",
+          "fusion_selection_sha256": "6c9a52d75ffb49253bc9bbd58dd74ca746e7455127f10f80f0761dfec274b435"
         }
       },
       "ranking": {
@@ -579,7 +635,9 @@
           "weight": 1.0,
           "manifest_sha256": "1a1fadb6c1fa4e9caf28a8a4526affc1ab75575fcfb5cc3b35d92318d150508f"
         },
-        "serving_enabled": false
+        "serving_enabled": false,
+        "inference_contract": "frozen_logged_exposure_fp32",
+        "scope_note": "Frozen complete logged-exposure diagnostic; not rerun under the request-local serving numerical contract; not end-to-end serving quality."
       },
       "pipeline": {
         "test": {
@@ -596,26 +654,26 @@
           "scope": "All original test requests; unique clicked request-item pairs; actual top500 retrieval; no forced positives",
           "denominator": "All positive original test requests, including zero-hit and empty-candidate requests",
           "label": "binary click > 0; repeated positive impressions deduplicated per request-item",
-          "known_positive_NDCG@10": 0.002548425237756525,
-          "HitRate@10": 0.012415654520917679,
-          "known_positive_pairs_top10": 140,
-          "HitRate@50": 0.03832658569500675,
-          "known_positive_pairs_top50": 459,
-          "HitRate@100": 0.06585695006747638,
-          "known_positive_pairs_top100": 809,
-          "HitRate@500": 0.1623931623931624,
-          "known_positive_pairs_top500": 2216,
-          "Recall@100": 0.02319469201214716,
-          "MicroRecall@100": 0.01810531969652888,
-          "Recall@500": 0.06289128710427415,
-          "MicroRecall@500": 0.049593805250318916,
-          "MRR@10": 0.004051260630207999,
-          "MRR@100": 0.005561775410866889,
-          "MedianFirstHitRank": 138.0,
-          "MedianFirstHitRank_among_hits_at500": 138.0,
+          "known_positive_NDCG@10": 0.003236697834438843,
+          "HitRate@10": 0.015024741340530815,
+          "known_positive_pairs_top10": 172,
+          "HitRate@50": 0.0456140350877193,
+          "known_positive_pairs_top50": 559,
+          "HitRate@100": 0.07197480881691408,
+          "known_positive_pairs_top100": 892,
+          "HitRate@500": 0.1647323436797121,
+          "known_positive_pairs_top500": 2242,
+          "Recall@100": 0.026752250835630695,
+          "MicroRecall@100": 0.019962849405814293,
+          "Recall@500": 0.06548263519638632,
+          "MicroRecall@500": 0.05017568202672157,
+          "MRR@10": 0.004499817920870552,
+          "MRR@100": 0.006225164933763815,
+          "MedianFirstHitRank": 126.0,
+          "MedianFirstHitRank_among_hits_at500": 126.0,
           "median_scope": "Only requests with a hit in actual top500; misses excluded from median and reported separately",
-          "missed_requests_at_500": 9310,
-          "missed_requests@500": 9310
+          "missed_requests_at_500": 9284,
+          "missed_requests@500": 9284
         },
         "serving_strategy": "recall_only",
         "input_cap": 500,
@@ -625,13 +683,13 @@
         "evaluated_recipe_stage": "raw",
         "diagnostic_raw_pool_cap": 320,
         "label_scope": "Known positives from all original test requests; not conditional exposure NDCG or online CTR",
-        "independent_verification_sha256": "148665f27026eb9f6e6c4680cfb1fef9d50efcfea6bd661d6ea2671d24733585",
+        "independent_verification_sha256": "fcb948146f02256ede6be3a0e747eea6a848ba60b76587fe63fc156f47058ddc",
         "release_evidence": {
-          "path": "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/evaluation/release.json",
-          "sha256": "adf69ca06f49a0a089c7462d5762058d0831a3987fa5748f023688d37e8c7c43"
+          "path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json",
+          "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621"
         }
       },
-      "model_bundle_id": "48e60bcec2be3280c17b22d153f23d59eedc4932392b7819d05d19e05fc18fcb",
+      "model_bundle_id": "3f4bab6f3abc286d9c9891d07cdc8bb6942143caf0675eb32de59ccfdbf4e2f1",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -641,34 +699,34 @@
             {
               "name": "HitRate@50",
               "baseline": 0.022762033288349078,
-              "current": 0.03832658569500675,
-              "absolute_delta": 0.015564552406657672,
-              "absolute_delta_pp": 1.5564552406657672,
-              "relative_delta_pct": 68.37944664031622
+              "current": 0.0456140350877193,
+              "absolute_delta": 0.022852001799370223,
+              "absolute_delta_pp": 2.2852001799370223,
+              "relative_delta_pct": 100.39525691699606
             },
             {
               "name": "Recall@100",
               "baseline": 0.010468837728634469,
-              "current": 0.02319469201214716,
-              "absolute_delta": 0.012725854283512692,
-              "absolute_delta_pp": 1.2725854283512692,
-              "relative_delta_pct": 121.55938045256742
+              "current": 0.026752250835630695,
+              "absolute_delta": 0.016283413106996228,
+              "absolute_delta_pp": 1.6283413106996227,
+              "relative_delta_pct": 155.54174712688186
             },
             {
               "name": "known_positive_NDCG@10",
               "baseline": 0.0016306093888105813,
-              "current": 0.002548425237756525,
-              "absolute_delta": 0.0009178158489459437,
-              "absolute_delta_pp": 0.09178158489459437,
-              "relative_delta_pct": 56.286677560186746
+              "current": 0.003236697834438843,
+              "absolute_delta": 0.0016060884456282616,
+              "absolute_delta_pp": 0.16060884456282615,
+              "relative_delta_pct": 98.49620986174953
             },
             {
               "name": "MRR@100",
               "baseline": 0.003682917126909296,
-              "current": 0.005561775410866889,
-              "absolute_delta": 0.0018788582839575929,
-              "absolute_delta_pp": 0.1878858283957593,
-              "relative_delta_pct": 51.01549177497596
+              "current": 0.006225164933763815,
+              "absolute_delta": 0.0025422478068545186,
+              "absolute_delta_pp": 0.25422478068545185,
+              "relative_delta_pct": 69.02810243216015
             }
           ]
         },
@@ -761,6 +819,45 @@
                 0.0011806855540178577,
                 0.0022573020668693183
               ]
+            }
+          ]
+        },
+        "fusion_vs_residual_control": {
+          "scope": "full_catalog_known_click",
+          "baseline_name": "Residual model + 1:2:1",
+          "current_name": "Same residual model + 2:1:1",
+          "metrics": [
+            {
+              "name": "HitRate@50",
+              "baseline": 0.03832658569500675,
+              "current": 0.0456140350877193,
+              "absolute_delta": 0.007287449392712551,
+              "absolute_delta_pp": 0.7287449392712552,
+              "relative_delta_pct": 19.014084507042256
+            },
+            {
+              "name": "Recall@100",
+              "baseline": 0.02319469201214716,
+              "current": 0.026752250835630695,
+              "absolute_delta": 0.0035575588234835337,
+              "absolute_delta_pp": 0.35575588234835337,
+              "relative_delta_pct": 15.337814451773815
+            },
+            {
+              "name": "known_positive_NDCG@10",
+              "baseline": 0.002548425237756525,
+              "current": 0.003236697834438843,
+              "absolute_delta": 0.0006882725966823179,
+              "absolute_delta_pp": 0.06882725966823179,
+              "relative_delta_pct": 27.00776096881815
+            },
+            {
+              "name": "MRR@100",
+              "baseline": 0.005561775410866889,
+              "current": 0.006225164933763815,
+              "absolute_delta": 0.0006633895228969258,
+              "absolute_delta_pp": 0.06633895228969258,
+              "relative_delta_pct": 11.927657517431584
             }
           ]
         }
@@ -1152,9 +1249,51 @@
                 "relative_delta_pct": 51.01549177497596
               }
             }
+          },
+          {
+            "id": "residual_fusion_selected",
+            "label": "Residual DSSM + validation-selected fusion",
+            "status": "accepted",
+            "changed": "Same residual model and CF graph; validation selected ANN2/Swing1/UserCF1 from eight fixed trials",
+            "metrics": {
+              "HitRate@50": 0.0456140350877193,
+              "Recall@100": 0.026752250835630695,
+              "known_positive_NDCG@10": 0.003236697834438843,
+              "MRR@100": 0.006225164933763815
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.0456140350877193,
+                "absolute_delta": 0.022852001799370223,
+                "absolute_delta_pp": 2.2852001799370223,
+                "relative_delta_pct": 100.39525691699606
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.026752250835630695,
+                "absolute_delta": 0.016283413106996228,
+                "absolute_delta_pp": 1.6283413106996227,
+                "relative_delta_pct": 155.54174712688186
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.003236697834438843,
+                "absolute_delta": 0.0016060884456282616,
+                "absolute_delta_pp": 0.16060884456282615,
+                "relative_delta_pct": 98.49620986174953
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.006225164933763815,
+                "absolute_delta": 0.0025422478068545186,
+                "absolute_delta_pp": 0.25422478068545185,
+                "relative_delta_pct": 69.02810243216015
+              }
+            }
           }
         ],
-        "warning": "All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed."
+        "warning": "All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed. Canonical Search stages share one regenerated input pool; the frozen baseline retains its recorded numerical contract."
       }
     }
   },
@@ -1164,21 +1303,93 @@
         "sha256": "cc9a3ab7a9ab3351a0606272c728e701a7d8e2d4a28fa5b666824253f9a19bd0",
         "bytes": 9650
       },
-      "outputs/evaluation/northstar_fix_20261031/search_rank_prior_gate/selection.json": {
-        "sha256": "497e55a9e19e6cd2269e2db3b4e829ecb1d7530ad40eba8c34d5d1d88abb4a59",
-        "bytes": 27342
+      "outputs/deploy/search/hard/bundles/northstar_fix_20261031_v1/bundle_runtime_v5.json": {
+        "sha256": "2f0dd2437ababf714f2be93e2ecea819d7f6969c0b3589cadbbfbf5831f4c7c9",
+        "bytes": 14392
       },
-      "outputs/evaluation/northstar_fix_20261031/search_rank_prior_gate/test/metrics.json": {
-        "sha256": "103232c162ef15724b7b8e2f6d518af221ca65d40d047ab3059b2006db0dddbc",
-        "bytes": 16934
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/deployment_v1/numerical_release.json": {
+        "sha256": "9962a0cae71151c2f182971a85ffa6a9e8d4923f4a3509db2620df54e7cc5e68",
+        "bytes": 5605
       },
-      "outputs/deploy/search/hard/bundles/northstar_fix_20261031_v1/bundle_runtime_v3.json": {
-        "sha256": "dec1e5ba59ecf1d15b1cbd33c57cc078715c7d2473c95376151b7a13c98ae581",
-        "bytes": 13105
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/plan.json": {
+        "sha256": "ada0545449eee37a9ee5179301525b2e4c6d05da13a178199541d2f14bf0629d",
+        "bytes": 24356
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/validation/metrics.json": {
+        "sha256": "4b48a44f911e89b84d94b0d69410b6a56f09c3a37e89271a8530d1e87abd1a16",
+        "bytes": 31103
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/metrics.json": {
+        "sha256": "3023ff65fbdadc768ea2bde2ca04a7a85aab6fa89435790eabe5b01a95945b94",
+        "bytes": 31194
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/raw_selected.parquet": {
+        "sha256": "8ebcaaeb338c4c18e9a0b3f2f617fa44c4288ceb05a6449d67db2e34dec992d6",
+        "bytes": 63120189
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/scores.parquet": {
+        "sha256": "83f6ce54248495b9bad0aa385e0903b7fc745dfc83eb59ddee5a7f7bd74be978",
+        "bytes": 144238867
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/final_candidates.parquet": {
+        "sha256": "5c7ba272f8bdd792063f413995705a6c6eb09bd4725529ee7b28ea94e0500e2c",
+        "bytes": 33215954
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/request_context.parquet": {
+        "sha256": "d403acd09565f8725952c6c34a44873dc05e20e819e74b5ef14d523abe7e01a3",
+        "bytes": 1304895
       },
       "datasets/search_test/train-00000-of-00001.parquet": {
         "sha256": "89dd99821e365341860d69f77bab36eeb8d8b692194e082e40a9ea6ea39ff243",
         "bytes": 19396047
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/test_independent_verification.json": {
+        "sha256": "5fb0138d2d1ebf012a7bd73411f9ddff5f8eedf08d0cd57fc289c0d877393baa",
+        "bytes": 14650
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/test_profile_input_verification.json": {
+        "sha256": "d5bb09e53f1d56f8effdd92848d83f30ecd7d290854e85489296a1d64be95e38",
+        "bytes": 11219
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/validation_independent_verification.json": {
+        "sha256": "66d4796382124b650a8e119073e5bf8b7f5e89046839847e1f7f3405d9da9af7",
+        "bytes": 14733
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/validation_profile_input_verification.json": {
+        "sha256": "fd085f52631a66dd96b1f8696d88877d7ff57f4ed0fcb43967396dfeaf00d26a",
+        "bytes": 11298
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/test_reproducibility.json": {
+        "sha256": "4a316ab6695c631d1c067850cb1ec781122b106ee0e5ecae3882c4ab4cb6614f",
+        "bytes": 40822
+      },
+      ".qilin/search_request_fp32_v2_runtime_environment.json": {
+        "sha256": "79923b5679ff048f0a6f06347fcf013f02c8e32993dffd26682cdef2aae5400c",
+        "bytes": 819
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/source_snapshot/manifest.json": {
+        "sha256": "26f44317df33462b48e17b34195e8610e375534e8e7602cb86c417fe8f9ebc90",
+        "bytes": 13158
+      },
+      ".qilin/search_context_v2_preflight.json": {
+        "sha256": "d2c8ef380682c01319486edfa65090c7c40cf94bdb894d7cf3b7706484d0bb1f",
+        "bytes": 1600
+      },
+      "scripts/verify_search_numerical_contract.py": {
+        "sha256": "e53d97acdd1dd3449406342bc6e39ee57605b05cebc069166f1f2f53e12d2d65",
+        "bytes": 11770
+      },
+      "scripts/repeat_search_numerical_contract.py": {
+        "sha256": "08ab2cdcdf5d751c99e1d9cb76acc8ae34cabbf6ada6333973f2f40baef3bf35",
+        "bytes": 6859
+      },
+      ".qilin/search_v2_cosmetic_source_revision.json": {
+        "sha256": "0642cc67b464bd38d8c8aff704e83ff9a83420c024493dbe0c8a0d3147cd0507",
+        "bytes": 680
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/rank/manifest.json": {
+        "sha256": "f221506521c8b7c4a9e26b1bb6a2198451b9f6f71fca827c098e18d3c74d5ec4",
+        "bytes": 26213
       },
       "outputs/evaluation/northstar_fix_20261031/search_v3/test_selected.parquet": {
         "sha256": "805f45f5ae6e3ff5a526018e3363d8d3affe138d9fa9c37e38af7c75b8d70f4e",
@@ -1216,7 +1427,7 @@
         "sha256": "078051cdabde8649dc5cd9563f6556e9d0d08491fbb6ffffff1f64cad5355bb4",
         "bytes": 913374
       },
-      "outputs/deploy/search/hard/bundles/northstar_fix_20261031_v1/rank/gbdt.txt": {
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/rank/gbdt.txt": {
         "sha256": "078051cdabde8649dc5cd9563f6556e9d0d08491fbb6ffffff1f64cad5355bb4",
         "bytes": 913374
       },
@@ -1224,25 +1435,13 @@
         "sha256": "5855765ec1373dc89e34e45d964694787f24d47dc1127d169d191209b7192fa6",
         "bytes": 7524301
       },
-      "outputs/deploy/search/hard/bundles/northstar_fix_20261031_v1/rank/dien.pt": {
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/rank/dien.pt": {
         "sha256": "5855765ec1373dc89e34e45d964694787f24d47dc1127d169d191209b7192fa6",
         "bytes": 7524301
       },
       "outputs/evaluation/northstar_fix_20261031/search_v3/index/model_selection.json": {
         "sha256": "4ae5838b7cebf6e2db9cdfd60b0086c1beb3bc456f1c83e9e07f1b080e7402e7",
         "bytes": 4542
-      },
-      ".qilin/fix_20261031_search_prior_verification.json": {
-        "sha256": "b710a14a1b122acc2a4721e35096d7b3734cec02bcdc96eaf9dd3c4af46af96f",
-        "bytes": 4004
-      },
-      "outputs/evaluation/northstar_fix_20261031/search_rank_prior_gate/test/scores.parquet": {
-        "sha256": "9f9e0de16cf369e3f58f2c8ce1945c72604635308c106860240932d72593bc23",
-        "bytes": 14421807
-      },
-      "outputs/evaluation/northstar_fix_20261031/search_rank_prior_gate/test/final_candidates.parquet": {
-        "sha256": "b5b0ae59e6ce51f89755baddd692cca218f885bd395214655ef7fae9a6911af9",
-        "bytes": 8166853
       },
       "outputs/evaluation/northstar_fix_20261031/rec_rank_prior_gate/selection.json": {
         "sha256": "c7d67672576a333d1c0603e9279e7f36981b3b113430e93c99917cfd47db1ffa",
@@ -1252,13 +1451,13 @@
         "sha256": "ab82ce6d255fc9eeab7ba265a36953edfe32b5b62666b5b231b99a045f8a960b",
         "bytes": 16557
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/bundle.json": {
-        "sha256": "a52e470b5d874ab7cc4b923dcad1f8f8d32a1a71b8c624d8419b5db6ab2f35cf",
-        "bytes": 12452
+      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/bundle_runtime_fusion_v3.json": {
+        "sha256": "6299952a9cca55bf6d67d93169a3ff1fe6eeddf4baada948300d08d476ffff72",
+        "bytes": 14460
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/evaluation/release.json": {
-        "sha256": "adf69ca06f49a0a089c7462d5762058d0831a3987fa5748f023688d37e8c7c43",
-        "bytes": 3064
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json": {
+        "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621",
+        "bytes": 5219
       },
       "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/selection.json": {
         "sha256": "7ae4490598072ba7e87bc7f70aee63b3fb731ea3586465b636cf57e802817609",
@@ -1280,9 +1479,9 @@
         "sha256": "1cb3abce1890c8abf050e6353bcde0e19a51fec78d44403a89cf3a538857dec2",
         "bytes": 536
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/test/allpast_selected.parquet": {
-        "sha256": "beb6da0788301e1cb8501f0a1d5d55e3d8fccdde297353c251a8b738eac9fff7",
-        "bytes": 41043676
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/allpast/winner_selected.parquet": {
+        "sha256": "75c25fa4fac2f20bc84989d34bcba26b0e794b39ae11fc46ddb4df4b78241d61",
+        "bytes": 45702835
       },
       ".qilin/rec_residual_lineage_verification.json": {
         "sha256": "96b42d2e056d8adf9f0aaad6adc66012a094fc057ecd970298d7e8170736cc12",
@@ -1311,6 +1510,42 @@
       "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/swing.npz": {
         "sha256": "a4dc574750071a2a83dd6671726180f64d429b02ffd4297c8cf34113d162cec4",
         "bytes": 1246675
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/test/allpast_selected.parquet": {
+        "sha256": "beb6da0788301e1cb8501f0a1d5d55e3d8fccdde297353c251a8b738eac9fff7",
+        "bytes": 41043676
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/selection.json": {
+        "sha256": "6c9a52d75ffb49253bc9bbd58dd74ca746e7455127f10f80f0761dfec274b435",
+        "bytes": 7609
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/plan.json": {
+        "sha256": "b97c38f22d8839044d958c0f94ec66eecf98284cce53143f672c6c34102cec80",
+        "bytes": 4758
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/metrics.json": {
+        "sha256": "3f93a40c679c071375ff38df5a85f3e89e80a4abc90cb9a3123d6379525db5f0",
+        "bytes": 5402
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/independent_proof.json": {
+        "sha256": "fcb948146f02256ede6be3a0e747eea6a848ba60b76587fe63fc156f47058ddc",
+        "bytes": 5581
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/validation_independent_proof.json": {
+        "sha256": "433a084f72d64e68722ff53dc1ab0105f2d75aa16dd8a69e9e5ff631df4cda0a",
+        "bytes": 494
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/root_test_approval.json": {
+        "sha256": "b4280620dac2f688a51185083262739c54badf92bea104bb03ef23d5c6ff2259",
+        "bytes": 250
+      },
+      "scripts/select_residual_fusion.py": {
+        "sha256": "45bc44eb0dcb8d78d968a19a0cd76639c31942b49445563ff77d5ce048ef9984",
+        "bytes": 16950
+      },
+      "src/recall/weighted_context_fusion.py": {
+        "sha256": "715c5e8a30cb9c844b4b8e6eb38d7262e34c8ed629cfebfd242820b2a5b62a88",
+        "bytes": 2474
       },
       "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/index/dssm_rec_hard_ivfpq_meta.json": {
         "sha256": "dd7ba98efa76e379b3710a3ac8d48883c4f63c8f9fadeaa34f420325b0a89f56",
@@ -1356,7 +1591,7 @@
         "sha256": "46bdc6fdb04a2788e6ae4c489c7823d7bbedee91d2210171ab65e94ec6d852bc",
         "bytes": 717947
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/rank/gbdt.txt": {
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/rank/gbdt.txt": {
         "sha256": "46bdc6fdb04a2788e6ae4c489c7823d7bbedee91d2210171ab65e94ec6d852bc",
         "bytes": 717947
       },
@@ -1364,13 +1599,17 @@
         "sha256": "6b3560323cf5a46ce59680beffdfa91811eb9fde9874f954e8502770a08c5d0f",
         "bytes": 7113253
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/rank/dien.pt": {
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/rank/dien.pt": {
         "sha256": "6b3560323cf5a46ce59680beffdfa91811eb9fde9874f954e8502770a08c5d0f",
         "bytes": 7113253
       },
       ".qilin/final_metrics_acceptance_20261031.json": {
         "sha256": "217e424c0b0d9f480b176f24f90682c45fefc7bdc6e6cef3b95f036968045fdb",
         "bytes": 33588
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank_prior_gate/test/metrics.json": {
+        "sha256": "103232c162ef15724b7b8e2f6d518af221ca65d40d047ab3059b2006db0dddbc",
+        "bytes": 16934
       },
       "outputs/evaluation/northstar_fix_20261031/rec_iteration_20261031/diagnostic_test/metrics.json": {
         "sha256": "f1b4a8705349ace6062fd56793fa5f916493265b1dd588569914188f3cbe9a8d",
@@ -1381,12 +1620,12 @@
         "bytes": 7343
       },
       "scripts/evaluation_comparisons.py": {
-        "sha256": "d509528702573b12d5eeafcdfa5710a904950d700cb8e4c1862d1ee63d543192",
-        "bytes": 7838
+        "sha256": "90bd0f1e95f971a11f172bf2ef76d43326ab9c32e0fad2c51e4f0d40e3f8f95c",
+        "bytes": 9640
       },
       "scripts/sync_evaluation_metrics.py": {
-        "sha256": "4f45fc67807183fe780400fcac34109d68ba6d2e7fae6f7a0c45fad7323c156d",
-        "bytes": 29019
+        "sha256": "679c703980f7dca1975737e4259a7485a14918bd8b4d891cf6b43c08cf82e36e",
+        "bytes": 36771
       }
     },
     "producer": "scripts/sync_evaluation_metrics.py",

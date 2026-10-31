@@ -10,6 +10,7 @@ type Story = StoryObj<typeof meta>;
 export const SearchMetrics: Story = {
   play: async ({ canvas, userEvent }) => {
     await expect(await canvas.findByRole('heading', { name: '最终结果与基线提升' })).toBeVisible();
+    await expect(canvas.getByText('下方数值保留为冻结的日志曝光池诊断，尚未按当前服务口径重新评测，不代表端到端服务效果。')).toBeVisible();
     const metric = await canvas.findByRole('button', { name: /^HitRate@10 / });
     await userEvent.click(metric);
     await expect(await canvas.findByRole('heading', { name: /召回.*HitRate@10/ })).toBeVisible();
@@ -25,7 +26,7 @@ export const RecommendationMetrics: Story = {
     await expect(await canvas.findByRole('button', { name: /^HitRate@50 / })).toBeVisible();
     await expect(canvas.getByText(/当前服务：仅召回/)).toBeVisible();
     await userEvent.click(canvas.getByText('阶段消融与实验结果'));
-    await expect(canvas.getByRole('rowheader', { name: 'DSSM residual + history filter' })).toBeVisible();
+    await expect(canvas.getByRole('rowheader', { name: 'Residual DSSM + validation-selected fusion' })).toBeVisible();
   },
 };
 export const MetricsUnavailable: Story = {
