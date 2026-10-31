@@ -19,10 +19,13 @@ def run_ranking(
     history_note_ids: list[int] | None = None,
     enable_dien: bool = True,
     search_filter_policy: str = "legacy",
+    ranking_policy: str = "legacy",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """DIEN 精排服务：按 GBDT 候选顺序进入 DIEN，再按 DIEN 分数排序。"""
     if search_filter_policy not in {"legacy", "soft"}:
         raise ValueError(f"Unknown Search filter policy: {search_filter_policy}")
+    if ranking_policy not in {"legacy", "learned"}:
+        raise ValueError("Unknown ranking policy")
     if cand.empty:
         return cand, cand
 
@@ -33,9 +36,11 @@ def run_ranking(
     elif "rank" in cand:
         cand = cand.sort_values("rank", ascending=True, kind="mergesort")
     cand = cand.drop_duplicates(subset=["note_idx"], keep="first").reset_index(drop=True)
-    cand = cand.head(int(RANK_TOPN)).copy()
+    cand = cand.copy() if ranking_policy == "learned" else cand.head(int(RANK_TOPN)).copy()
 
-    if bool(enable_dien) and predict_dien is not None:
+    if ranking_policy == "learned" and bool(enable_dien) and predict_dien is not None:
+        cand["dien_score"] = predict_dien(cand, history_note_ids=history_note_ids)
+    elif bool(enable_dien) and predict_dien is not None:
         cand = apply_dien_scores(
             cand,
             page_size=page_size,
@@ -44,6 +49,13 @@ def run_ranking(
         )
     else:
         cand["dien_score"] = pd.to_numeric(cand.get("gbdt_score", 0.0), errors="coerce").fillna(0.0)
+
+    if ranking_policy == "learned":
+        # The validated stack already includes its frozen validation-selected fusion.
+        cand["final_score"] = cand["dien_score"]
+        cand = cand.sort_values(["final_score", "rank"], ascending=[False, True], kind="mergesort").reset_index(drop=True)
+        start = max(0, (int(page) - 1) * int(page_size))
+        return cand, cand.iloc[start:start + int(page_size)].copy()
 
     if "linkage_boost" in cand.columns:
         cand["dien_score"] = (

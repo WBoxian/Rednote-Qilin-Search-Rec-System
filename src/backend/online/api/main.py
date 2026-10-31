@@ -21,7 +21,7 @@ from typing import Any
 import duckdb
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
 from pydantic import BaseModel
 
 from backend.online.pipeline import OnlineRuntimeRegistry  # noqa: E402
@@ -231,6 +231,7 @@ class AppContext:
 					page_size=self._prewarm_feed_page_size,
 					refresh_key="",
 					exclude_note_ids=None,
+					record_exposure=False,
 				)
 			except Exception:
 				return
@@ -275,6 +276,7 @@ class AppContext:
 				page_size=self._prewarm_feed_page_size,
 				refresh_key="",
 				exclude_note_ids=None,
+				record_exposure=False,
 			)
 		except Exception:
 			return None
@@ -527,12 +529,19 @@ def create_app(
 			}
 
 		out = {}
-		for t in ["easy", "hard"]:
+		for scene in ["search", "rec"]:
+			tag = app.state.ctx.resolve_scene_tag(scene)
 			try:
-				out[t] = app.state.ctx.get_runtime(t).readiness()
-			except Exception as e:  # noqa: BLE001
-				out[t] = {"error": str(e)}
-		return {"ok": True, "readiness": out}
+				state = app.state.ctx.get_runtime(tag).get_pipeline(scene).state.readiness()
+			except Exception as error:
+				state = {"ready": False, "error": str(error)}
+			out.setdefault(tag, {})[scene] = state
+		ready = all(
+			isinstance(state, dict) and state.get("ready") is True
+			for tag_state in out.values() for state in tag_state.values()
+		)
+		payload = {"ok": ready, "status": "ready" if ready else "not_ready", "readiness": out}
+		return payload if ready else JSONResponse(status_code=503, content=payload)
 
 	@app.get("/")
 	def root():

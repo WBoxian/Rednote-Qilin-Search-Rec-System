@@ -31,13 +31,13 @@ class OnlineQueryContractTests(unittest.TestCase):
         current=np.ones((1,128),np.float32)
         recaller._build_user_vec=Mock(return_value=current)
         recaller._search_ann=Mock(return_value=([],[]))
-        request=pd.DataFrame({'search_idx':[1],'query':['actual query'],'user_idx':[2]})
-        feature=pd.DataFrame({'search_idx':[99],'query':['reference query'],'query_ref_request_id':[99]})
+        request=pd.DataFrame({'search_idx':[1],'query':['reference query'],'user_idx':[2]})
+        feature=pd.DataFrame({'search_idx':[1],'query':['actual query'],'user_idx':[2],'query_ref_request_id':[99]})
         recaller.fetch_candidates(1,500,request,lambda gid:feature,'search_idx')
         recaller._get_precomp_user_vec.assert_not_called()
         actual=recaller._build_user_vec.call_args.kwargs['feat_req']
         self.assertEqual(actual['query'].iloc[0],'actual query')
-        self.assertEqual(feature['query'].iloc[0],'reference query')
+        self.assertEqual(feature['query'].iloc[0],'actual query')
         self.assertIs(recaller._search_ann.call_args.kwargs['user_vec'],current)
 
     def test_runtime_user_tower_receives_real_sequence_and_mask(self):

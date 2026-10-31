@@ -159,38 +159,21 @@ class DIENPredictor:
 
     def _get_runtime_query_tensor(self, batch_df: pd.DataFrame, gids: np.ndarray) -> torch.Tensor:
         texts = [self._normalize_search_query(x) for x in batch_df.get("query", pd.Series([""] * len(batch_df))).tolist()]
-        emb_dim = int(self.dien_train.EMB_DIM)
-        out = np.zeros((len(texts), emb_dim), dtype=np.float32)
-        if "q" in self.stores:
-            try:
-                ref_ids: list[int] = []
-                if "query_ref_request_id" in batch_df.columns:
-                    for raw_ref, gid in zip(batch_df["query_ref_request_id"].tolist(), gids.tolist()):
-                        try:
-                            ref_ids.append(int(pd.to_numeric(raw_ref, errors="coerce")))
-                        except Exception:
-                            ref_ids.append(int(gid))
-                else:
-                    ref_ids = [int(g) for g in gids.tolist()]
-                precomp = self.stores["q"].get_tensor(ref_ids).detach().cpu().numpy().astype(np.float32)
-                valid = np.linalg.norm(precomp, axis=1) > 1e-12
-                if valid.any():
-                    out[valid] = precomp[valid]
-            except Exception:
-                pass
-        cache_by_text: dict[str, np.ndarray] = {}
-        for i, q in enumerate(texts):
-            if float(np.linalg.norm(out[i])) > 1e-12:
-                continue
-            if not q:
-                continue
-            vec = cache_by_text.get(q)
-            if vec is None:
-                vec = self._encode_query_vec(q)
-                if vec is not None:
-                    cache_by_text[q] = vec
-            if vec is not None:
-                out[i] = vec.reshape(-1)
+        out = np.zeros((len(texts), int(self.dien_train.EMB_DIM)), dtype=np.float32)
+        encoded = {}
+        for index, text in enumerate(texts):
+            if text:
+                # A current query must never silently become a historical reference query.
+                if text not in encoded:
+                    encoded[text] = self._encode_query_vec(text)
+                vector = encoded[text]
+                if vector is None:
+                    raise RuntimeError("Current Search query encoding unavailable")
+                out[index] = vector.reshape(-1)
+            elif "q" in self.stores:
+                # Only explicit replay without raw query may use a reference embedding.
+                ref = batch_df.iloc[index].get("query_ref_request_id", gids[index])
+                out[index] = self.stores["q"].get_tensor([int(ref)]).detach().cpu().numpy().reshape(-1)
         return torch.tensor(out, dtype=torch.float32, device=self.device)
 
     def _get_history_seq_base_tensor(self, history_note_ids: list[int]) -> torch.Tensor:

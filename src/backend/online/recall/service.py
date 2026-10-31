@@ -509,54 +509,22 @@ def _merge_scores(
 
 
 def run_recall(
-    request_id: int,
-    user_idx: int,
-    feat_req: pd.DataFrame,
-    is_cold: bool,
-    recall_rank_cap: int,
-    hot_route_topk: int,
-    fetch_recall_candidates,
-    group_key: str,
+    request_id: int, user_idx: int, feat_req: pd.DataFrame, is_cold: bool,
+    recall_rank_cap: int, hot_route_topk: int, fetch_recall_candidates, group_key: str,
+    hot_note_ids: list[int] | None = None,
 ) -> pd.DataFrame:
-    # 冷启动优先热榜兜底，非冷启动走多路召回融合
-    hot = build_hot_candidates(feat_req, topk=min(int(hot_route_topk), int(recall_rank_cap)))
+    hot = build_hot_candidates(feat_req, min(int(hot_route_topk), int(recall_rank_cap)), hot_note_ids)
     if is_cold:
-        if hot.empty:
-            return pd.DataFrame()
-        return hot.drop_duplicates(subset=["note_idx"], keep="first").reset_index(drop=True)
-
+        return hot
     recall = fetch_recall_candidates(request_id, max_rank=int(recall_rank_cap))
-    if not recall.empty:
-        out = recall.copy()
-        if "rank" in out.columns:
-            out = out.sort_values("rank", ascending=True, kind="mergesort")
-        out = out.drop_duplicates(subset=["note_idx"], keep="first").head(int(recall_rank_cap)).reset_index(drop=True)
-        if "rank" not in out.columns:
-            out["rank"] = np.arange(1, len(out) + 1, dtype=np.int64)
-        return out
-
-    if not hot.empty:
-        return hot.drop_duplicates(subset=["note_idx"], keep="first").reset_index(drop=True)
-
-    if feat_req.empty:
-        return pd.DataFrame()
-
-    cand = feat_req.copy()
-    cand["rank"] = np.arange(1, len(cand) + 1)
-    cand["recall_score"] = 0.0
-    cand["score_ann"] = 0.0
-    cand["score_swing"] = 0.0
-    cand["score_usercf"] = 0.0
-    cand["from_ann"] = 0
-    cand["from_swing"] = 0
-    cand["from_usercf"] = 0
-    cand["from_hot"] = 1
-    cand["first_route"] = "hot"
-    if group_key not in cand.columns:
-        cand[group_key] = int(request_id)
-    if "user_idx" not in cand.columns:
-        cand["user_idx"] = int(user_idx)
-    return cand.drop_duplicates(subset=["note_idx"], keep="first").reset_index(drop=True)
+    if recall.empty:
+        return hot
+    out = recall.sort_values("rank", kind="mergesort") if "rank" in recall else recall.copy()
+    out = out.drop_duplicates("note_idx").head(int(recall_rank_cap)).reset_index(drop=True)
+    if "rank" not in out:
+        out["rank"] = np.arange(1, len(out) + 1)
+    out.attrs.update(recall.attrs)
+    return out
 
 
 def fetch_recall_candidates(
@@ -567,14 +535,15 @@ def fetch_recall_candidates(
     get_feat_req: Callable[[int], pd.DataFrame],
     dssm_recaller: DSSMRecaller | None,
     recall_test_path: Path | None,
+    allow_precomputed: bool = False,
 ) -> pd.DataFrame:
     scene = "search" if str(group_key) == "search_idx" else "rec"
+    # Saved Search mixtures may contain provider DPR; they cannot enter active Search.
     precomputed = _fetch_precomputed_recall(
-        recall_path=recall_test_path,
-        group_key=str(group_key),
-        request_id=int(request_id),
+        recall_path=recall_test_path, group_key=str(group_key), request_id=int(request_id),
         max_rank=int(max_rank),
-    )
+    ) if allow_precomputed and scene == "rec" else pd.DataFrame()
+    route_errors = []
     ann_df = pd.DataFrame()
     seq_df = pd.DataFrame()
     if dssm_recaller is not None:
@@ -621,18 +590,15 @@ def fetch_recall_candidates(
             if int(r.note_idx) >= 0
         })
     bm25_scores: dict[int, float] = {}
-    dpr_scores: dict[int, float] = {}
     if scene == "search" and len(req_cur) > 0:
         row = req_cur.iloc[0]
         if "bm25_results" in req_cur.columns:
             bm25_raw = row.get("bm25_results", "")
             bm25_scores = {int(nid): float(score) for nid, score in _parse_scored_route_blob("" if bm25_raw is None else str(bm25_raw), limit=int(max_rank))}
-        if "dpr_results" in req_cur.columns:
-            dpr_raw = row.get("dpr_results", "")
-            dpr_scores = {int(nid): float(score) for nid, score in _parse_scored_route_blob("" if dpr_raw is None else str(dpr_raw), limit=int(max_rank))}
+
 
     try:
-        swing_i2i, usercf_u2u, user_items, seqtrans_i2i = _load_route_assets(scene)
+        swing_i2i, usercf_u2u, user_items, seqtrans_i2i = _load_route_assets(scene) if scene == "rec" else ({}, {}, {}, {})
         hist_items: list[int] = []
         if len(feat_req) > 0 and "recent_clicked_note_idxs" in feat_req.columns:
             hist_items = _resolve_hist_items(
@@ -644,8 +610,8 @@ def fetch_recall_candidates(
         if scene == "search":
             if bm25_scores:
                 usercf_scores.update(bm25_scores)
-            if dpr_scores:
-                swing_scores.update(dpr_scores)
+            # Only a current-query BM25 route and the current DSSM tower are permitted.
+            swing_scores = {}
         else:
             live_swing_scores: dict[int, float] = {}
             if hist_items:
@@ -704,8 +670,8 @@ def fetch_recall_candidates(
                         overlap_bonus=0.08,
                         topk=int(max_rank),
                     )
-    except Exception:
-        pass
+    except Exception as error:
+        route_errors.append(type(error).__name__)
 
     if scene == "rec" and len(req_cur) > 0 and dssm_recaller is not None:
         query_text = str(req_cur.iloc[0].get("query") or "").strip()
@@ -791,4 +757,68 @@ def fetch_recall_candidates(
                 "first_route": str(first_route),
             }
         )
-    return pd.DataFrame(rows)
+    result = pd.DataFrame(rows)
+    result.attrs["route_status"] = {"scene": scene, "provider_dpr": "excluded",
+        "precomputed": bool(allow_precomputed and scene == "rec"), "errors": route_errors}
+    return result
+
+
+def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame, *, scene: str, max_rank: int) -> pd.DataFrame:
+    """Replay the frozen route recipe on CURRENT inputs, before input-budget truncation."""
+    key = "search_idx" if scene == "search" else "request_idx"
+    row = context.iloc[0]
+    gid, uid = int(row[key]), int(row["user_idx"])
+    policy = bundle.manifest["recall_policy"]
+    route_topk = int(policy.get("route_topk", 1000))
+    final_topk = int(policy.get("topk", 500))
+    errors = {}
+    ann, swing, usercf, bm25 = {}, {}, {}, {}
+    try:
+        frame = dssm_recaller.fetch_candidates(gid, route_topk, context, lambda _: context, key, pure_request_ann=True)
+        if not frame.empty:
+            ann = dict(zip(frame.note_idx.astype(int), frame.score_ann.astype(float)))
+    except (OSError, ValueError, RuntimeError) as error:
+        errors["ann"] = type(error).__name__
+    if scene == "search":
+        try:
+            lexical = bundle.bm25_candidates(str(row["query"]), route_topk)
+            bm25 = dict(zip(lexical.note_idx.astype(int), lexical.score.astype(float)))
+        except (OSError, ValueError, RuntimeError) as error:
+            errors["bm25"] = type(error).__name__
+    else:
+        try:
+            routes = bundle.cf_candidates(uid, list(row["recent_clicked_note_idxs"]), route_topk)
+            swing, usercf = routes["swing"], routes["usercf"]
+        except (OSError, ValueError, RuntimeError) as error:
+            errors["cf"] = type(error).__name__
+    weights = dict(policy["weights"])
+    if scene == "search":
+        usercf = bm25
+        weights = {"ann": weights.get("ann", 0.), "swing": 0., "usercf": weights.get("bm25", 0.)}
+    strategy = policy.get("strategy", "weighted_rrf")
+    if strategy == "weighted_rrf":
+        merged = weighted_rrf(ann, swing, usercf, topk=final_topk,
+            route_weights=weights, rrf_k=int(policy.get("rrf_k", 60)))
+    elif scene == "search" and strategy == "protected_headfill":
+        head_cap = int(policy.get("head_cap", 100))
+        head = sorted(bm25, key=lambda note: (-bm25[note], note))[:head_cap]
+        order = head + [note for note in sorted(ann, key=lambda note: (-ann[note], note)) if note not in set(head)]
+        merged = [(note, 1./(index+1), ann.get(note, 0.), 0., bm25.get(note, 0.),
+                   int(note in ann), 0, int(note in bm25), "usercf" if note in bm25 else "ann")
+                  for index, note in enumerate(order[:final_topk])]
+    else:
+        raise ValueError(f"Unsupported validated recall policy: {strategy}")
+    records = []
+    for rank, values in enumerate(merged[:max(0, int(max_rank))], 1):
+        note, score, score_ann, score_swing, score_usercf, from_ann, from_swing, from_usercf, first = values
+        records.append({key: gid, "user_idx": uid, "note_idx": note, "rank": rank,
+            "recall_score": score, "score_ann": score_ann, "score_swing": score_swing,
+            "score_usercf": score_usercf, "score_bm25": score_usercf if scene == "search" else 0.,
+            "from_ann": from_ann, "from_swing": from_swing, "from_usercf": from_usercf,
+            "first_route": "bm25" if scene == "search" and first == "usercf" else first})
+    result = pd.DataFrame(records)
+    result.attrs["route_status"] = {"bundle_id": bundle.bundle_id, "provider_dpr": "excluded",
+        "recipe": policy, "route_topk": route_topk, "counts": {"ann": len(ann),
+        **({"bm25": len(bm25)} if scene == "search" else {"swing": len(swing), "usercf": len(usercf)})},
+        "merged_before_input_budget": len(merged), "input_budget": int(max_rank), "errors": errors}
+    return result

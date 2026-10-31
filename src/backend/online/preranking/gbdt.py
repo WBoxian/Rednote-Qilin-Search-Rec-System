@@ -88,13 +88,15 @@ class GBDTPredictor:
         return self.predict_with_components(cand)["gbdt_score"]
 
 
-def run_preranking_gbdt(cand: pd.DataFrame, gbdt_topn: int, predict_gbdt) -> pd.DataFrame:
+def run_preranking_gbdt(cand: pd.DataFrame, gbdt_topn: int, predict_gbdt, ranking_policy: str = "legacy") -> pd.DataFrame:
+    if ranking_policy not in {"legacy", "learned"}:
+        raise ValueError("Unknown ranking policy")
     out = cand.copy()
     if "first_route" in out:
         out["first_route_id"] = out["first_route"].map({"ann": 1, "swing": 2, "usercf": 3}).fillna(0).astype(np.int16)
     predictor = getattr(predict_gbdt, "__self__", None)
     predictor = getattr(predictor, "gbdt_predictor", predictor)
-    if isinstance(predictor, GBDTPredictor):
+    if callable(getattr(predictor, "predict_with_components", None)):
         for name, values in predictor.predict_with_components(out).items():
             out[name] = values
     else:
@@ -103,8 +105,9 @@ def run_preranking_gbdt(cand: pd.DataFrame, gbdt_topn: int, predict_gbdt) -> pd.
     out["dien_preranking_score"] = out["gbdt_score"]
     base_order = out.sort_values(["gbdt_score", "rank"], ascending=[False, True], kind="mergesort").index
     out.loc[base_order, "dien_preranking_rank"] = np.arange(1, len(out) + 1, dtype=np.int32)
-    out["preranking_score"] = (0.8 * out["gbdt_score"] + 0.2 * out["dssm_score"]).astype(np.float32)
-    if "linkage_boost" in out.columns:
+    out["preranking_score"] = (out["gbdt_score"] if ranking_policy == "learned" else
+        0.8 * out["gbdt_score"] + 0.2 * out["dssm_score"]).astype(np.float32)
+    if ranking_policy == "legacy" and "linkage_boost" in out.columns:
         out["preranking_score"] = (
             pd.to_numeric(out["preranking_score"], errors="coerce").fillna(0.0)
             + pd.to_numeric(out["linkage_boost"], errors="coerce").fillna(0.0) * 0.18

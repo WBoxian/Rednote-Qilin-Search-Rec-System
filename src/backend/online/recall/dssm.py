@@ -42,8 +42,10 @@ def _load_train_module():
 
 
 class DSSMRecaller:
-    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str):
+    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str, *, query_encoder_dir=None, query_encoder_revision=None):
         self.scene = scene
+        self.query_encoder_dir = query_encoder_dir
+        self.query_encoder_revision = query_encoder_revision
         self.tag = tag
         self.deploy_tag_dir = deploy_tag_dir
         self.group_key = group_key
@@ -81,6 +83,8 @@ class DSSMRecaller:
         ckpt = torch.load(user_tower_path, map_location="cpu")
         user_state = ckpt.get("state_dict", {})
         meta = ckpt.get("meta", {})
+        self.history_contract = meta.get("history_contract", "legacy_raw_order_v0")
+        self.masked_user_dense = bool(meta.get("masked_user_dense", False))
         cat_vocabs = meta.get("cat_vocabs", {})
         item_dense_dim = int(meta.get("item_dense_dim", 0))
         user_dense_dim = int(meta.get("user_dense_dim", 0))
@@ -135,7 +139,7 @@ class DSSMRecaller:
             self.user_store["note_img"] = train_mod.MMapStore("note_img_emb", "note_img")
         except Exception:
             pass
-        if self.scene == "search":
+        if self.scene == "search" and self.query_encoder_dir is None:
             try:
                 self.user_store["search_query"] = train_mod.MMapStore("query_text_emb", "search_query")
             except Exception:
@@ -146,7 +150,9 @@ class DSSMRecaller:
         self.enabled = True
 
     def _load_query_encoder(self) -> None:
-        self.query_tokenizer, self.query_model = get_shared_query_encoder()
+        directory = getattr(self, "query_encoder_dir", None)
+        self.query_tokenizer, self.query_model = (get_shared_query_encoder(directory, getattr(self, "query_encoder_revision", None))
+            if directory is not None else get_shared_query_encoder())
 
     def _encode_query_vec(self, text: str) -> np.ndarray | None:
         q = str(text or "").strip()
@@ -255,7 +261,8 @@ class DSSMRecaller:
                 return float(default)
             return float(v)
 
-        dense_vals = [_fget(f"dense_feat{i}", 0.0) for i in range(1, 41)]
+        masked = bool(getattr(self, "masked_user_dense", False))
+        dense_vals = [0.0] * 40 if masked else [_fget(f"dense_feat{i}", 0.0) for i in range(1, 41)]
         hist_raw = row.get("recent_clicked_note_idxs", [])
         if isinstance(hist_raw, np.ndarray):
             hist_ids = [int(x) for x in hist_raw.tolist()]
@@ -273,8 +280,8 @@ class DSSMRecaller:
             "platform_enc": torch.tensor([_iget("platform_enc", 0)], dtype=torch.long),
             "age_enc": torch.tensor([_iget("age_enc", 0)], dtype=torch.long),
             "location_enc": torch.tensor([_iget("location_enc", 0)], dtype=torch.long),
-            "fans_num": torch.tensor([_fget("fans_num", 0.0)], dtype=torch.float32),
-            "follows_num": torch.tensor([_fget("follows_num", 0.0)], dtype=torch.float32),
+            "fans_num": torch.tensor([0.0 if masked else _fget("fans_num", 0.0)], dtype=torch.float32),
+            "follows_num": torch.tensor([0.0 if masked else _fget("follows_num", 0.0)], dtype=torch.float32),
             "dense_feats": torch.tensor([dense_vals], dtype=torch.float32),
         }
         if self.scene == "search":
@@ -353,43 +360,13 @@ class DSSMRecaller:
         return user_vec.detach().float().cpu().numpy().astype(np.float32)
 
     def _build_history_sequence_tensor(self, hist_ids: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
-        ids = [int(x) for x in hist_ids if int(x) >= 0]
-        if not ids:
-            return (
-                torch.zeros(1, self.train_mod.SEQ_MAX_LEN, self.train_mod.EMB_DIM, dtype=torch.float32),
-                torch.zeros(1, self.train_mod.SEQ_MAX_LEN, dtype=torch.float32),
-            )
-        ids = ids[-max(1, int(self.train_mod.SEQ_MAX_LEN)) :]
-        text_vecs = self.user_store["note_text"].get_batch_vecs(ids)
-        img_store = self.user_store.get("note_img")
-        img_vecs = img_store.get_batch_vecs(ids) if img_store is not None else None
-        if hasattr(self.train_mod, "_fuse_history_modal_vecs"):
-            fused = self.train_mod._fuse_history_modal_vecs(text_vecs=text_vecs, img_vecs=img_vecs)
-        else:
-            fused = text_vecs.float()
-        seq = torch.zeros(1, self.train_mod.SEQ_MAX_LEN, self.train_mod.EMB_DIM, dtype=torch.float32)
-        mask = torch.zeros(1, self.train_mod.SEQ_MAX_LEN, dtype=torch.float32)
-        valid_len = int(fused.shape[0])
-        seq[0, :valid_len] = fused[:valid_len].float()
-        mask[0, :valid_len] = 1.0
-        return seq, mask
+        sequence, mask = self.train_mod.build_history_sequence_from_ids(hist_ids, self.user_store,
+            history_contract=getattr(self, "history_contract", "legacy_raw_order_v0"))
+        return sequence.unsqueeze(0), mask.unsqueeze(0)
 
     def _build_history_summary_tensor(self, hist_ids: list[int]) -> torch.Tensor:
-        ids = [int(x) for x in hist_ids if int(x) >= 0]
-        if not ids:
-            return torch.zeros(1, self.train_mod.EMB_DIM, dtype=torch.float32)
-        text_vecs = self.user_store["note_text"].get_batch_vecs(ids)
-        img_store = self.user_store.get("note_img")
-        img_vecs = img_store.get_batch_vecs(ids) if img_store is not None else None
-        if hasattr(self.train_mod, "_fuse_history_modal_vecs"):
-            fused = self.train_mod._fuse_history_modal_vecs(text_vecs=text_vecs, img_vecs=img_vecs)
-        else:
-            fused = text_vecs.float()
-        if hasattr(self.train_mod, "summarize_history_sequence"):
-            summary = self.train_mod.summarize_history_sequence(fused)
-        else:
-            summary = fused.mean(dim=0)
-        return summary.reshape(1, -1).float()
+        return self.train_mod.build_history_summary_from_ids(hist_ids, self.user_store,
+            history_contract=getattr(self, "history_contract", "legacy_raw_order_v0")).reshape(1, -1).float()
 
     def _search_ann(self, user_vec: np.ndarray, max_rank: int) -> tuple[list[int], list[float]]:
         dists, idxs = self.ann_index.search(user_vec, int(max_rank))
@@ -534,6 +511,7 @@ class DSSMRecaller:
         req_df: pd.DataFrame,
         get_feat_req: Callable[[int], pd.DataFrame],
         group_key: str,
+        pure_request_ann: bool = False,
     ) -> pd.DataFrame:
         if not self.enabled or self.ann_index is None or len(self.row2note) == 0:
             return pd.DataFrame()
@@ -541,20 +519,16 @@ class DSSMRecaller:
         feat_req = get_feat_req(int(request_id))
         query_text = ""
         if self.scene == "search" and len(feat_req) > 0:
-            if len(req_cur) > 0 and "query" in req_cur.columns:
+            query_text = str(feat_req.iloc[0].get("query") or "")
+            if not query_text and len(req_cur) > 0 and "query" in req_cur.columns:
                 query_text = str(req_cur.iloc[0].get("query") or "")
-            if not query_text:
-                query_text = str(feat_req.iloc[0].get("query") or "")
             if query_text:
                 feat_req = feat_req.copy()
                 feat_req["query"] = query_text
-        if len(req_cur) > 0:
+        if len(feat_req) > 0 and "user_idx" in feat_req.columns:
+            user_idx = int(feat_req.iloc[0]["user_idx"])
+        elif len(req_cur) > 0:
             user_idx = int(req_cur.iloc[0]["user_idx"])
-        elif len(feat_req) > 0 and "user_idx" in feat_req.columns:
-            try:
-                user_idx = int(feat_req.iloc[0].get("user_idx", -1))
-            except Exception:
-                user_idx = -1
         else:
             user_idx = -1
         ref_request_id = int(request_id)
@@ -570,11 +544,17 @@ class DSSMRecaller:
             ref_request_id=int(ref_request_id),
         )
         if user_vec is None:
+            if pure_request_ann:
+                raise RuntimeError("Current request tower input could not be encoded")
             return pd.DataFrame()
 
         ann_note_ids, ann_scores = self._search_ann(user_vec=user_vec, max_rank=int(max_rank))
         if not ann_note_ids:
             return pd.DataFrame()
+        if pure_request_ann:
+            return pd.DataFrame({group_key: int(request_id), "user_idx": user_idx,
+                "note_idx": ann_note_ids, "rank": np.arange(1, len(ann_note_ids) + 1),
+                "score_ann": ann_scores, "recall_score": ann_scores, "first_route": "ann"})
 
         fused_note_ids = list(ann_note_ids)
         fused_ann_scores = list(ann_scores)

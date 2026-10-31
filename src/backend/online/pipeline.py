@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import gc
 import importlib.util
+import hashlib
+import uuid
 import json
 import os
 import re
@@ -18,6 +20,7 @@ import time
 import threading
 import sys
 from functools import lru_cache
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -35,14 +38,12 @@ except Exception:
 BASE_DIR = Path(__file__).resolve().parents[3]
 
 from backend.online.config import load_online_config
-from backend.online.cold_start.detector import is_cold_start
 from backend.online.realtime_cache import build_realtime_cache
-from backend.online.preranking.gbdt import GBDTPredictor
+from backend.online.live_context import LiveContextBuilder
 from backend.online.preranking.service import run_preranking
 from backend.online.ranking.service import run_ranking
-from backend.online.ranking.dien import DIENPredictor
 from backend.online.recall.dssm import DSSMRecaller
-from backend.online.recall.service import fetch_recall_candidates, run_recall
+from backend.online.recall.service import fetch_recall_candidates, fetch_bundle_recall_candidates, run_recall
 from backend.online.search_query import (
     DEFAULT_SERVICE_STOPWORDS,
     SearchQueryResources,
@@ -623,8 +624,15 @@ class SceneServingState:
         self._validation_recall_cache_lock = threading.Lock()
         self._validation_recall_cache: dict[int, tuple[float, pd.DataFrame]] = {}
         self._app_state = None
+        self._memory_history = {}
+        self._delivery_cards = OrderedDict()
+        self._context_lock = threading.Lock()
+        self.bundle_active = False
+        self.bundle_id = None
         self._load_data()
         self._load_models()
+        cutoff = self.bundle.manifest["training_cutoff_exclusive"] if self.bundle_active else os.getenv("QILIN_TRAIN_CUTOFF_EXCLUSIVE")
+        self._load_live_resources(int(cutoff) if cutoff is not None else None)
 
     def _artifact_path(self, rel_path: str) -> Path:
         return self.deploy_tag_dir / rel_path
@@ -643,15 +651,11 @@ class SceneServingState:
 
         self.request_true_results_map = self._build_request_truth_map_from_df(self.req_df)
 
-        self.feat_df = pd.read_parquet(self.scene_feat_path)
-        self.feat_df[self.group_key] = self.feat_df[self.group_key].astype(np.int64)
-        self.feat_df["note_idx"] = self.feat_df["note_idx"].astype(np.int64)
-        self.feat_df = _shrink_numeric_dtypes(self.feat_df)
-        self.empty_feat_df = self.feat_df.iloc[0:0].copy()
-        self.feat_group_indices = {
-            int(k): np.asarray(v, dtype=np.int32)
-            for k, v in self.feat_df.groupby(self.group_key, sort=False).indices.items()
-        }
+        # Historical exposure features belong to explicit replay, not live startup/inference.
+        self.feat_df = pd.DataFrame(columns=[self.group_key, "user_idx", "note_idx", "recent_clicked_note_idxs"])
+        self.empty_feat_df = self.feat_df.copy()
+        self.feat_group_indices = {}
+        self._test_features_loaded = False
 
         user_feat_df = pd.read_parquet(self.user_feat_path)
         user_feat_df["user_idx"] = user_feat_df["user_idx"].astype(np.int64)
@@ -713,12 +717,20 @@ class SceneServingState:
             self.search_query_norm_map = {}
             self.search_term_score_map = {}
             self.search_term_bucket_map = {}
-        self.hot_note_pool = self._load_hot_note_pool(limit=int(os.getenv("QILIN_HOT_NOTE_POOL_SIZE", "4000")))
+    def _load_live_resources(self, cutoff_exclusive: int | None) -> None:
+        self.live_context_builder = LiveContextBuilder(BASE_DIR, self.scene, self.user_feat_map, cutoff_exclusive=cutoff_exclusive)
+        self.hot_note_pool = self.live_context_builder.hot_note_ids
+        if self.scene == "search":
+            self.search_query_catalog = self.live_context_builder.query_catalog
+            self.search_query_resources = build_search_query_resources(self.search_query_catalog)
+            self.search_query_norm_catalog = list(self.search_query_resources.norm_catalog)
+            self.search_query_norm_map = dict(self.search_query_resources.norm_map)
+            self.search_term_score_map = dict(self.search_query_resources.term_score_map)
+            self.search_term_bucket_map = {str(key): list(value) for key, value in self.search_query_resources.term_bucket_map.items()}
 
     def _request_columns_for_split(self, split: str) -> list[str]:
         req_cols = [self.group_key, "user_idx", "session_idx", "query"]
         if self.scene == "search":
-            req_cols += ["dpr_results"]
             if str(split) == "test":
                 req_cols += ["bm25_results", "search_results", "search_result_details_with_idx"]
             else:
@@ -822,29 +834,24 @@ class SceneServingState:
         return [int(x) for x in truth_df["note_idx"].astype(int).tolist()[: max(1, int(topk))]]
 
     def _load_hot_note_pool(self, limit: int = 4000) -> list[int]:
-        n = max(200, min(20_000, int(limit)))
-        con = duckdb.connect(database=":memory:")
-        try:
-            q = """
-            SELECT note_idx
-            FROM read_parquet(?)
-            WHERE COALESCE(note_title, '') <> ''
-              AND COALESCE(image_num, 0) > 0
-            ORDER BY (
-                COALESCE(accum_like_num, 0) * 1.0
-                + COALESCE(accum_collect_num, 0) * 1.5
-                + COALESCE(accum_comment_num, 0) * 2.0
-            ) DESC, note_idx DESC
-            LIMIT ?
-            """
-            df = con.execute(q, [self.notes_glob, n]).df()
-        except Exception:
-            return []
-        finally:
-            con.close()
-        if "note_idx" not in df.columns or len(df) <= 0:
-            return []
-        return [int(x) for x in df["note_idx"].tolist() if int(x) >= 0]
+        return self.live_context_builder.hot_note_ids[:max(0, int(limit))]
+
+    def build_live_context(self, user_idx: int, query: str) -> pd.DataFrame:
+        uid = int(user_idx)
+        history = []
+        if self.realtime_cache is not None:
+            history = self.realtime_cache.get_user_history_notes(uid, self.scene, max_len=20)
+        with self._context_lock:
+            memory = list(self._memory_history.get(uid, []))
+        if not history:
+            history = memory or self.live_context_builder.seed_history(uid)
+        return self.live_context_builder.build(uid, query, history)
+
+    def fetch_live_recall_candidates(self, context: pd.DataFrame, max_rank: int) -> pd.DataFrame:
+        if not self.bundle_active:
+            raise RuntimeError("No validated retrieval bundle is active")
+        return fetch_bundle_recall_candidates(self.bundle, self.dssm_recaller, context,
+            scene=self.scene, max_rank=int(max_rank))
 
     def preprocess_search_query(self, query: str, user_idx: int | None = None) -> dict[str, Any]:
         if self.scene != "search":
@@ -860,28 +867,37 @@ class SceneServingState:
                 "intents": [],
                 "service_query": str(query or ""),
             }
-        recent_queries: list[str] = []
+        recent_queries = []
         if user_idx is not None:
-            reqs = self.user_requests.get(int(user_idx), [])
-            recent_queries.extend(
-                str(self.search_query_map.get(int(rid), "")).strip()
-                for rid in reqs[-32:]
-                if str(self.search_query_map.get(int(rid), "")).strip()
-            )
+            context = self.live_context_builder.training_contexts.get(int(user_idx), {})
+            if context.get("query"):
+                recent_queries.append(str(context["query"]))
             if self.realtime_cache is not None:
-                rt_reqs = self.realtime_cache.get_user_requests(int(user_idx), self.scene) or []
-                recent_queries.extend(
-                    str(self.search_query_map.get(int(rid), "")).strip()
-                    for rid in rt_reqs[-16:]
-                    if str(self.search_query_map.get(int(rid), "")).strip()
-                )
+                recent_queries.extend(str(row.get("query", "")) for row in
+                    self.realtime_cache.get_recent_behaviors(int(user_idx), "search", max_len=16)
+                    if row.get("query"))
         return run_search_query_preprocess(
             query,
             resources=self.search_query_resources,
             recent_queries=recent_queries,
         )
 
+    def _ensure_test_feat_cache(self) -> None:
+        if self._test_features_loaded:
+            return
+        with self._predict_lock:
+            if self._test_features_loaded:
+                return
+            if self.scene_feat_path.exists():
+                frame = _shrink_numeric_dtypes(pd.read_parquet(self.scene_feat_path))
+                self.feat_df = frame
+                self.empty_feat_df = frame.iloc[:0].copy()
+                self.feat_group_indices = {int(gid): np.asarray(indices, dtype=np.int32)
+                    for gid, indices in frame.groupby(self.group_key, sort=False).indices.items()}
+            self._test_features_loaded = True
+
     def get_feat_req(self, request_id: int) -> pd.DataFrame:
+        self._ensure_test_feat_cache()
         idx = self.feat_group_indices.get(int(request_id))
         if idx is None or len(idx) <= 0:
             return self.empty_feat_df
@@ -914,37 +930,48 @@ class SceneServingState:
         return self.get_feat_req(request_id) if str(split) == "test" else self._get_train_feat_req(request_id)
 
     def _load_models(self) -> None:
-        # 各阶段模型在状态初始化时加载，service 仅负责编排调用
-        self.gbdt_predictor = GBDTPredictor(
-            scene=self.scene,
-            tag=self.tag,
-            deploy_tag_dir=self.deploy_tag_dir,
-            group_key=self.group_key,
-            feat_columns=list(self.feat_df.columns),
-        )
-        self.dien_predictor = DIENPredictor(
-            scene=self.scene,
-            tag=self.tag,
-            deploy_tag_dir=self.deploy_tag_dir,
-            group_key=self.group_key,
-        )
-        self.dssm_recaller = DSSMRecaller(
-            scene=self.scene,
-            tag=self.tag,
-            deploy_tag_dir=self.deploy_tag_dir,
-            group_key=self.group_key,
-        )
-
-        self.lgb_model = self.gbdt_predictor.lgb_model
-        self.xgb_model = self.gbdt_predictor.xgb_model
-        self.gbdt_feature_cols = self.gbdt_predictor.feature_cols
-        self.dien_model = self.dien_predictor.model
-        self.dssm_model = self.dssm_recaller.model
-        self.realtime_ann_enabled = bool(self.dssm_recaller.enabled)
-
+        self.bundle_active = False
+        self.bundle_errors = []
+        self.bundle_id = None
+        self.lgb_model = self.xgb_model = self.dien_model = self.dssm_model = None
+        self.gbdt_predictor = self.dien_predictor = self.dssm_recaller = None
+        self.gbdt_feature_cols = []
+        self.realtime_ann_enabled = False
+        try:
+            from backend.online.bundle import get_active_bundle
+            bundle = get_active_bundle(self.scene, self.tag, BASE_DIR)
+            if bundle is None:
+                self.bundle_errors = ["No validated serving bundle is active"]
+                return
+            self.gbdt_predictor = self.dien_predictor = bundle.ranker
+            self.lgb_model, self.xgb_model = bundle.ranker.lgb_model, bundle.ranker.xgb_model
+            self.gbdt_feature_cols = list(bundle.ranker.feature_cols)
+            self.dien_model = bundle.ranker.model
+            query_dir = BASE_DIR / bundle.manifest["query_encoder_dir"] if self.scene == "search" else None
+            self.dssm_recaller = DSSMRecaller(self.scene, self.tag, bundle.recall_dir, self.group_key,
+                query_encoder_dir=query_dir, query_encoder_revision=bundle.manifest.get("query_encoder_revision"))
+            self.dssm_model = self.dssm_recaller.model
+            self.realtime_ann_enabled = bool(self.dssm_recaller.enabled)
+            if not self.realtime_ann_enabled:
+                raise RuntimeError("Validated request ANN failed to initialize")
+            self.bundle_input_cap, self.bundle_coarse_cap = bundle.input_cap, bundle.coarse_cap
+            if self.scene == "search":
+                def bm25(query, topk):
+                    frame = bundle.bm25_candidates(query, topk)
+                    return frame[["note_idx", "score"]].itertuples(index=False, name=None)
+                self.bm25_recaller = bm25
+            self.bundle = bundle
+            self.bundle_id = bundle.bundle_id
+            self.bundle_active = True
+        except (ImportError, OSError, ValueError, RuntimeError) as error:
+            self.bundle_errors = [f"{type(error).__name__}: {error}"]
+            # Safe training-hot fallback stays available; model readiness remains false.
 
     def readiness(self) -> dict[str, Any]:
         return {
+            "ready": bool(self.bundle_active and self.realtime_ann_enabled),
+            "model_bundle_id": self.bundle_id,
+            "bundle_errors": getattr(self, "bundle_errors", []),
             "scene": self.scene,
             "scene_test": self.scene_test_path.exists(),
             "scene_test_features": self.scene_feat_path.exists(),
@@ -971,8 +998,7 @@ class SceneServingState:
         if not reqs:
             if len(self.req_df) == 0:
                 raise KeyError("no requests available for this scene")
-            rid = int(self.req_df.iloc[0][self.group_key])
-            return rid, ""
+            raise KeyError("No replay requests for this user")
 
         if self.scene == "rec":
             rid = int(reqs[-1])
@@ -1093,36 +1119,13 @@ class SceneServingState:
                     )
                 return out
 
-        reqs = self.user_requests.get(uid, [])
-        if not reqs:
-            return []
-        rows: list[dict[str, Any]] = []
-        note_ids: list[int] = []
-        for idx, rid in enumerate(reqs[-max_len:][::-1]):
-            feat_req = self.get_feat_req(int(rid))
-            if len(feat_req) <= 0:
-                continue
-            sub = feat_req.sort_values(["click", "y_multi"], ascending=[False, False], kind="mergesort").head(2)
-            for _, row in sub.iterrows():
-                note_idx = _safe_intish(row.get("note_idx", -1), -1)
-                if note_idx < 0:
-                    continue
-                note_ids.append(note_idx)
-                rows.append(
-                    {
-                        "ts": None,
-                        "scene": self.scene,
-                        "action": "history",
-                        "note_idx": int(note_idx),
-                        "request_id": int(rid),
-                        "query": self.search_query_map.get(int(rid), "") if self.scene == "search" else "",
-                        "interaction_score": float(pd.to_numeric(row.get("y_multi", 0.0), errors="coerce") or 0.0),
-                    }
-                )
-                if len(rows) >= max_len:
-                    break
-            if len(rows) >= max_len:
-                break
+        history = self.live_context_builder.seed_history(uid)
+        with self._context_lock:
+            history = self._memory_history.get(uid, history)
+        note_ids = history[:max_len]
+        rows = [{"ts": None, "scene": self.scene, "action": "training_history",
+                 "note_idx": int(note), "request_id": None, "query": "", "interaction_score": 0.0}
+                for note in note_ids]
         note_df = self._fetch_notes(note_ids)
         note_map = {int(r["note_idx"]): r for r in note_df.to_dict("records")} if len(note_df) > 0 else {}
         out: list[dict[str, Any]] = []
@@ -1154,11 +1157,11 @@ class SceneServingState:
         batch_size: int = 512,
         history_note_ids: list[int] | None = None,
     ) -> np.ndarray:
-        return self.dien_predictor.predict(
-            cand,
-            batch_size=batch_size,
-            history_note_ids=history_note_ids,
-        )
+        if self.bundle_active:
+            return self.dien_predictor.predict(cand, history_note_ids=history_note_ids)
+        if self.dien_predictor is None:
+            raise RuntimeError("No validated fine ranking model is active")
+        return self.dien_predictor.predict(cand, batch_size=batch_size, history_note_ids=history_note_ids)
 
     def build_feed(self, user_idx: int, query: str, page: int, page_size: int, refresh_key: str = "", exclude_note_ids: list[int] | None = None) -> dict[str, Any]:
         return OnlineScenePipeline(self, app_state=None).build_feed(
@@ -1178,47 +1181,16 @@ class SceneServingState:
         query: str = "",
         meta_only: bool = False,
     ) -> dict[str, Any]:
-        feed = {"items": []} if bool(meta_only) else self.build_feed(user_idx=user_idx, query=str(query or ""), page=1, page_size=200)
-        target = next((x for x in feed["items"] if int(x["note_idx"]) == int(note_idx) and int(x["request_id"]) == int(request_id)), None)
-
+        with self._context_lock:
+            target = getattr(self, "_delivery_cards", {}).get((int(user_idx), int(request_id), int(note_idx)))
         note_meta = self._fetch_notes([note_idx])
-        if len(note_meta) == 0:
+        if note_meta.empty:
             raise KeyError(f"note_idx not found: {note_idx}")
         n = note_meta.iloc[0].to_dict()
-
-        feat_req = self.get_feat_req(int(request_id))
-        row = feat_req[feat_req["note_idx"] == int(note_idx)]
-        label = {"y_multi": 0.0, "click": 0}
-        if len(row) > 0:
-            label = {
-                "y_multi": float(row.iloc[0].get("y_multi", 0.0)),
-                "click": _safe_intish(row.iloc[0].get("click", 0.0)),
-            }
-
-        if target is None and not bool(meta_only):
-            one = row.copy() if len(row) > 0 else pd.DataFrame([{self.group_key: request_id, "note_idx": note_idx, "user_idx": user_idx}])
-            one = one.merge(note_meta, on="note_idx", how="left")
-            one["dssm_score"] = 0.0
-            one["gbdt_score"] = self.predict_gbdt(one)
-            one["dien_score"] = self.predict_dien(one)
-            one["dien_score"] = np.nan_to_num(one["dien_score"], nan=0.0, posinf=1e6, neginf=-1e6)
-            scores = {
-                "dssm": float(one.iloc[0].get("dssm_score", 0.0)),
-                "gbdt": float(one.iloc[0].get("gbdt_score", 0.0)),
-                "dien": float(one.iloc[0].get("dien_score", 0.0)),
-            }
-            stage_ranks: dict[str, int | None] = {"recall": None, "preranking": None, "ranking": None, "rerank": None}
-        elif target is None:
-            scores = {"dssm": 0.0, "gbdt": 0.0, "dien": 0.0}
-            stage_ranks = {"recall": None, "preranking": None, "ranking": None, "rerank": None}
-        else:
-            scores = target["scores"]
-            stage_ranks = {
-                "recall": _safe_intish(target.get("stage_ranks", {}).get("recall"), 0) or None,
-                "preranking": _safe_intish(target.get("stage_ranks", {}).get("preranking"), 0) or None,
-                "ranking": _safe_intish(target.get("stage_ranks", {}).get("ranking"), 0) or None,
-                "rerank": _safe_intish(target.get("stage_ranks", {}).get("rerank"), 0) or None,
-            }
+        # Details reuse the delivered prediction, never another feed or test exposure labels.
+        scores = target["scores"] if target is not None else {"dssm": 0., "gbdt": 0., "dien": 0.}
+        label = target.get("labels", {"y_multi": None, "click": None}) if target is not None else {"y_multi": None, "click": None}
+        stage_ranks = target.get("stage_ranks", {}) if target is not None else {}
 
         return {
             "scene": self.scene,
@@ -1236,10 +1208,22 @@ class SceneServingState:
                 "gbdt": float(np.nan_to_num(scores.get("gbdt", 0.0), nan=0.0, posinf=1e6, neginf=-1e6)),
                 "dien": float(np.nan_to_num(scores.get("dien", 0.0), nan=0.0, posinf=1e6, neginf=-1e6)),
             },
+            "score_scope": "delivered_request" if target is not None else "metadata_only_no_prediction",
             "stage_top500_ranks": stage_ranks,
             "stage_rank_note": "阶段 Rank 对应当前请求的召回、粗排、精排与去重后位次。",
             "labels": label,
         }
+
+    def remember_delivery(self, user_idx: int, request_id: int, cards: list[dict]) -> None:
+        with self._context_lock:
+            if not hasattr(self, "_delivery_cards"):
+                self._delivery_cards = OrderedDict()
+            for card in cards:
+                key = (int(user_idx), int(request_id), int(card["note_idx"]))
+                self._delivery_cards[key] = card
+                self._delivery_cards.move_to_end(key)
+            while len(self._delivery_cards) > 20000:
+                self._delivery_cards.popitem(last=False)
 
     def get_user(self, user_idx: int) -> dict[str, Any]:
         uid = int(user_idx)
@@ -1315,29 +1299,10 @@ class SceneServingState:
         return rows
 
     def get_prewarm_seed(self) -> dict[str, Any]:
-        if len(self.req_df) <= 0:
-            return {"user_idx": 0, "request_id": -1, "query": ""}
-        uid = -1
-        req_id = -1
-        best_cnt = -1
-        for cand_uid, reqs in self.user_requests.items():
-            cnt = len(reqs)
-            if cnt <= 0:
-                continue
-            if cnt > best_cnt:
-                best_cnt = cnt
-                uid = int(cand_uid)
-                req_id = int(reqs[-1])
-        if uid < 0 or req_id < 0:
-            row = self.req_df.iloc[0]
-            uid = _safe_intish(row.get("user_idx", 0), 0)
-            req_id = _safe_intish(row.get(self.group_key, -1), -1)
-        query = self.search_query_map.get(int(req_id), "") if self.scene == "search" else ""
-        return {
-            "user_idx": int(uid),
-            "request_id": int(req_id),
-            "query": str(query or ""),
-        }
+        users = self.live_context_builder.training_contexts
+        uid = next(iter(users), 0)
+        query = self.live_context_builder.query_catalog[0][0] if self.live_context_builder.query_catalog else ""
+        return {"user_idx": int(uid), "query": query}
 
     def get_user_history_notes(self, user_idx: int, feat_req: pd.DataFrame, max_len: int = 20, prefer_realtime: bool = True) -> list[int]:
         if prefer_realtime and self.realtime_cache is not None:
@@ -1473,6 +1438,9 @@ class SceneServingState:
     ) -> bool:
         uid = int(user_idx)
         self._invalidate_user_serving_cache(uid)
+        with self._context_lock:
+            previous = self._memory_history.get(uid, self.live_context_builder.seed_history(uid))
+            self._memory_history[uid] = [int(note_idx)] + [note for note in previous if int(note) != int(note_idx)][:19]
         if self.realtime_cache is not None:
             self.realtime_cache.record_click(
                 uid,
@@ -1482,7 +1450,7 @@ class SceneServingState:
                 query=str(query or ""),
             )
             return True
-        return False
+        return True
 
     def record_view(
         self,
@@ -1589,6 +1557,9 @@ class SceneServingState:
             stale_keys = [key for key in self._stage_cache if key[0] == uid]
             for key in stale_keys:
                 self._stage_cache.pop(key, None)
+        app_state = getattr(self, "_app_state", None)
+        if app_state is not None:
+            app_state.invalidate_user(uid, source=self)
 
     def suggest_queries(self, query: str, limit: int = 8) -> list[dict[str, str]]:
         if self.scene != "search":
@@ -2696,6 +2667,20 @@ class ServingAppState:
         self._linkage_cache: dict[int, tuple[float, dict[str, Any]]] = {}
         self._linkage_cache_ttl_sec = float(os.getenv("QILIN_LINKAGE_CACHE_TTL_SEC", "8"))
 
+    def invalidate_user(self, user_idx: int, source=None) -> None:
+        uid = int(user_idx)
+        with self._linkage_cache_lock:
+            self._linkage_cache.pop(uid, None)
+        # Do not acquire the lazy-load lock or recursively notify other scene states.
+        for state in list(self._states.values()):
+            if state is source:
+                continue
+            for cache, lock in ((state._feed_cache, state._feed_cache_lock),
+                                (state._stage_cache, state._stage_cache_lock)):
+                with lock:
+                    for key in [key for key in cache if key[0] == uid]:
+                        cache.pop(key, None)
+
     def get(self, scene: str) -> SceneServingState:
         if scene not in {"search", "rec"}:
             raise KeyError(f"invalid scene: {scene}")
@@ -2812,6 +2797,7 @@ class OnlineScenePipeline:
             page_size=max(1, int(page_size)),
             refresh_key="startup-prewarm",
             exclude_note_ids=None,
+            record_exposure=False,
         )
 
     def _stage_cache_key(self, user_idx: int, req_id: int, service_query: str) -> tuple[int, int, str]:
@@ -2864,119 +2850,6 @@ class OnlineScenePipeline:
                 self.state._feed_cache.clear()
                 self.state._feed_cache[key] = (expire_at, cand.copy(), dict(meta))
 
-    def _apply_rec_diversity(self, cand: pd.DataFrame, user_idx: int, history_note_ids: list[int]) -> pd.DataFrame:
-        if cand.empty or self.state.scene != "rec":
-            return cand
-        out = cand.copy()
-        history_set = {int(x) for x in history_note_ids if int(x) >= 0}
-        exposed_set: set[int] = set()
-        if self.state.realtime_cache is not None:
-            exposed_set = {
-                int(x)
-                for x in self.state.realtime_cache.get_recent_exposed_notes(int(user_idx), self.state.scene, max_len=200)
-                if int(x) >= 0
-            }
-        repeat_penalty = np.zeros(len(out), dtype=np.float32)
-        note_ids = pd.to_numeric(out.get("note_idx"), errors="coerce").fillna(-1).astype(np.int64).to_numpy()
-        if history_set:
-            repeat_penalty += np.isin(note_ids, np.asarray(sorted(history_set), dtype=np.int64)).astype(np.float32) * 0.90
-        if exposed_set:
-            exposed_arr = np.asarray(sorted(exposed_set), dtype=np.int64)
-            exposed_mask = np.isin(note_ids, exposed_arr)
-            filtered = out.loc[~exposed_mask].copy()
-            if len(filtered) >= min(20, len(out)):
-                out = filtered.reset_index(drop=True)
-                repeat_penalty = repeat_penalty[~exposed_mask]
-                note_ids = pd.to_numeric(out.get("note_idx"), errors="coerce").fillna(-1).astype(np.int64).to_numpy()
-            else:
-                repeat_penalty += exposed_mask.astype(np.float32) * 0.28
-        out["repeat_penalty"] = repeat_penalty
-        base_score = pd.to_numeric(out.get("dien_score", out.get("preranking_score", 0.0)), errors="coerce").fillna(0.0)
-        out["final_score"] = (base_score - pd.to_numeric(out["repeat_penalty"], errors="coerce").fillna(0.0)).astype(np.float32)
-        out = out.sort_values(["final_score", "dien_score", "preranking_score", "rank"], ascending=[False, False, False, True], kind="mergesort").reset_index(drop=True)
-        out["rerank_rank"] = np.arange(1, len(out) + 1, dtype=np.int32)
-        if self.state.realtime_cache is not None:
-            expose_topn = min(60, len(out))
-            self.state.realtime_cache.record_exposed_notes(
-                int(user_idx),
-                self.state.scene,
-                out["note_idx"].head(expose_topn).astype(int).tolist(),
-            )
-        return out
-
-    def _backfill_rec_candidates(
-        self,
-        cand: pd.DataFrame,
-        user_idx: int,
-        history_note_ids: list[int],
-        exclude_note_ids: list[int] | None,
-        target_total: int,
-    ) -> pd.DataFrame:
-        if self.state.scene != "rec" or int(target_total) <= 0 or len(cand) >= int(target_total):
-            return cand
-        pool = getattr(self.state, "hot_note_pool", None) or []
-        if not pool:
-            return cand
-        blocked_ids = {
-            int(x)
-            for x in pd.to_numeric(cand.get("note_idx"), errors="coerce").fillna(-1).astype(np.int64).tolist()
-            if int(x) >= 0
-        }
-        blocked_ids.update(int(x) for x in history_note_ids if int(x) >= 0)
-        blocked_ids.update(int(x) for x in (exclude_note_ids or []) if int(x) >= 0)
-        if self.state.realtime_cache is not None:
-            blocked_ids.update(
-                int(x)
-                for x in self.state.realtime_cache.get_recent_exposed_notes(int(user_idx), self.state.scene, max_len=300)
-                if int(x) >= 0
-            )
-        fill_ids: list[int] = []
-        need = max(0, int(target_total) - len(cand))
-        for nid in pool:
-            if int(nid) in blocked_ids:
-                continue
-            blocked_ids.add(int(nid))
-            fill_ids.append(int(nid))
-            if len(fill_ids) >= need:
-                break
-        if not fill_ids:
-            return cand
-        fill_df = self.state._fetch_notes(fill_ids)
-        if len(fill_df) <= 0:
-            return cand
-        order_map = {int(nid): idx for idx, nid in enumerate(fill_ids)}
-        fill_df = fill_df[fill_df["note_idx"].isin(fill_ids)].copy()
-        fill_df["_fill_order"] = fill_df["note_idx"].map(order_map).fillna(1e9).astype(np.int32)
-        fill_df = fill_df.sort_values("_fill_order", kind="mergesort").reset_index(drop=True)
-        score_floor = float(
-            pd.to_numeric(cand.get("final_score", cand.get("dien_score", cand.get("preranking_score", 0.0))), errors="coerce")
-            .fillna(0.0)
-            .min()
-        ) if len(cand) > 0 else 0.0
-        fill_scores = (score_floor - 1.0 - np.arange(len(fill_df), dtype=np.float32) / 1000.0).astype(np.float32)
-        fill_df["rank"] = np.arange(len(cand) + 1, len(cand) + len(fill_df) + 1, dtype=np.int32)
-        fill_df["preranking_rank"] = np.arange(len(cand) + 1, len(cand) + len(fill_df) + 1, dtype=np.int32)
-        fill_df["ranking_rank"] = np.arange(len(cand) + 1, len(cand) + len(fill_df) + 1, dtype=np.int32)
-        fill_df["rerank_rank"] = np.arange(len(cand) + 1, len(cand) + len(fill_df) + 1, dtype=np.int32)
-        fill_df["repeat_penalty"] = np.zeros(len(fill_df), dtype=np.float32)
-        fill_df["dssm_score"] = fill_scores
-        fill_df["gbdt_score"] = fill_scores
-        fill_df["preranking_score"] = fill_scores
-        fill_df["dien_score"] = fill_scores
-        fill_df["final_score"] = fill_scores
-        fill_df["y_multi"] = np.zeros(len(fill_df), dtype=np.float32)
-        fill_df["click"] = np.zeros(len(fill_df), dtype=np.int8)
-        fill_df = fill_df.drop(columns=["_fill_order"], errors="ignore")
-        if len(cand) > 0:
-            cand_cols = list(cand.columns)
-            fill_df = fill_df.reindex(columns=cand_cols, fill_value=np.nan)
-            merged_records = cand.to_dict("records") + fill_df.to_dict("records")
-            out = pd.DataFrame.from_records(merged_records, columns=cand_cols)
-        else:
-            out = fill_df.reset_index(drop=True)
-        out["rerank_rank"] = np.arange(1, len(out) + 1, dtype=np.int32)
-        return out
-
     def _build_cards(self, req_id: int, user_idx: int, page_df: pd.DataFrame) -> list[dict[str, Any]]:
         cards = []
         for r in page_df.to_dict("records"):
@@ -3002,8 +2875,8 @@ class OnlineScenePipeline:
                         "final": float(np.nan_to_num(r.get("final_score", 0.0), nan=0.0, posinf=1e6, neginf=-1e6)),
                     },
                     "labels": {
-                        "y_multi": float(np.nan_to_num(r.get("y_multi", 0.0) or 0.0, nan=0.0, posinf=1e6, neginf=-1e6)),
-                        "click": _safe_intish(r.get("click", 0.0)),
+                        "y_multi": float(r["y_multi"]) if pd.notna(r.get("y_multi")) else None,
+                        "click": int(r["click"]) if pd.notna(r.get("click")) else None,
                     },
                     "stage_ranks": {
                         "recall": _safe_intish(r.get("rank"), 0) or None,
@@ -3016,22 +2889,9 @@ class OnlineScenePipeline:
         return cards
 
     def _select_page_rows(self, cand: pd.DataFrame, page: int, page_size: int) -> pd.DataFrame:
-        if cand.empty:
-            return cand
-        preferred: list[int] = []
-        fallback: list[int] = []
-        for idx, row in cand.iterrows():
-            if _has_existing_image(row.get("image_path")):
-                preferred.append(int(idx))
-            else:
-                fallback.append(int(idx))
-        order = preferred + fallback
+        # Missing media changes rendering, never relevance or the evaluated rank order.
         start = max(0, (int(page) - 1) * int(page_size))
-        end = start + int(page_size)
-        picked = order[start:end]
-        if not picked:
-            return cand.iloc[0:0].copy()
-        return cand.loc[picked].reset_index(drop=True)
+        return cand.iloc[start:start + int(page_size)].copy().reset_index(drop=True)
 
     def _refresh_target_total(self, page: int, page_size: int, exclude_ids: set[int] | None = None) -> int:
         base = max(int(page_size), int(page) * int(page_size))
@@ -3039,241 +2899,125 @@ class OnlineScenePipeline:
         return max(base, int(page_size) * 4, base + extra)
 
     def build_feed(
-        self,
-        user_idx: int,
-        query: str,
-        page: int,
-        page_size: int,
-        refresh_key: str = "",
-        exclude_note_ids: list[int] | None = None,
+        self, user_idx: int, query: str, page: int, page_size: int, refresh_key: str = "",
+        exclude_note_ids: list[int] | None = None, record_exposure: bool = True,
+        request_context: pd.DataFrame | None = None,
     ) -> dict[str, Any]:
-        t0 = time.perf_counter()
-        query_ctx = self.state.preprocess_search_query(query, user_idx=int(user_idx)) if self.state.scene == "search" else {
-            "input_query": str(query or ""),
-            "normalized_query": str(query or ""),
-            "corrected_query": "",
-            "resolved_query": str(query or ""),
-            "terms": [],
-            "intents": [],
-            "service_query": str(query or ""),
-        }
-        resolved_query = str(query_ctx.get("resolved_query") or query or "")
-        service_query = str(query_ctx.get("service_query") or " ".join([str(x) for x in (query_ctx.get("terms") or []) if str(x).strip()]) or resolved_query)
-        req_id, matched_query = self.state.resolve_request(user_idx, resolved_query)
-        feat_req = self.state.get_feat_req(req_id)
-        if feat_req is None:
-            feat_req = self.state.empty_feat_df
-        cache_query = resolved_query or str(query or "")
-        force_refresh_recompute = bool(refresh_key) and self.state.scene == "rec"
-        cached_feed = self._get_cached_feed(user_idx=int(user_idx), req_id=int(req_id), query=cache_query, refresh_key=refresh_key)
-        if cached_feed is not None:
-            cand, cached_meta = cached_feed
-            page_df = self._select_page_rows(cand, page=page, page_size=page_size)
-            total_ms = float((time.perf_counter() - t0) * 1000.0)
-            return {
-                "scene": self.state.scene,
-                "user_idx": int(user_idx),
-                "request_id": int(req_id),
-                "cold_start": False,
-                "stages": cached_meta["stages"],
-                "query_input": query,
-                "query_rewritten": query_ctx.get("corrected_query", ""),
-                "query_terms": query_ctx.get("terms", []),
-                "query_intents": query_ctx.get("intents", []),
-                "matched_query": matched_query,
-                "linkage": cached_meta["linkage"],
-                "total": int(len(cand)),
-                "page": int(page),
-                "page_size": int(page_size),
-                "stage_ms": {},
-                "pipeline_ms": 0.0,
-                "cached_stage_ms": dict(cached_meta.get("stage_ms", {})),
-                "cached_pipeline_ms": float(cached_meta.get("pipeline_ms", 0.0)),
-                "latency_ms": float(total_ms),
-                "cache_hit": True,
-                "items": self._build_cards(req_id=int(req_id), user_idx=int(user_idx), page_df=page_df),
-            }
-        cached_stage = None if force_refresh_recompute else self._get_cached_stage(
-            user_idx=int(user_idx),
-            req_id=int(req_id),
-            service_query=service_query,
-        )
-        if cached_stage is not None:
-            cand, stage_meta = cached_stage
-            history_note_ids = self.state.get_user_history_notes(user_idx=int(user_idx), feat_req=feat_req)
-            exclude_ids = {int(x) for x in (exclude_note_ids or []) if int(x) >= 0}
-            cand = self._apply_rec_diversity(cand, user_idx=int(user_idx), history_note_ids=history_note_ids)
-            if exclude_ids:
-                cand = cand[~pd.to_numeric(cand.get("note_idx"), errors="coerce").fillna(-1).astype(np.int64).isin(sorted(exclude_ids))].reset_index(drop=True)
-                if "rerank_rank" in cand.columns:
-                    cand["rerank_rank"] = np.arange(1, len(cand) + 1, dtype=np.int32)
-            cand = self._backfill_rec_candidates(
-                cand=cand,
-                user_idx=int(user_idx),
-                history_note_ids=history_note_ids,
-                exclude_note_ids=sorted(exclude_ids),
-                target_total=self._refresh_target_total(page=page, page_size=page_size, exclude_ids=exclude_ids),
+        started = time.perf_counter()
+        uid = int(user_idx)
+        raw_query = str(query or "").strip()
+        if request_context is None:
+            context = self.state.build_live_context(uid, raw_query)
+        else:
+            if record_exposure:
+                raise ValueError("Explicit context replay must disable exposure writes")
+            allowed = {self.state.group_key, "user_idx", "query", "recent_clicked_note_idxs",
+                       "event_timestamp", "request_timestamp", "search_timestamp"}
+            if len(request_context) != 1 or set(request_context)-allowed:
+                raise ValueError("Replay context must contain one request and no outcome labels")
+            given = request_context.iloc[0]
+            if int(given["user_idx"]) != uid or str(given["query"]).strip() != raw_query:
+                raise ValueError("Replay identity/query differs from the requested input")
+            context = self.state.live_context_builder.build(uid, raw_query, list(given["recent_clicked_note_idxs"]))
+            if self.state.group_key in given:
+                context[self.state.group_key] = int(given[self.state.group_key])
+        context["raw_query"] = raw_query
+        req_id = int(context.iloc[0][self.state.group_key])
+        history = [int(note) for note in context.iloc[0]["recent_clicked_note_idxs"]]
+        bundle_active = bool(getattr(self.state, "bundle_active", False))
+        bundle_id = getattr(self.state, "bundle_id", None)
+        query_ctx = self.state.preprocess_search_query(raw_query, user_idx=uid) if self.state.scene == "search" and request_context is None else {}
+        # Fresh live identity and stable inference-cache identity are separate concepts.
+        cache_context = context.iloc[0].drop(labels=[self.state.group_key, "note_idx"]).to_dict()
+        cache_context["bundle_id"] = bundle_id
+        cache_context["policy"] = "learned" if bundle_active else "safe_cold"
+        digest = hashlib.sha256(json.dumps(cache_context, sort_keys=True, default=str).encode()).hexdigest()
+        cache_id = int(digest[:15], 16)
+        cached = self._get_cached_feed(uid, cache_id, raw_query, refresh_key)
+        if cached is None:
+            cached = self._get_cached_stage(uid, cache_id, raw_query)
+        cache_hit = cached is not None
+        if cached is not None:
+            base, meta = cached
+            base[self.state.group_key] = req_id
+        else:
+            cap = min(int(self.state.live_recall_rank_cap), 160) if self.state.scene == "search" else int(self.state.live_recall_rank_cap)
+            coarse_cap = min(int(self.state.live_gbdt_topn), 80) if self.state.scene == "search" else int(self.state.live_gbdt_topn)
+            cap = int(getattr(self.state, "bundle_input_cap", cap))
+            coarse_cap = int(getattr(self.state, "bundle_coarse_cap", coarse_cap))
+            cold = not bundle_active or (self.state.scene == "rec" and not history) or (self.state.scene == "search" and not raw_query)
+            recall_started = time.perf_counter()
+            recall = run_recall(
+                request_id=req_id, user_idx=uid, feat_req=context, is_cold=not bundle_active,
+                recall_rank_cap=cap, hot_route_topk=cap, group_key=self.state.group_key,
+                hot_note_ids=self.state.hot_note_pool,
+                fetch_recall_candidates=lambda _request, max_rank: self.state.fetch_live_recall_candidates(context, max_rank),
             )
-            page_df = self._select_page_rows(cand, page=page, page_size=page_size)
-            total_ms = float((time.perf_counter() - t0) * 1000.0)
-            cached_meta = {
-                "stages": stage_meta.get("stages", {}),
-                "linkage": stage_meta.get("linkage", {}),
-                "stage_ms": dict(stage_meta.get("stage_ms", {})),
-                "pipeline_ms": float(stage_meta.get("pipeline_ms", 0.0)),
-            }
-            self._set_cached_feed(user_idx=int(user_idx), req_id=int(req_id), query=cache_query, refresh_key=refresh_key, cand=cand, meta=cached_meta)
-            return {
-                "scene": self.state.scene,
-                "user_idx": int(user_idx),
-                "request_id": int(req_id),
-                "cold_start": False,
-                "stages": cached_meta["stages"],
-                "query_input": query,
-                "query_rewritten": query_ctx.get("corrected_query", ""),
-                "query_terms": query_ctx.get("terms", []),
-                "query_intents": query_ctx.get("intents", []),
-                "matched_query": matched_query,
-                "linkage": cached_meta["linkage"],
-                "total": int(len(cand)),
-                "page": int(page),
-                "page_size": int(page_size),
-                "stage_ms": {},
-                "pipeline_ms": 0.0,
-                "cached_stage_ms": dict(cached_meta.get("stage_ms", {})),
-                "cached_pipeline_ms": float(cached_meta.get("pipeline_ms", 0.0)),
-                "latency_ms": float(total_ms),
-                "cache_hit": True,
-                "items": self._build_cards(req_id=int(req_id), user_idx=int(user_idx), page_df=page_df),
-            }
-        linkage_ctx = self.app_state.build_linkage_context(int(user_idx), max_len=20, loaded_only=True) if self.app_state is not None else {}
-
-        cold = is_cold_start(
-            scene=self.state.scene,
-            user_idx=int(user_idx),
-            user_requests=self.state.user_requests,
-            request_threshold=COLD_START_REQ_THRESHOLD,
-        )
-        live_recall_rank_cap = int(self.state.live_recall_rank_cap)
-        live_gbdt_topn = int(self.state.live_gbdt_topn)
-        if self.state.scene == "search":
-            live_recall_rank_cap = min(live_recall_rank_cap, 160)
-            live_gbdt_topn = min(live_gbdt_topn, 80)
-        t_cold = time.perf_counter()
-        recall_cand = run_recall(
-            request_id=req_id,
-            user_idx=int(user_idx),
-            feat_req=feat_req,
-            is_cold=cold,
-            recall_rank_cap=live_recall_rank_cap,
-            hot_route_topk=min(HOT_ROUTE_TOPK, live_recall_rank_cap),
-            fetch_recall_candidates=self.state._fetch_recall_candidates,
-            group_key=self.state.group_key,
-        )
-        t_recall = time.perf_counter()
-        prerank_cand = run_preranking(
-            user_idx=int(user_idx),
-            query=service_query,
-            query_phrase=resolved_query,
-            query_terms=[str(x) for x in (query_ctx.get("terms") or []) if str(x).strip()],
-            query_intents=[str(x) for x in (query_ctx.get("intents") or []) if str(x).strip()],
-            scene=self.state.scene,
-            group_key=self.state.group_key,
-            recall_cand=recall_cand,
-            feat_req=feat_req,
-            gbdt_topn=live_gbdt_topn,
-            fetch_notes=self.state._fetch_notes,
-            fetch_item_features=self.state.fetch_item_features,
-            predict_gbdt=self.state.predict_gbdt,
-            linkage_ctx=linkage_ctx,
-            search_filter_policy=self.state.search_filter_policy,
-        )
-        if len(prerank_cand) > 0:
-            prerank_cand = prerank_cand.reset_index(drop=True)
-            prerank_cand["preranking_rank"] = np.arange(1, len(prerank_cand) + 1, dtype=np.int32)
-        t_prerank = time.perf_counter()
-        history_note_ids = self.state.get_user_history_notes(user_idx=int(user_idx), feat_req=feat_req)
-        cand, page_df = run_ranking(
-            cand=prerank_cand,
-            page=page,
-            page_size=page_size,
-            predict_dien=self.state.predict_dien,
-            history_note_ids=history_note_ids,
-            search_filter_policy=self.state.search_filter_policy,
-        )
-        if len(cand) > 0:
-            cand = cand.reset_index(drop=True)
-            cand["ranking_rank"] = np.arange(1, len(cand) + 1, dtype=np.int32)
-        base_ranked_cand = cand.copy()
-        cand = self._apply_rec_diversity(cand, user_idx=int(user_idx), history_note_ids=history_note_ids)
-        exclude_ids = {int(x) for x in (exclude_note_ids or []) if int(x) >= 0}
-        if exclude_ids:
-            cand = cand[~pd.to_numeric(cand.get("note_idx"), errors="coerce").fillna(-1).astype(np.int64).isin(sorted(exclude_ids))].reset_index(drop=True)
-            if "rerank_rank" in cand.columns:
-                cand["rerank_rank"] = np.arange(1, len(cand) + 1, dtype=np.int32)
-        cand = self._backfill_rec_candidates(
-            cand=cand,
-            user_idx=int(user_idx),
-            history_note_ids=history_note_ids,
-            exclude_note_ids=sorted(exclude_ids),
-            target_total=self._refresh_target_total(page=page, page_size=page_size, exclude_ids=exclude_ids),
-        )
-        page_df = self._select_page_rows(cand, page=page, page_size=page_size)
-        t_rank = time.perf_counter()
-
-        stage_ms = {
-            "coldstart": float((t_cold - t0) * 1000.0),
-            "recall": float((t_recall - t_cold) * 1000.0),
-            "preranking": float((t_prerank - t_recall) * 1000.0),
-            "ranking": float((t_rank - t_prerank) * 1000.0),
-        }
-        total_ms = float((t_rank - t0) * 1000.0)
-        stages = {
-            "coldstart": {"enabled": bool(cold)},
-            "recall": {"candidates": int(len(recall_cand))},
-            "preranking": {"candidates": int(len(prerank_cand)), "topn": int(live_gbdt_topn)},
-            "ranking": {"candidates": int(len(cand)), "page_items": int(len(page_df))},
-        }
-        cached_meta = {
-            "stages": stages,
-            "linkage": {
-                "keywords": linkage_ctx.get("keywords", []),
-                "tag_ids": linkage_ctx.get("tag_ids", []),
-                "behavior_count": int(len(linkage_ctx.get("behaviors", []))),
-            },
-            "stage_ms": dict(stage_ms),
-            "pipeline_ms": float(stage_ms["recall"] + stage_ms["preranking"] + stage_ms["ranking"]),
-        }
-        self._set_cached_stage(
-            user_idx=int(user_idx),
-            req_id=int(req_id),
-            service_query=service_query,
-            cand=base_ranked_cand,
-            meta=cached_meta,
-        )
-        self._set_cached_feed(user_idx=int(user_idx), req_id=int(req_id), query=cache_query, refresh_key=refresh_key, cand=cand, meta=cached_meta)
-
-        return {
-            "scene": self.state.scene,
-            "user_idx": int(user_idx),
-            "request_id": int(req_id),
-            "cold_start": bool(cold),
-            "stages": stages,
-            "query_input": query,
-            "query_rewritten": query_ctx.get("corrected_query", ""),
-            "query_terms": query_ctx.get("terms", []),
-            "query_intents": query_ctx.get("intents", []),
-            "matched_query": matched_query,
-            "linkage": cached_meta["linkage"],
-            "total": int(len(cand)),
-            "page": int(page),
-            "page_size": int(page_size),
-            "stage_ms": stage_ms,
-            "pipeline_ms": float(stage_ms["recall"] + stage_ms["preranking"] + stage_ms["ranking"]),
-            "latency_ms": float(total_ms),
-            "cache_hit": False,
-            "items": self._build_cards(req_id=int(req_id), user_idx=int(user_idx), page_df=page_df),
-        }
+            coarse_started = time.perf_counter()
+            if bundle_active and not recall.empty:
+                coarse = run_preranking(
+                    user_idx=uid, query=raw_query, query_phrase=raw_query,
+                    scene=self.state.scene, group_key=self.state.group_key,
+                    recall_cand=recall, feat_req=context, gbdt_topn=coarse_cap,
+                    fetch_notes=self.state._fetch_notes, fetch_item_features=self.state.fetch_item_features,
+                    predict_gbdt=self.state.predict_gbdt, ranking_policy="learned",
+                    search_filter_policy="soft", allow_snapshot_quality_boost=False,
+                )
+                coarse["preranking_rank"] = np.arange(1, len(coarse) + 1, dtype=np.int32)
+                fine_started = time.perf_counter()
+                base, _ = run_ranking(coarse, page=1, page_size=page_size,
+                    predict_dien=self.state.predict_dien, history_note_ids=history,
+                    search_filter_policy="soft", ranking_policy="learned")
+            else:
+                coarse = recall.head(coarse_cap).copy()
+                fine_started = time.perf_counter()
+                base = coarse.copy()
+                if not base.empty:
+                    base["final_score"] = base["recall_score"]
+            finished = time.perf_counter()
+            if not base.empty:
+                base["ranking_rank"] = np.arange(1, len(base) + 1, dtype=np.int32)
+                base["rerank_rank"] = base["ranking_rank"]
+            stage_ms = {"recall": (coarse_started-recall_started)*1000,
+                        "preranking": (fine_started-coarse_started)*1000,
+                        "ranking": (finished-fine_started)*1000}
+            route_status = recall.attrs.get("route_status", {})
+            degraded = "validated_model_bundle_unavailable" if not bundle_active else (
+                "recall_route_failure" if route_status.get("errors") else None)
+            meta = {"stages": {"coldstart": {"enabled": cold}, "recall": {"candidates": len(recall)},
+                    "preranking": {"candidates": len(coarse), "topn": coarse_cap},
+                    "ranking": {"candidates": len(base)}}, "linkage": {}, "stage_ms": stage_ms,
+                    "pipeline_ms": sum(stage_ms.values()), "route_status": route_status,
+                    "degraded_reason": degraded}
+            self._set_cached_stage(uid, cache_id, raw_query, base, meta)
+            self._set_cached_feed(uid, cache_id, raw_query, refresh_key, base, meta)
+        # Cache inference pools; apply every caller's eligibility constraints on every response.
+        excluded = {int(note) for note in (exclude_note_ids or []) if int(note) >= 0}
+        if self.state.scene == "rec" and refresh_key and self.state.realtime_cache is not None:
+            excluded.update(self.state.realtime_cache.get_recent_exposed_notes(uid, "rec", max_len=300))
+        eligible = base.loc[~base.note_idx.isin(excluded)].copy() if not base.empty else base.copy()
+        page_rows = self._select_page_rows(eligible, page, page_size)
+        if record_exposure and self.state.realtime_cache is not None and not page_rows.empty:
+            self.state.realtime_cache.record_exposed_notes(uid, self.state.scene, page_rows.note_idx.astype(int).tolist())
+        cards = self._build_cards(req_id, uid, page_rows)
+        if request_context is None and cards:
+            self.state.remember_delivery(uid, req_id, cards)
+        stages = {name: dict(value) for name, value in meta["stages"].items()}
+        stages.setdefault("ranking", {})["page_items"] = len(page_rows)
+        elapsed = (time.perf_counter() - started) * 1000
+        return {"scene": self.state.scene, "user_idx": uid, "request_id": req_id,
+            "trace_id": uuid.uuid4().hex, "context_id": digest, "model_bundle_id": bundle_id,
+            "scope": "live_current_context" if request_context is None else "explicit_context_replay", "cold_start": bool(meta["stages"].get("coldstart", {}).get("enabled", False)),
+            "stages": stages, "query_input": query, "query_rewritten": query_ctx.get("corrected_query", ""),
+            "query_terms": query_ctx.get("terms", []), "query_intents": query_ctx.get("intents", []),
+            "matched_query": raw_query, "linkage": {}, "total": len(eligible), "page": int(page),
+            "page_size": int(page_size), "stage_ms": {} if cache_hit else meta["stage_ms"],
+            "pipeline_ms": 0.0 if cache_hit else meta["pipeline_ms"],
+            "cached_stage_ms": meta["stage_ms"] if cache_hit else {},
+            "cached_pipeline_ms": meta["pipeline_ms"] if cache_hit else 0.0,
+            "latency_ms": float(elapsed), "cache_hit": cache_hit, "route_status": meta.get("route_status", {}),
+            "degraded_reason": meta.get("degraded_reason"), "eligibility_dropped": len(base)-len(eligible),
+            "items": cards}
 
 
 class OnlineRuntime:

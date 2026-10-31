@@ -237,6 +237,7 @@ def run_preranking(
     fetch_item_features=None,
     search_filter_policy: str = "legacy",
     allow_snapshot_quality_boost: bool = True,
+    ranking_policy: str = "legacy",
 ) -> pd.DataFrame:
     if search_filter_policy not in {"legacy", "soft"}:
         raise ValueError(f"Unknown search_filter_policy: {search_filter_policy}")
@@ -358,7 +359,8 @@ def run_preranking(
 
     # 历史 checkpoint 可加载；其不合法字段按缺失输入处理，不能从曝光或notes统计补回。
     cand = cand.drop(columns=[name for name in cand if _unsafe_model_feature(name)])
-    out = run_preranking_gbdt(cand=cand, gbdt_topn=gbdt_topn, predict_gbdt=predict_gbdt)
-    if scene == "search" and str(query_phrase or query or "").strip():
+    cand["query"] = str(query_phrase or query or "")
+    out = run_preranking_gbdt(cand=cand, gbdt_topn=gbdt_topn, predict_gbdt=predict_gbdt, ranking_policy=ranking_policy)
+    if ranking_policy == "legacy" and scene == "search" and str(query_phrase or query or "").strip():
         out = apply_search_preranking_policy(out, gbdt_topn, search_filter_policy)
     return out

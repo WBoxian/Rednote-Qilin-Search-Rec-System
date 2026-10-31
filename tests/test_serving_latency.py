@@ -7,8 +7,9 @@ from backend.online.pipeline import OnlineScenePipeline
 class LatencyTests(unittest.TestCase):
     def test_cache_hit_reports_current_elapsed_time_not_historical_inference(self):
         pipeline=OnlineScenePipeline.__new__(OnlineScenePipeline)
-        pipeline.state=SimpleNamespace(scene="rec",resolve_request=lambda *a:(1,""),
-                                       get_feat_req=lambda *a:pd.DataFrame())
+        pipeline.state=SimpleNamespace(scene="rec",group_key="request_idx",realtime_cache=None,
+            build_live_context=lambda *a:pd.DataFrame({"request_idx":[1],"user_idx":[1],
+                "note_idx":[-1],"query":[""],"recent_clicked_note_idxs":[[]]}))
         frame=pd.DataFrame({"note_idx":[1]})
         pipeline._get_cached_feed=Mock(return_value=(frame,{"stages":{},"linkage":{},
             "stage_ms":{"recall":500,"ranking":500},"pipeline_ms":1000}))

@@ -33,6 +33,7 @@ def calc_interaction_score(
 @dataclass
 class RealtimeCache:
     client: Any
+    namespace: str = "qilin:live:v2"
     history_max_len: int = 50
     behavior_max_len: int = 60
     exposure_max_len: int = 500
@@ -59,7 +60,7 @@ class RealtimeCache:
         return out[: int(max_len)]
 
     def get_user_profile(self, user_idx: int) -> dict[str, Any] | None:
-        key = f"qilin:user:{int(user_idx)}:profile"
+        key = f"{self.namespace}:user:{int(user_idx)}:profile"
         obj = self.client.hgetall(key)
         if not obj:
             return None
@@ -72,7 +73,7 @@ class RealtimeCache:
         return out
 
     def get_user_requests(self, user_idx: int, scene: str) -> list[int] | None:
-        key = f"qilin:user:{int(user_idx)}:{scene}:requests"
+        key = f"{self.namespace}:user:{int(user_idx)}:{scene}:requests"
         raw = self.client.get(key)
         if not raw:
             return None
@@ -83,12 +84,12 @@ class RealtimeCache:
             return None
 
     def get_user_history_notes(self, user_idx: int, scene: str, max_len: int = 20) -> list[int]:
-        key = f"qilin:user:{int(user_idx)}:{scene}:history_notes"
+        key = f"{self.namespace}:user:{int(user_idx)}:{scene}:history_notes"
         arr = self.client.lrange(key, 0, max(0, int(max_len) - 1))
         return [int(x) for x in arr if str(x).strip()]
 
     def get_recent_behaviors(self, user_idx: int, scene: str, max_len: int = 20) -> list[dict[str, Any]]:
-        key = f"qilin:user:{int(user_idx)}:{scene}:behaviors"
+        key = f"{self.namespace}:user:{int(user_idx)}:{scene}:behaviors"
         arr = self.client.lrange(key, 0, max(0, int(max_len) * 3))
         out: list[dict[str, Any]] = []
         for x in arr:
@@ -103,7 +104,7 @@ class RealtimeCache:
         return self._collapse_behaviors(out, max_len=max_len)
 
     def get_recent_exposed_notes(self, user_idx: int, scene: str, max_len: int = 200) -> list[int]:
-        key = f"qilin:user:{int(user_idx)}:{scene}:exposed_notes"
+        key = f"{self.namespace}:user:{int(user_idx)}:{scene}:exposed_notes"
         arr = self.client.lrange(key, 0, max(0, int(max_len) - 1))
         out: list[int] = []
         for x in arr:
@@ -116,13 +117,12 @@ class RealtimeCache:
         return out
 
     def next_runtime_request_id(self, scene: str, start_from: int) -> int:
-        key = f"qilin:{scene}:runtime_request_id"
+        key = f"{self.namespace}:{scene}:runtime_request_id"
         try:
-            if not self.client.exists(key):
-                self.client.set(key, int(start_from))
+            self.client.set(key, int(start_from), nx=True)
             return int(self.client.incr(key))
-        except Exception:
-            return int(start_from) + 1
+        except Exception as error:
+            raise RuntimeError("Runtime request ID allocation unavailable") from error
 
     def record_exposed_notes(self, user_idx: int, scene: str, note_ids: list[int]) -> None:
         uniq_ids: list[int] = []
@@ -138,7 +138,7 @@ class RealtimeCache:
             uniq_ids.append(nid)
         if not uniq_ids:
             return
-        key = f"qilin:user:{int(user_idx)}:{scene}:exposed_notes"
+        key = f"{self.namespace}:user:{int(user_idx)}:{scene}:exposed_notes"
         p = self.client.pipeline(transaction=False)
         for nid in uniq_ids:
             p.lrem(key, 0, int(nid))
@@ -150,7 +150,7 @@ class RealtimeCache:
     def get_recent_behaviors_all(self, user_idx: int, max_len: int = 20) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
         for scene in ["search", "rec"]:
-            key = f"qilin:user:{int(user_idx)}:{scene}:behaviors"
+            key = f"{self.namespace}:user:{int(user_idx)}:{scene}:behaviors"
             arr = self.client.lrange(key, 0, max(0, int(max_len) * 4))
             for x in arr:
                 try:
@@ -198,7 +198,7 @@ class RealtimeCache:
     ) -> bool:
         action_name = str(action or "click").strip().lower() or "click"
         dedup_key = (
-            f"qilin:dedup:{int(user_idx)}:{scene}:{action_name}:"
+            f"{self.namespace}:dedup:{int(user_idx)}:{scene}:{action_name}:"
             f"{int(note_idx)}:{int(request_id) if request_id is not None else -1}:{str(query or '')[:80]}:"
             f"{int(click)}:{int(like)}:{int(collect)}:{int(comment)}:{int(share)}:{int(float(page_time) * 10)}"
         )
@@ -211,7 +211,7 @@ class RealtimeCache:
         if not accepted:
             return False
 
-        key = f"qilin:user:{int(user_idx)}:{scene}:behaviors"
+        key = f"{self.namespace}:user:{int(user_idx)}:{scene}:behaviors"
         event = {
             "ts": int(time.time()),
             "scene": scene,
@@ -292,7 +292,7 @@ class RealtimeCache:
         if not accepted:
             return False
         if update_history:
-            key = f"qilin:user:{int(user_idx)}:{scene}:history_notes"
+            key = f"{self.namespace}:user:{int(user_idx)}:{scene}:history_notes"
             p = self.client.pipeline(transaction=False)
             p.lrem(key, 0, int(note_idx))
             p.lpush(key, int(note_idx))
@@ -308,7 +308,7 @@ class RealtimeCache:
         ts: int | None = None,
         request_id: int | None = None,
     ) -> bool:
-        key = f"qilin:user:{int(user_idx)}:{scene}:behaviors"
+        key = f"{self.namespace}:user:{int(user_idx)}:{scene}:behaviors"
         arr = self.client.lrange(key, 0, max(0, int(self.behavior_max_len) * 4))
         if not arr:
             return False
@@ -339,7 +339,7 @@ class RealtimeCache:
             p.rpush(key, *keep)
             p.ltrim(key, -max(1, int(self.behavior_max_len)), -1)
         if not remaining_same_note:
-            hist_key = f"qilin:user:{int(user_idx)}:{scene}:history_notes"
+            hist_key = f"{self.namespace}:user:{int(user_idx)}:{scene}:history_notes"
             p.lrem(hist_key, 0, int(note_idx))
         p.execute()
         return True
@@ -424,6 +424,7 @@ def build_realtime_cache() -> RealtimeCache | None:
         client.ping()
         return RealtimeCache(
             client=client,
+            namespace=os.getenv("QILIN_REDIS_NAMESPACE", "qilin:live:v2"),
             history_max_len=int(os.getenv("QILIN_HISTORY_MAX_LEN", "50")),
             behavior_max_len=int(os.getenv("QILIN_BEHAVIOR_MAX_LEN", "60")),
             dedup_window_sec=int(os.getenv("QILIN_BEHAVIOR_DEDUP_SEC", "2")),
