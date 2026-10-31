@@ -174,6 +174,9 @@ def package_bundle(args,root:Path=ROOT):
         snapshot_out=output/'evaluation/validation.json';copy_bound(snapshot,snapshot_out)
         manifest['evaluation']={'validation_snapshot':{'path':snapshot_out.relative_to(root).as_posix(),'sha256':file_sha256(snapshot_out)}}
         manifest['packaging_provenance']['validation_source_sha256']=file_sha256(snapshot)
+    if getattr(args,'note_metadata_index',None):
+        catalog=contained(root,args.note_metadata_index)
+        manifest['note_metadata_index']=catalog.relative_to(root).as_posix()
     names=required_asset_names(manifest,root)
     runtime_files=[
         'backend/online/'+name for name in ['bundle.py','pipeline.py','live_context.py','shared_query_encoder.py','item_features.py',
@@ -181,6 +184,7 @@ def package_bundle(args,root:Path=ROOT):
     runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py']]
     runtime_files += ['training/'+name for name in ['rank_stack.py','history.py','dien_ranker.py','scoring.py','recall_prior.py']]
     names.update('src/'+name for name in runtime_files if (root/'src'/name).is_file())
+    names.update(path.relative_to(root).as_posix() for path in (root/'src/backend/online').rglob('*.py'))
     manifest['assets']={name:file_sha256(contained(root,name)) for name in sorted(names)}
     manifest['bundle_id']=bundle_identity(manifest)
     validate_manifest(manifest,scene,root,tag=tag)
@@ -195,6 +199,7 @@ def parser():
     for name in ['selected-dssm','selected-index','ann-index','rank-manifest','output-dir','bm25-index','query-encoder-dir']:
         result.add_argument('--'+name,type=Path)
     result.add_argument('--validation-snapshot',type=Path)
+    result.add_argument('--note-metadata-index',type=Path)
     result.add_argument('--ranking-strategy',choices=['learned','recall_only'],default='learned')
     result.add_argument('--query-encoder-revision');result.add_argument('--nprobe',type=int)
     result.add_argument('--training-cutoff-exclusive',type=int,required=True)

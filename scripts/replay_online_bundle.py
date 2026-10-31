@@ -63,6 +63,11 @@ def main():
     ranker=RankStackPredictor(scene,ROOT/manifest['rank_dir'],root=ROOT,
         query_encoder_dir=ROOT/manifest['query_encoder_dir'] if scene=='search' else None,query_encoder_revision=manifest.get('query_encoder_revision'))
     bundle=ServingBundle(manifest,ranker,ROOT)
+    if scene=='search':
+        from backend.online.shared_query_encoder import get_shared_query_encoder
+        tokenizer,encoder=get_shared_query_encoder(ROOT/manifest['query_encoder_dir'],manifest['query_encoder_revision'])
+        if tokenizer is None or encoder is None:raise RuntimeError('Pinned query encoder unavailable before readiness')
+        bundle._get_bm25_index()
     # Override only the active pointer: no disk promotion and all production code paths remain active.
     with patch('backend.online.bundle.get_active_bundle',return_value=bundle):
         state=SceneServingState(scene,tag=manifest['tag'])
