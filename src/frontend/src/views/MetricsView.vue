@@ -642,11 +642,12 @@ onUnmounted(stopValidationProgress);
           <div v-if="isHeldOut && metric(currentScene, 'recall')?.train_item_coverage != null" class="coverage-strip">
             <span>模型输出目标覆盖 <strong>{{ (metric(currentScene, 'recall').train_item_coverage * 100).toFixed(1) }}%</strong></span>
             <span>Top500 全未命中 <strong>{{ metric(currentScene, 'recall').missed_requests_at_500?.toLocaleString() }}</strong> 个请求</span>
+            <span v-if="activeSnapshot?.pipeline?.test">服务最终输出：{{ currentScene === 'search' ? 'HitRate@10' : 'HitRate@50' }} {{ fmtNum(activeSnapshot.pipeline.test[currentScene === 'search' ? 'HitRate@10' : 'HitRate@50']) }} · Recall@100 {{ fmtNum(activeSnapshot.pipeline.test['Recall@100']) }} · 已知点击 NDCG@10 {{ fmtNum(activeSnapshot.pipeline.test['known_positive_NDCG@10']) }}<template v-if="currentScene === 'search'"> · MRR@100 {{ fmtNum(activeSnapshot.pipeline.test['MRR@100']) }}</template><template v-if="activeSnapshot.pipeline.serving_strategy === 'recall_only'"> · 粗排/精排未启用</template></span>
           </div>
         </div>
 
         <div class="panel shell-panel">
-          <div class="section-title">排序指标</div>
+          <div class="section-title">日志曝光池排序</div>
           <div class="rank-stage-list single-stage-list">
             <div class="rank-stage">
               <div class="rank-stage-title">粗排 · GBDT <span v-if="isHeldOut || isFullTestSnapshot" class="scope-tag">日志曝光条件评估</span></div>
