@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
 from pydantic import BaseModel
 
 from backend.online.pipeline import OnlineRuntimeRegistry  # noqa: E402
-from backend.online.metrics_snapshot import load_metrics_snapshot
+from backend.online.metrics_snapshot import load_metrics_snapshot, MetricsVersionMismatch
 from backend.online.config import DEFAULT_GBDT_TOPN, DEFAULT_RECALL_RANK_CAP
 
 BASE_DIR = Path(__file__).resolve().parents[4]
@@ -937,6 +937,8 @@ def create_app(
 				"cache_hit": bool(hit),
 				"latency_ms": float((time.perf_counter() - t0) * 1000.0),
 			}
+		except MetricsVersionMismatch as e:
+			raise HTTPException(status_code=503, detail=str(e)) from e
 		except ValueError as e:
 			raise HTTPException(status_code=400, detail=str(e)) from e
 		except Exception as e:
