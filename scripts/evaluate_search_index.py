@@ -64,6 +64,17 @@ def validation(output):
     write_json(target/"validation_comparison.json",result)
     print(json.dumps(result,indent=2),flush=True)
 
+def apply_user_profile_contract(frame, checkpoint_meta, training_manifest=None):
+    """Honor the trained42-column mask even in old states without persistent flags."""
+    result=frame.copy()
+    training_manifest=training_manifest or {}
+    masked=bool(checkpoint_meta.get("masked_user_dense",training_manifest.get("masked_user_dense",False)))
+    if masked:
+        columns=["fans_num","follows_num"]+[f"dense_feat{i}" for i in range(1,41)]
+        result[columns]=0.
+    return result
+
+
 def final_test(output):
     """Final frozen-model acceptance; never chooses model, index, or weights here."""
     import torch
@@ -87,7 +98,8 @@ def final_test(output):
     stores={"note_text":trainer.MMapStore("note_text_emb","note_text"),
             "note_img":trainer.MMapStore("note_img_emb","note_img"),"search_query":query_store}
     frame=raw_model_frame(pd.read_parquet(ROOT/"features/search_test_features.parquet"),get_item_feature_store(ROOT),trainer,"search")
-    request_ids,queries=encode_requests(model,frame,stores,"search",training["unknown_user_id"],set(training["known_user_ids"]))
+    frame=apply_user_profile_contract(frame,meta,training)
+    request_ids,queries=encode_requests(model,frame,stores,"search",int(meta.get("unknown_user_id",training["unknown_user_id"])),set(meta.get("known_user_ids",training["known_user_ids"])))
     if set(request_ids)!=set(raw.search_idx):raise ValueError("Incomplete official test requests")
     requests=raw[["search_idx","user_idx"]].rename(columns={"search_idx":"gid"})
     requests["positives"]=[sorted({int(item["note_idx"]) for item in details if item["click"]>0})
