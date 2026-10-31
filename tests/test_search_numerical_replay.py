@@ -13,6 +13,14 @@ class SearchNumericalReplayTests(unittest.TestCase):
   hit=replay.metric_row(1,3,[0,0,9],[0]);miss=replay.metric_row(2,4,[8],[]);s=replay.summarize([hit,miss]);self.assertEqual(hit['Recall@100'],.5);self.assertEqual(s['Recall@100'],.25);self.assertEqual(s['requests'],2);self.assertEqual(s['empty_candidate_requests'],1)
  def test_validation_strict_gain_test_nondegradation_same_old_guards(self):
   baseline={k:.2 for k in ['Recall@100','HitRate@10','known_positive_NDCG@10','MRR@100']};self.assertFalse(replay.guard(baseline,baseline,True));self.assertTrue(replay.guard(baseline,baseline,False));good={**baseline,'Recall@100':.3};self.assertTrue(replay.guard(good,baseline,True));good['MRR@100']=.19;self.assertFalse(replay.guard(good,baseline,True))
+ def test_shared_builder_nonzero_categories_prefix_and_missing_category_fail_closed(self):
+  from backend.online.live_context import LiveContextBuilder
+  b=LiveContextBuilder.__new__(LiveContextBuilder);b.group_key='search_idx';b.profiles={7:{'gender':'g','platform':'p','age':'a','location':None}};b.vocabularies={'gender':{'g':1},'platform':{'p':3},'age':{'a':7},'location':{}}
+  c=replay.current_context(b,42,7,'current',list(range(30)))
+  self.assertEqual(c.iloc[0].recent_clicked_note_idxs,list(range(20)));self.assertEqual([int(c.iloc[0][k]) for k in replay.PROFILE_CATEGORIES],[1,3,7,0]);self.assertEqual(int(c.iloc[0].search_idx),42)
+  unknown=replay.current_context(b,43,999,'current',[0]);self.assertEqual([int(unknown.iloc[0][k]) for k in replay.PROFILE_CATEGORIES],[0,0,0,0])
+  with patch.object(b,'build',return_value=c.drop(columns=['age_enc'])):
+   with self.assertRaises(ValueError):replay.current_context(b,42,7,'current',[])
  def test_missing_or_rejected_validation_prevents_any_official_raw_read(self):
   with tempfile.TemporaryDirectory() as tmp:
    out=Path(tmp)
@@ -36,10 +44,12 @@ class SearchNumericalReplayTests(unittest.TestCase):
     enabled=True
     def __init__(self,*args,**kwargs):selftest.assertEqual(kwargs['inference_contract'],'request_fp32_v1')
    def fetch(bundle,dssm,context,**kwargs):
-    row=context.iloc[0];selftest.assertEqual(set(context),{'search_idx','user_idx','query','raw_query','recent_clicked_note_idxs'});ids=[0,1,2] if row.search_idx==1 else [3];result=pd.DataFrame({'search_idx':int(row.search_idx),'user_idx':int(row.user_idx),'note_idx':ids,'rank':np.arange(1,len(ids)+1),'recall_score':1./np.arange(1,len(ids)+1)});result.attrs['route_status']={'errors':{},'counts':{'ann':len(ids),'bm25':0}};return result
+    row=context.iloc[0];selftest.assertTrue(set(replay.PROFILE_CATEGORIES).issubset(context));selftest.assertEqual([int(row[name]) for name in replay.PROFILE_CATEGORIES],[1,3,7,0] if int(row.user_idx)==7 else [0,0,0,0]);ids=[0,1,2] if row.search_idx==1 else [3];result=pd.DataFrame({'search_idx':int(row.search_idx),'user_idx':int(row.user_idx),'note_idx':ids,'rank':np.arange(1,len(ids)+1),'recall_score':1./np.arange(1,len(ids)+1)});result.attrs['route_status']={'errors':{},'counts':{'ann':len(ids),'bm25':0}};return result
+   from backend.online.live_context import LiveContextBuilder
+   builder=LiveContextBuilder.__new__(LiveContextBuilder);builder.group_key='search_idx';builder.profiles={7:{'gender':'g','platform':'p','age':'a','location':None}};builder.vocabularies={'gender':{'g':1},'platform':{'p':3},'age':{'a':7},'location':{}}
    selftest=self
-   with patch.object(replay,'ROOT',root),patch.object(replay,'OLD_GATE',old),patch.object(replay,'verify',return_value=plan),patch.object(replay,'read_original',return_value=(raw,source)),patch('backend.online.bundle.validate_manifest'),patch('backend.online.bundle.ServingBundle',Bundle),patch('backend.online.ranking.stack.RankStackPredictor',Ranker),patch('backend.online.recall.dssm.DSSMRecaller',DSSM),patch('backend.online.recall.service.fetch_bundle_recall_candidates',side_effect=fetch):result=replay.run_phase(out,'validation','cpu')
-   self.assertEqual(result['all_requests'],2);self.assertEqual(result['stages']['raw']['Recall@100'],.25);self.assertEqual(len(calls),2);self.assertEqual(calls[0].iloc[0]['query'],query);scored=pd.read_parquet(out/'validation/scores.parquet');self.assertEqual(scored.recent_clicked_note_idxs.iloc[-1].tolist(),[0]);self.assertIn('originalrank',scored);self.assertEqual(len(pd.read_parquet(out/'validation/final_candidates.parquet')),4)
+   with patch.object(replay,'load_context_builder',return_value=builder),patch.object(replay,'ROOT',root),patch.object(replay,'OLD_GATE',old),patch.object(replay,'verify',return_value=plan),patch.object(replay,'read_original',return_value=(raw,source)),patch('backend.online.bundle.validate_manifest'),patch('backend.online.bundle.ServingBundle',Bundle),patch('backend.online.ranking.stack.RankStackPredictor',Ranker),patch('backend.online.recall.dssm.DSSMRecaller',DSSM),patch('backend.online.recall.service.fetch_bundle_recall_candidates',side_effect=fetch):result=replay.run_phase(out,'validation','cpu')
+   self.assertEqual(result['all_requests'],2);self.assertEqual(result['stages']['raw']['Recall@100'],.25);self.assertEqual(len(calls),2);self.assertEqual(calls[0].iloc[0]['query'],query);scored=pd.read_parquet(out/'validation/scores.parquet');self.assertEqual(scored.recent_clicked_note_idxs.iloc[-1].tolist(),[0]);contextout=pd.read_parquet(out/'validation/request_context.parquet');self.assertEqual(contextout.gender_enc.tolist(),[1,0]);self.assertEqual(contextout.age_enc.tolist(),[7,0]);self.assertIn('originalrank',scored);self.assertEqual(len(pd.read_parquet(out/'validation/final_candidates.parquet')),4)
    with patch.object(replay,'verify',return_value=plan),patch.object(replay,'read_original') as sourcecall:
     with self.assertRaises(FileExistsError):replay.run_phase(out,'validation','cpu')
     sourcecall.assert_not_called()
