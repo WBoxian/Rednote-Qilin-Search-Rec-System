@@ -103,6 +103,11 @@ def main():
     pd.DataFrame(predictions).to_parquet(args.output/'predictions.parquet',index=False)
     result={'status':'FAIL' if mismatches else 'PASS','scene':scene,'requests':len(rows),'original_test_requests':complete,'complete_test':len(rows)==complete,
         'scope':'Actual production build_feed with original current user/query/history, fresh dynamic recall and no exposure writes; active pointer injected in-memory before promotion',
+        'execution':{'rank_device':str(ranker.device),'inference_contract':getattr(ranker,'inference_contract',None),
+            'torch_version':torch.__version__,'cuda_version':torch.version.cuda,
+            'cuda_device':torch.cuda.get_device_name(ranker.device) if ranker.device.type=='cuda' else None,
+            'cpu_threads':torch.get_num_threads(),'matmul_tf32':torch.backends.cuda.matmul.allow_tf32,
+            'cudnn_tf32':torch.backends.cudnn.allow_tf32,'cudnn_benchmark':torch.backends.cudnn.benchmark},
         'bundle_id':bundle.bundle_id,'startup_seconds':startup,'metrics':{name:float(requests[name].mean()) for name in retention([],set())},
         'latency_ms':{'p50':float(requests.latency_ms.quantile(.5)),'p95':float(requests.latency_ms.quantile(.95)),'max':float(requests.latency_ms.max())},
         'latency_scope':'Local sequential replay including metadata/card construction; shared models progressively warm; not concurrent production SLO',
