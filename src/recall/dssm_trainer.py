@@ -51,10 +51,6 @@ INBATCH_TEMPERATURE = 0.07 # in-batch softmax 温度，越小对比越尖锐
 SEQ_MAX_LEN = 20
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-if torch.cuda.is_available():
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
 
 BASE_DIR = Path(__file__).resolve().parents[2]  # Qilin/
 if str(BASE_DIR / "src") not in sys.path:
@@ -1654,6 +1650,11 @@ def main(
 
 # =============================
 if __name__ == "__main__":
+    # CLI training/export owns its numeric mode; importing tower definitions must not mutate serving precision.
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene", choices=["search", "rec"], required=True)
     parser.add_argument("--neg-mode", choices=["auto", "easy", "hard"], default="auto")

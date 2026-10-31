@@ -492,6 +492,10 @@ class DIENRanker(nn.Module):
             getattr(self, f"zscore_std_{f}").fill_(sd if sd >= 1e-6 else 0.0)
 
     def forward(self, features, batch_y=None, batch_g=None):
+        if self.inference_precision == "fp32" and features["note_text_emb"].is_cuda and (
+            torch.backends.cuda.matmul.allow_tf32 or torch.backends.cudnn.allow_tf32
+        ):
+            raise RuntimeError("FP32 DIEN execution requires CUDA matmul and cuDNN TF32 to remain disabled")
         # A. 准备数据
         seq_embs = features["seq_embs"]         # [B, T, E] (假设已 flip 为时间正序)
         note_txt = features["note_text_emb"]    # [B, E]

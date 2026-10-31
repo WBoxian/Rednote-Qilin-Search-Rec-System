@@ -92,7 +92,9 @@ def main():
             expected_ids=[] if expected is None else expected.note_idx.astype(int).tolist()
             row['top10_order_match']=ids[:10]==expected_ids[:10]
             row['top100_set_match']=set(ids[:100])==set(expected_ids[:100])
-            if not row['top10_order_match'] or not row['top100_set_match']:
+            row['top100_order_match']=ids[:100]==expected_ids[:100]
+            row['full_pool_order_match']=ids==expected_ids
+            if not row['top10_order_match'] or not row['top100_order_match']:
                 mismatches.append({'gid':gid,'actual10':ids[:10],'expected10':expected_ids[:10]})
         rows.append(row)
         predictions.extend({'gid':gid,'note_idx':note,'rank':rank+1,'score':float(pool.iloc[rank]['final_score'])} for rank,note in enumerate(ids))
@@ -104,6 +106,8 @@ def main():
         'bundle_id':bundle.bundle_id,'startup_seconds':startup,'metrics':{name:float(requests[name].mean()) for name in retention([],set())},
         'latency_ms':{'p50':float(requests.latency_ms.quantile(.5)),'p95':float(requests.latency_ms.quantile(.95)),'max':float(requests.latency_ms.max())},
         'latency_scope':'Local sequential replay including metadata/card construction; shared models progressively warm; not concurrent production SLO',
+        'reference_top100_order_mismatches':int((~requests.top100_order_match).sum()) if reference else None,
+        'reference_full_pool_order_mismatches':int((~requests.full_pool_order_match).sum()) if reference else None,
         'page_size':args.page_size,'cache_hits':int(requests.cache_hit.sum()),'reference_order_mismatches':mismatches,
         'inputs':{str(path):sha256(path) for path in [source,args.bundle,Path(__file__),*([args.reference_scores] if args.reference_scores else []),*([args.reference_recall] if args.reference_recall else [])]},'seconds':time.monotonic()-started,
         'limitations':['Provider histories/catalog/static snapshots lack complete point-in-time lineage','Test has been observed before; regression benchmark only','No unexposed candidates treated as negatives; no AUC claim for this output']}
