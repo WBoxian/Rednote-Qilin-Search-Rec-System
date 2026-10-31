@@ -44,12 +44,16 @@ def get_shared_query_encoder(model_dir: Path | str | None = None, revision: str 
             return None, None
 
 
-def encode_current_query(text: str, model_dir: Path | str, revision: str | None) -> np.ndarray:
+def encode_current_query(text: str, model_dir: Path | str, revision: str | None, *, inference_contract=None) -> np.ndarray:
     """Identical pinned BGE CLS inference for recall and rank; never cache failures."""
     query = str(text or "").strip()
     if not query:
         raise ValueError("Current-query encoding requires nonempty text")
+    from backend.online.ranking.inference import check_request_inference
+    check_request_inference(inference_contract)
     key = str(Path(model_dir).resolve()), revision, query
+    if inference_contract is not None:
+        key = (*key, inference_contract)
     with _LOCK:
         if key in _QUERY_VECTORS:
             _QUERY_VECTORS.move_to_end(key)
@@ -58,7 +62,7 @@ def encode_current_query(text: str, model_dir: Path | str, revision: str | None)
         if tokenizer is None or model is None:
             raise RuntimeError("Pinned current-query encoder is unavailable")
         inputs = tokenizer([query], padding=True, truncation=True, max_length=512, return_tensors="pt")
-        with torch.inference_mode():
+        with torch.inference_mode(), torch.autocast(device_type="cpu", enabled=False):
             vector = model(**inputs).last_hidden_state[:, 0].float()
             vector = vector/vector.norm(dim=-1, keepdim=True).clamp_min(1e-12)
         value = vector.cpu().numpy().reshape(-1).astype(np.float32)

@@ -950,7 +950,7 @@ class SceneServingState:
             query_dir = BASE_DIR / bundle.manifest["query_encoder_dir"] if self.scene == "search" else None
             self.dssm_recaller = DSSMRecaller(self.scene, self.tag, bundle.recall_dir, self.group_key,
                 query_encoder_dir=query_dir, query_encoder_revision=bundle.manifest.get("query_encoder_revision"),
-                use_shared_note_vectors=True)
+                use_shared_note_vectors=True, inference_contract=getattr(bundle.ranker, "inference_contract", None))
             self.dssm_model = self.dssm_recaller.model
             self.realtime_ann_enabled = bool(self.dssm_recaller.enabled)
             if not self.realtime_ann_enabled:

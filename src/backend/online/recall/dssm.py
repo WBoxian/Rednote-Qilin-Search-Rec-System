@@ -73,11 +73,14 @@ class _SharedNoteStore:
 
 
 class DSSMRecaller:
-    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str, *, query_encoder_dir=None, query_encoder_revision=None, use_shared_note_vectors=False):
+    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str, *, query_encoder_dir=None, query_encoder_revision=None, use_shared_note_vectors=False, inference_contract=None):
         self.scene = scene
         self.use_shared_note_vectors = bool(use_shared_note_vectors)
         self.query_encoder_dir = query_encoder_dir
         self.query_encoder_revision = query_encoder_revision
+        self.inference_contract = inference_contract
+        from backend.online.ranking.inference import configure_request_inference
+        configure_request_inference(inference_contract)
         self.tag = tag
         self.deploy_tag_dir = deploy_tag_dir
         self.group_key = group_key
@@ -204,8 +207,11 @@ class DSSMRecaller:
         directory = getattr(self, "query_encoder_dir", None)
         if directory is not None:
             try:
-                return encode_current_query(q, directory, getattr(self, "query_encoder_revision", None)).reshape(1, -1)
+                return encode_current_query(q, directory, getattr(self, "query_encoder_revision", None),
+                    inference_contract=getattr(self, "inference_contract", None)).reshape(1, -1)
             except (OSError, ValueError, RuntimeError):
+                if getattr(self, "inference_contract", None) is not None:
+                    raise
                 return None
         if self.query_tokenizer is None or self.query_model is None:
             self._load_query_encoder()

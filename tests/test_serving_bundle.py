@@ -58,6 +58,21 @@ def resign(manifest):
 
 
 class ServingBundleTests(unittest.TestCase):
+    def test_request_numerical_contract_rejects_unknown_execution_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);manifest=fixture(root)
+            path=root/manifest['rank_dir']/'manifest.json'
+            metadata=json.loads(path.read_text())
+            for contract in ['request_fp32_v1', 'unknown', {'padding':1024}]:
+                metadata['dien']['inference_contract']=contract
+                path.write_text(json.dumps(metadata))
+                manifest['assets'][path.relative_to(root).as_posix()]=file_sha256(path)
+                if contract == 'request_fp32_v1':
+                    validate_manifest(resign(manifest),'search',root)
+                else:
+                    with self.assertRaisesRegex(ValueError,'request inference contract'):
+                        validate_manifest(resign(manifest),'search',root)
+
     def test_optional_f1_schema_only_accepts_the_fixed_rec_history_filter_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);manifest=fixture(root,'rec')

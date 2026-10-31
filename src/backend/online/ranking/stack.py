@@ -17,6 +17,7 @@ from backend.online.item_features import STATIC_ITEM_FEATURES, get_item_feature_
 from backend.online.shared_query_encoder import get_shared_query_encoder, encode_current_query
 from training.dien_ranker import DIENRanker
 from training.rank_stack import MappedVectors, RequestContext, SEMANTIC_FEATURES, group_minmax
+from backend.online.ranking.inference import configure_request_inference, canonical_request_logits
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -74,6 +75,8 @@ class RankStackPredictor:
         self.manifest = json.loads((self.run_dir / 'manifest.json').read_text())
         if self.manifest['scene'] != scene:
             raise ValueError('Ranking bundle scene mismatch')
+        self.inference_contract = self.manifest['dien'].get('inference_contract')
+        configure_request_inference(self.inference_contract)
         self.group_key = self.manifest['key']
         self.feature_cols = list(self.manifest['features'])
         allowed = {*STATIC_ITEM_FEATURES, *SEMANTIC_FEATURES}
@@ -117,7 +120,8 @@ class RankStackPredictor:
         if not text:
             return np.zeros(768, dtype=np.float32)
         if self.query_encoder_dir is not None:
-            return encode_current_query(text, self.query_encoder_dir, self.query_encoder_revision)
+            return encode_current_query(text, self.query_encoder_dir, self.query_encoder_revision,
+                inference_contract=getattr(self, 'inference_contract', None))
         if text in self._query_cache:
             self._query_cache.move_to_end(text)
             return self._query_cache[text]
@@ -196,19 +200,39 @@ class RankStackPredictor:
             score = blend_rank_scores(frame.coarse_score.to_numpy(), np.zeros(len(frame), dtype=np.float32),
                 frame[self.group_key].to_numpy(), 0., getattr(self, "score_contract", "request_minmax_v1"))
             return self._apply_rank_prior(frame, score)
+        raw = self._fine_logits(frame, context)
+        return self._blend_predictions(frame, raw)
+
+    def _fine_logits(self, frame, context):
+        if getattr(self, 'inference_contract', None) is not None:
+            return canonical_request_logits(self.model, context, frame, self.num_feats, self.device, self.group_key)
         chunks = []
         with torch.no_grad():
             for start in range(0, len(frame), 1024):
                 batch = frame.iloc[start:start + 1024]
                 raw, _ = self.model(context.batch(batch, self.num_feats, self.device))
                 chunks.append(raw.detach().float().cpu().numpy().reshape(-1))
-        raw = np.concatenate(chunks)
+        return np.concatenate(chunks)
+
+    def _blend_predictions(self, frame, raw):
         from training.scoring import blend_rank_scores
         score = blend_rank_scores(frame.coarse_score.to_numpy(), raw, frame[self.group_key].to_numpy(),
             self.weight, self.score_contract)
         if not np.isfinite(score).all():
             raise ValueError('Nonfinite fine prediction')
         return self._apply_rank_prior(frame, score)
+
+    @synchronized
+    def score_request_frame(self, candidates, history_note_ids=None):
+        """Expose the exact live feature/logit contract for immutable offline replay."""
+        if candidates.empty:
+            return candidates.assign(coarse_score=np.zeros(0, dtype=np.float32),
+                dien_raw_score=np.zeros(0, dtype=np.float32), final_score=np.zeros(0, dtype=np.float64))
+        frame, context = self._frame(candidates, history_note_ids)
+        frame['coarse_score'] = self.coarse.predict(frame[self.feature_cols]).astype(np.float32)
+        frame['dien_raw_score'] = self._fine_logits(frame, context)
+        frame['final_score'] = self._blend_predictions(frame, frame.dien_raw_score.to_numpy())
+        return frame
 
     def _apply_rank_prior(self, frame, score):
         prior = getattr(self, 'rank_prior', None)

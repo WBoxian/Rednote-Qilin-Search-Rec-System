@@ -188,6 +188,8 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     if dien.get("numeric_features") != [*features, "coarse_score"] or dien.get("architecture", {}).get("inference_precision") != "fp32":
         raise ValueError("Fine ranking input/precision contract mismatch")
     score_contract = dien.get("score_contract", "request_minmax_v1")
+    from backend.online.ranking.inference import validate_inference_contract
+    validate_inference_contract(dien.get("inference_contract"))
     if score_contract not in {"request_minmax_v1", "probability_v2"}:
         raise ValueError("Unsupported ranking score contract")
     if score_contract == "probability_v2" and metadata.get("trees", {}).get("chosen", {}).get("config", {}).get("kind") != "classifier":
