@@ -58,6 +58,23 @@ def resign(manifest):
 
 
 class ServingBundleTests(unittest.TestCase):
+    def test_weighted_f1_accepts_only_the_declared_eight_weight_recipes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);manifest=fixture(root,'rec')
+            policy=manifest['recall_policy'];policy['context_policy']='weighted_filter_history'
+            for ann in [1,2,4,8]:
+                for swing in [1,2]:
+                    policy['weights']={'ann':ann,'swing':swing,'usercf':1}
+                    validate_manifest(resign(manifest),'rec',root)
+            for changed in [{'weights':{'ann':3,'swing':1,'usercf':1}},
+                            {'weights':{'ann':2,'swing':4,'usercf':1}},
+                            {'weights':{'ann':2,'swing':1,'usercf':0}},
+                            {'weights':{'ann':True,'swing':1,'usercf':1}},
+                            {'route_topk':500},{'topk':600},{'rrf_k':20}]:
+                mutation=copy.deepcopy(manifest);mutation['recall_policy'].update(changed)
+                with self.assertRaisesRegex(ValueError,'weighted request-context'):
+                    validate_manifest(resign(mutation),'rec',root)
+
     def test_request_numerical_contract_rejects_unknown_execution_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);manifest=fixture(root)

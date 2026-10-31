@@ -798,7 +798,13 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
     strategy = policy.get("strategy", "weighted_rrf")
     context_policy = policy.get("context_policy")
     if context_policy is not None:
-        if scene != "rec" or context_policy != "filter_history" or strategy != "weighted_rrf" or weights != {"ann": 1., "swing": 2., "usercf": 1.} or int(policy.get("rrf_k", 60)) != 60 or route_topk != 1000:
+        if context_policy == "weighted_filter_history":
+            if (scene != "rec" or strategy != "weighted_rrf" or set(weights) != {"ann", "swing", "usercf"}
+                    or weights["ann"] not in (1., 2., 4., 8.) or weights["swing"] not in (1., 2.)
+                    or weights["usercf"] != 1. or any(isinstance(value, bool) for value in weights.values())
+                    or int(policy.get("rrf_k", 60)) != 60 or route_topk != 1000 or final_topk != 500):
+                raise ValueError("Unsupported frozen weighted request-context fusion contract")
+        elif scene != "rec" or context_policy != "filter_history" or strategy != "weighted_rrf" or weights != {"ann": 1., "swing": 2., "usercf": 1.} or int(policy.get("rrf_k", 60)) != 60 or route_topk != 1000:
             raise ValueError("Unsupported frozen request-context fusion contract")
         from recall.context_fusion import fuse_request_routes
         from training.history import recent_history_ids
@@ -807,7 +813,11 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
         route_scores = {"ann": ann, "swing": swing, "usercf": usercf}
         route_ids = {name: np.asarray(sorted(scores, key=lambda note: (-scores[note], note)), dtype=np.int64)
                      for name, scores in route_scores.items()}
-        fused = fuse_request_routes(route_ids, recent, (), context_policy, topk=final_topk)
+        if context_policy == "weighted_filter_history":
+            from recall.weighted_context_fusion import fuse_weighted_request_routes
+            fused = fuse_weighted_request_routes(route_ids, recent, weights, topk=final_topk)
+        else:
+            fused = fuse_request_routes(route_ids, recent, (), context_policy, topk=final_topk)
         # Only source attribution needs per-route positions; shared helper owns all final scoring/ranking.
         positions = {name: {note: rank for rank, note in enumerate((int(note) for note in ids if int(note) not in consumed), 1)}
                      for name, ids in route_ids.items()}

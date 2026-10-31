@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import numpy as np
 import pandas as pd
 
@@ -9,6 +9,29 @@ from backend.online.recall.service import fetch_bundle_recall_candidates
 
 
 class BundleRecallTests(unittest.TestCase):
+    def test_weighted_f1_actual_call_uses_shared_helper_and_selected_weights(self):
+        from recall.weighted_context_fusion import fuse_weighted_request_routes
+        context=pd.DataFrame({'request_idx':[123],'user_idx':[7],'query':[''],
+                              'recent_clicked_note_idxs':[[0,1,2]]})
+        tower=SimpleNamespace(fetch_candidates=Mock(return_value=pd.DataFrame({
+            'note_idx':[0,20,30], 'score_ann':[3.,2.,1.]})))
+        policy={'strategy':'weighted_rrf','weights':{'ann':2.,'swing':1.,'usercf':1.},
+                'route_topk':1000,'topk':500,'rrf_k':60,'context_policy':'weighted_filter_history'}
+        bundle=SimpleNamespace(bundle_id='frozen',manifest={'recall_policy':policy},
+            cf_candidates=Mock(return_value={'swing':{1:3.,30:2.,20:1.},'usercf':{2:3.,40:2.,20:1.}}))
+        with patch('recall.weighted_context_fusion.fuse_weighted_request_routes',wraps=fuse_weighted_request_routes) as shared:
+            actual=fetch_bundle_recall_candidates(bundle,tower,context,scene='rec',max_rank=500)
+        expected=fuse_weighted_request_routes({'ann':[0,20,30],'swing':[1,30,20],'usercf':[2,40,20]},
+            [0,1,2],policy['weights'])
+        self.assertEqual(actual.note_idx.tolist(),expected.note_idx.tolist())
+        np.testing.assert_array_equal(actual.recall_score,expected.score)
+        self.assertEqual(shared.call_count,1)
+        self.assertEqual(shared.call_args.args[2],policy['weights'])
+        self.assertEqual(actual.attrs['route_status']['context_policy'],'weighted_filter_history')
+        self.assertEqual(actual.attrs['route_status']['history_filter_removed'],{'ann':1,'swing':1,'usercf':1})
+        self.assertEqual(tower.fetch_candidates.call_args.args[1],1000)
+        self.assertEqual(bundle.cf_candidates.call_args.args[2],1000)
+
     def test_f1_filters_only_recent20_after_original_route_budget_and_uses_shared_fusion(self):
         from recall.context_fusion import fuse_request_routes
         context=pd.DataFrame({'request_idx':[123],'user_idx':[7],'query':[''], 'recent_clicked_note_idxs':[list(range(20))+[999]]})

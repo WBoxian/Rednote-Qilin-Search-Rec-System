@@ -145,7 +145,13 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     if int(policy.get("rrf_k", 60)) < 1:
         raise ValueError("Invalid reciprocal-rank smoothing")
     context_policy = policy.get("context_policy")
-    if context_policy is not None and (scene != "rec" or context_policy != "filter_history" or strategy != "weighted_rrf" or
+    if context_policy == "weighted_filter_history":
+        if (scene != "rec" or strategy != "weighted_rrf" or weights["ann"] not in (1., 2., 4., 8.)
+                or weights["swing"] not in (1., 2.) or weights["usercf"] != 1.
+                or any(isinstance(value, bool) for value in weights.values())
+                or int(policy.get("rrf_k", 60)) != 60 or route_topk != 1000 or final_topk != 500):
+            raise ValueError("Unsupported frozen weighted request-context fusion contract")
+    elif context_policy is not None and (scene != "rec" or context_policy != "filter_history" or strategy != "weighted_rrf" or
             weights != {"ann": 1., "swing": 2., "usercf": 1.} or int(policy.get("rrf_k", 60)) != 60 or route_topk != 1000):
         raise ValueError("Unsupported frozen request-context fusion contract")
     if strategy == "protected_headfill" and not 0 <= int(policy.get("head_cap", 100)) <= final_topk:
