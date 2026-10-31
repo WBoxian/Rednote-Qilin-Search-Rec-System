@@ -1,107 +1,112 @@
-"""
-Qilin Samples Project: Data Preprocessing Pipeline (Search & Rec)
----------------------------------------------------------------------------
-功能描述:
-    使用 DuckDB 向量化引擎，将搜索/推荐日志与用户、笔记特征进行合并，
-    生成统一样本文件（samples）。
-
-处理流程:
-    1. 用户行为字段展开(UNNEST User Behavior)
-    2. 关联笔记特征(Join Notes)
-    3. 关联用户特征(Join User)
-    4. 导出: samples/{scene}_{split}_samples.parquet
-
-使用示例:
-    uv run python src/preprocess/build_samples.py --scene search --split train
-    uv run python src/preprocess/build_samples.py --scene rec --split test
-"""
-
+"""Flatten Qilin logs without dropping catalog features or rewriting source data."""
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-
 import duckdb
+import pyarrow.parquet as pq
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 OUT_DIR = BASE_DIR / "samples"
-OUT_DIR.mkdir(exist_ok=True)
 NOTES_PARQUET = BASE_DIR / "datasets" / "notes" / "*.parquet"
 USER_PARQUET = BASE_DIR / "datasets" / "user_feat" / "*.parquet"
 
+NOTE_REQUIRED = (
+    "note_idx", "note_title", "note_content", "note_type", "taxonomy1_id",
+    "taxonomy2_id", "taxonomy3_id", "video_duration", "video_height",
+    "video_width", "image_num", "content_length", "commercial_flag",
+)
+# Missing snapshot aggregates remain explicitly optional; never alias one period
+# or scene's count to a different field. New conservative models do not use them.
+NOTE_OPTIONAL = (
+    "imp_num", "click_num", "like_num", "collect_num", "comment_num", "share_num",
+    "imp_rec_num", "imp_search_num", "click_rec_num", "click_search_num",
+    "accum_like_num", "accum_collect_num", "accum_comment_num", "view_time",
+    "rec_view_time", "search_view_time", "valid_view_times", "full_view_times",
+    "rec_like_num", "rec_collect_num", "rec_comment_num", "rec_share_num", "rec_follow_num",
+    "search_like_num", "search_collect_num", "search_comment_num", "search_share_num", "search_follow_num",
+)
+USER_COLUMNS = ("gender", "platform", "age", "location", "fans_num", "follows_num") + tuple(
+    f"dense_feat{i}" for i in range(1, 41)
+)
 
-def build_samples(scene: str, split: str) -> None:
-    folder_prefix = "recommendation" if scene == "rec" else "search"
-    nested_col = "rec_result_details_with_idx" if scene == "rec" else "search_result_details_with_idx"
-    time_col = "request_timestamp" if scene == "rec" else "search_timestamp"
 
-    data_path = BASE_DIR / "datasets" / f"{folder_prefix}_{split}" / "*.parquet"
-    out_file = OUT_DIR / f"{scene}_{split}_samples.parquet"
+def _require_columns(paths, columns, label):
+    if not paths:
+        raise FileNotFoundError(f"No parquet files for {label}")
+    for path in paths:
+        missing = sorted(set(columns) - set(pq.read_schema(path).names))
+        if missing:
+            raise ValueError(f"Missing required {label} columns in {path.name}: {missing}")
 
+
+def build_samples(scene: str, split: str, *, output_dir: Path | None = None,
+                  dataset_dir: Path | None = None) -> Path:
+    if scene not in {"search", "rec"} or split not in {"train", "test"}:
+        raise ValueError("Expected scene search/rec and split train/test")
+    dataset_dir = Path(dataset_dir) if dataset_dir is not None else BASE_DIR / "datasets"
+    destination = Path(output_dir) if output_dir is not None else OUT_DIR
+    prefix = "recommendation" if scene == "rec" else "search"
+    nested = "rec_result_details_with_idx" if scene == "rec" else "search_result_details_with_idx"
+    time_key = "request_timestamp" if scene == "rec" else "search_timestamp"
+    key = "request_idx" if scene == "rec" else "search_idx"
+    raw_paths = sorted((dataset_dir / f"{prefix}_{split}").glob("*.parquet"))
+    notes = sorted((dataset_dir / "notes").glob("*.parquet"))
+    users = sorted((dataset_dir / "user_feat").glob("*.parquet"))
+    _require_columns(raw_paths, ["user_idx", "session_idx", "recent_clicked_note_idxs", "query", key, nested]
+                     + (["query_from_type"] if scene == "search" else []), "log")
+    _require_columns(notes, NOTE_REQUIRED, "static note")
+    _require_columns(users, ["user_idx", *USER_COLUMNS], "user")
+    note_columns = set.intersection(*(set(pq.read_schema(path).names) for path in notes))
+    projection = [f"n.{name}" for name in NOTE_REQUIRED if name != "note_idx"]
+    projection.extend(f"n.{name}" for name in NOTE_OPTIONAL if name in note_columns)
+    projection.extend(f"u.{name}" for name in USER_COLUMNS)
+    request_columns = f"s.query, s.{key}, " + ("s.query_from_type, " if scene == "search" else "")
+    destination.mkdir(parents=True, exist_ok=True)
+    output = destination / f"{scene}_{split}_samples.parquet"
+    temporary = output.with_suffix(".tmp.parquet")
     con = duckdb.connect(database=":memory:")
-    print(f"[*] Processing {scene.upper()} {split} -> {out_file.name}")
-
-    extra_cols = "s.query, "
-    if scene == "search":
-        extra_cols += "s.query_from_type, s.search_idx, "
-    else:
-        extra_cols += "s.request_idx, "
-
-    con.execute(
-        f"""
-        CREATE TABLE stage_flat AS
-        SELECT
-            s.user_idx,
-            s.session_idx,
-            s.recent_clicked_note_idxs,
-            {extra_cols}
-            u.note_idx,
-            CAST(u.position AS INTEGER) AS position,
-            u.{time_col} AS timestamp,
-            CAST(u.click AS INTEGER)   AS click,
-            CAST(u.like AS INTEGER)    AS like,
-            CAST(u.collect AS INTEGER) AS collect,
-            CAST(u.comment AS INTEGER) AS comment,
-            CAST(u.share AS INTEGER)   AS share,
-            u.page_time
-        FROM read_parquet('{data_path}') AS s,
-             UNNEST(s.{nested_col}) AS d(u)
-        """
-    )
-
-    prefix = "search" if scene == "search" else "rec"
-    con.execute(
-        f"""
-        CREATE TABLE stage_full AS
-        SELECT
-            f.*,
-            n.note_title, n.note_content, n.note_type, n.taxonomy1_id, n.taxonomy2_id, n.taxonomy3_id,
-            n.video_duration, n.content_length, n.commercial_flag,
-            n.imp_num, n.click_num, n.like_num, n.view_time,
-            n.{prefix}_like_num, n.{prefix}_collect_num, n.{prefix}_comment_num, n.{prefix}_share_num,
-            u.gender, u.platform, u.age, u.location, u.fans_num, u.follows_num,
-            u.dense_feat1, u.dense_feat2, u.dense_feat3, u.dense_feat4, u.dense_feat5,
-            u.dense_feat6, u.dense_feat7, u.dense_feat8, u.dense_feat9, u.dense_feat10,
-            u.dense_feat11, u.dense_feat12, u.dense_feat13, u.dense_feat14, u.dense_feat15,
-            u.dense_feat16, u.dense_feat17, u.dense_feat18, u.dense_feat19, u.dense_feat20,
-            u.dense_feat21, u.dense_feat22, u.dense_feat23, u.dense_feat24, u.dense_feat25,
-            u.dense_feat26, u.dense_feat27, u.dense_feat28, u.dense_feat29, u.dense_feat30,
-            u.dense_feat31, u.dense_feat32, u.dense_feat33, u.dense_feat34, u.dense_feat35,
-            u.dense_feat36, u.dense_feat37, u.dense_feat38, u.dense_feat39, u.dense_feat40
-        FROM stage_flat f
-        LEFT JOIN read_parquet('{NOTES_PARQUET}') n ON f.note_idx = n.note_idx
-        LEFT JOIN read_parquet('{USER_PARQUET}') u ON f.user_idx = u.user_idx
-        """
-    )
-
-    con.execute(f"COPY stage_full TO '{out_file}' (FORMAT PARQUET)")
-    print(f"[OK] saved: {out_file}")
+    try:
+        con.read_parquet([str(path) for path in raw_paths]).create_view("raw_logs")
+        con.read_parquet([str(path) for path in notes]).create_view("notes")
+        con.read_parquet([str(path) for path in users]).create_view("users")
+        for table, identifier in [("notes", "note_idx"), ("users", "user_idx")]:
+            count, unique, nonnull = con.execute(f"SELECT count(*), count(DISTINCT {identifier}), count({identifier}) FROM {table}").fetchone()
+            if count != unique or count != nonnull:
+                raise ValueError(f"{table} requires unique nonnull {identifier}")
+        con.execute(f"""CREATE TABLE stage_flat AS
+            SELECT s.user_idx, s.session_idx, s.recent_clicked_note_idxs,
+                {request_columns} u.note_idx, CAST(u.position AS INTEGER) AS position,
+                u.{time_key} AS timestamp, CAST(u.click AS INTEGER) AS click,
+                CAST(u.like AS INTEGER) AS like, CAST(u.collect AS INTEGER) AS collect,
+                CAST(u.comment AS INTEGER) AS comment, CAST(u.share AS INTEGER) AS share, u.page_time
+            FROM raw_logs AS s, UNNEST(s.{nested}) AS d(u)""")
+        invalid = con.execute("SELECT count(*) FROM stage_flat WHERE click IS NULL OR click NOT IN (0,1) OR note_idx IS NULL").fetchone()[0]
+        if invalid:
+            raise ValueError(f"Invalid click/item identity in {invalid} exposures")
+        missing = con.execute("SELECT count(*) FROM stage_flat f LEFT JOIN notes n USING(note_idx) WHERE n.note_idx IS NULL").fetchone()[0]
+        if missing:
+            raise ValueError(f"{missing} exposures reference missing catalog items")
+        con.execute(f"CREATE TABLE stage_full AS SELECT f.*, {', '.join(projection)} FROM stage_flat f LEFT JOIN notes n ON f.note_idx=n.note_idx LEFT JOIN users u ON f.user_idx=u.user_idx")
+        expected = con.execute("SELECT count(*) FROM stage_flat").fetchone()[0]
+        actual = con.execute("SELECT count(*) FROM stage_full").fetchone()[0]
+        if expected != actual:
+            raise ValueError("Feature joins changed the original exposure multiplicity")
+        escaped = str(temporary).replace("'", "''")
+        con.execute(f"COPY stage_full TO '{escaped}' (FORMAT PARQUET)")
+        temporary.replace(output)
+        print(f"[Samples] {scene}/{split}: {actual} original exposures -> {output}")
+        return output
+    finally:
+        con.close()
+        temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene", required=True, choices=["rec", "search"])
     parser.add_argument("--split", required=True, choices=["train", "test"])
+    parser.add_argument("--output-dir", type=Path, default=None, help="Stage new samples without replacing frozen artifacts")
+    parser.add_argument("--dataset-dir", type=Path, default=None)
     args = parser.parse_args()
-
-    build_samples(args.scene, args.split)
+    build_samples(args.scene, args.split, output_dir=args.output_dir, dataset_dir=args.dataset_dir)

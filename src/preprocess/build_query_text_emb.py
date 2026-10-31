@@ -1,216 +1,165 @@
-"""
-本脚本用于生成搜索 (Search) 和推荐 (Rec) 场景下的 Query Embedding 特征。
-    1. Search 场景: 同时生成 Query 的文本向量 (query_emb) 和用户近期点击笔记的序列向量列表 (seq_embs)。
-    2. Rec 场景: 仅生成用户近期点击笔记的序列向量列表 (seq_embs)。
+"""Build versioned query/chronological-history embeddings from staged samples."""
+from __future__ import annotations
 
-数据流向:
-    - 输入: DATA_DIR 下的 {scene}_train_samples.parquet (包含 query 或 recent_clicked_note_idxs)。
-    - 依赖: NOTE_TEXT_EMB_DIR 下的笔记 Embedding 库（用于匹配点击序列）。
-    - 输出: OUT_DIR 下的分片 Parquet 文件。
-    
-使用示例:
-    uv run python build_query_text_emb.py --scene search    # 43,752 unique search_idx
-    uv run python build_query_text_emb.py --scene rec       # 83,437 unique request_idx
-"""
-
-import torch
-import torch.nn as nn
-import pandas as pd
-import numpy as np
 import argparse
+import hashlib
+import json
 from pathlib import Path
-from tqdm import tqdm
+import numpy as np
+import pandas as pd
+import torch
 from transformers import AutoTokenizer, AutoModel
+from training.history import HISTORY_ORDER, SEQUENCE_ORDER, history_ids_oldest_first
 
-# ======================
-# Config
-# ======================
-BASE_DIR = Path(__file__).resolve().parents[2]  # Qilin/
-DATA_DIR = BASE_DIR / "data"
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / "samples"
 NOTE_TEXT_EMB_DIR = BASE_DIR / "embeddings" / "note_text_emb"
 OUT_DIR = BASE_DIR / "embeddings" / "query_text_emb"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-
 MODEL_NAME = "BAAI/bge-base-zh"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
 BATCH_SIZE = 256
 MAX_LEN = 512
 SHARD_SIZE = 10000
 HIDDEN_DIM = 768
 SEQ_LEN = 20
-
-# ======================
-# Load model
-# ======================
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
-model.eval()
-
-# ======================
-# Load note_text_emb
-# ======================
-def load_note_text_emb():
-    print("[Load] note_text_emb")
-    dfs = []
-    for p in NOTE_TEXT_EMB_DIR.glob("*.parquet"):
-        dfs.append(pd.read_parquet(p))
-    df = pd.concat(dfs, ignore_index=True)
-
-    emb_map = {
-        int(r.note_idx): np.asarray(r.note_text_emb, dtype="float16")
-        for r in df.itertuples()
-    }
-    print(f"[OK] loaded {len(emb_map)} note embeddings")
-    return emb_map
-
-NOTE_EMB_MAP = None
+model = tokenizer = None
 
 
-def _resolve_train_sample_path(scene: str) -> Path:
-    new_path = DATA_DIR / f"{scene}_train_samples.parquet"
-    if not new_path.exists():
-        raise FileNotFoundError(f"Missing sample file: {new_path}")
-    return new_path
+def _load_encoder():
+    global model, tokenizer
+    if model is None:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
+        model.eval()
+    return tokenizer, model
 
-# ======================
-# Text builder
-# ======================
-def build_search_text(query: str) -> str:
-    if not isinstance(query, str):
-        return ""
-    return query.strip()
 
-# ======================
-# Encoding (search)
-# ======================
+def _resolve_train_sample_path(scene, sample_dir=None, split="train"):
+    path = (Path(sample_dir) if sample_dir is not None else DATA_DIR) / f"{scene}_{split}_samples.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing sample file: {path}")
+    return path
+
+
+def build_search_text(query):
+    return query.strip() if isinstance(query, str) else ""
+
+
 @torch.no_grad()
 def encode(texts):
-    inputs = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        max_length=MAX_LEN,
-        return_tensors="pt",
-    ).to(DEVICE)
+    encoder_tokenizer, encoder_model = _load_encoder()
+    inputs = encoder_tokenizer(texts, padding=True, truncation=True, max_length=MAX_LEN, return_tensors="pt").to(DEVICE)
+    output = encoder_model(**inputs).last_hidden_state[:, 0]
+    output = output / output.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    return output.cpu().numpy().astype(np.float16)
 
-    out = model(**inputs).last_hidden_state[:, 0]
-    out = out / out.norm(dim=-1, keepdim=True)
-    return out.cpu().numpy().astype("float16")
 
-# ======================
-# Main
-# ======================
-def main(scene: str):
-    assert scene in ["search", "rec"]
-    group_key = "search_idx" if scene == "search" else "request_idx"
+def load_note_text_emb(folder=None):
+    folder = Path(folder) if folder is not None else NOTE_TEXT_EMB_DIR
+    if (folder / "note_text.bin").exists() and (folder / "note_text_map.json").exists():
+        from training.rank_stack import MappedVectors
+        return MappedVectors(folder, "note_text", HIDDEN_DIM)
+    files = sorted(folder.glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No note text embeddings in {folder}")
+    mapping = {}
+    for path in files:
+        frame = pd.read_parquet(path, columns=["note_idx", "note_text_emb"])
+        for row in frame.itertuples(index=False):
+            mapping[int(row.note_idx)] = np.asarray(row.note_text_emb, dtype=np.float16)
+    return mapping
 
-    global NOTE_EMB_MAP
-    NOTE_EMB_MAP = load_note_text_emb()
-    
-    IN_FILE = _resolve_train_sample_path(scene)
-    print(f"[Load] {IN_FILE}")
-    
-    if scene == "search":
-        df = pd.read_parquet(IN_FILE, columns=[group_key, "query", "recent_clicked_note_idxs"])
-    else:
-        df = pd.read_parquet(IN_FILE, columns=[group_key, "recent_clicked_note_idxs"])
 
-    total = len(df)
-    num_shards = (total + SHARD_SIZE - 1) // SHARD_SIZE
-    print(f"[Info] {total} rows → {num_shards} shards")
-
-    for shard_id in range(num_shards):
-        out_file = OUT_DIR / f"{scene}-part-{shard_id:05d}.parquet"
-        tmp_file = OUT_DIR / f"{scene}-part-{shard_id:05d}.parquet.tmp"
-
-        if out_file.exists():
-            continue
-
-        start = shard_id * SHARD_SIZE
-        end = min(start + SHARD_SIZE, total)
-        shard = df.iloc[start:end]
-
-        # 去重
-        initial_len = len(shard)
-        shard = shard.drop_duplicates(subset=[group_key], keep='first')
-        if len(shard) < initial_len:
-            print(f"  [Pre-process] Shard {shard_id}: Skipped {initial_len - len(shard)} redundant rows.")
-
-        # output lists
-        keys = []
-        seq_embs_list = []
-        query_embs_list = []  # search only
-
-        # ======================
-        # 处理逻辑
-        # ======================
-        for _, row in tqdm(shard.iterrows(), total=len(shard), desc=f"{scene} shard {shard_id}"):
-            
-            # 1. 处理序列部分 (共同逻辑)
-            note_idxs = row["recent_clicked_note_idxs"]
-            current_seq_embs = []
-            for nid in note_idxs:
-                nid = int(nid)
-                if nid in NOTE_EMB_MAP:
-                    current_seq_embs.append(NOTE_EMB_MAP[nid])
-            
-            if len(current_seq_embs) == 0:
-                fixed_seq_embs = np.zeros((SEQ_LEN, HIDDEN_DIM), dtype=np.float16)
-            else:
-                tmp_arr = np.array(current_seq_embs, dtype=np.float16)
-                curr_len = tmp_arr.shape[0]
-                
-                if curr_len >= SEQ_LEN:
-                    # 截取最新的 SEQ_LEN 个行为
-                    fixed_seq_embs = tmp_arr[:SEQ_LEN]
-                else:
-                    # Zero Padding (补零)
-                    pad_width = SEQ_LEN - curr_len
-                    padding = np.zeros((pad_width, HIDDEN_DIM), dtype=np.float16)
-                    fixed_seq_embs = np.vstack([tmp_arr, padding])
-
-            # 2. 处理 Search 独有的 Query Embedding
-            if scene == "search":
-                txt = build_search_text(row["query"])
-                if not txt: # 如果 query 为空则跳过
-                    continue
-                query_embs_list.append(txt) 
-
-            keys.append(int(row[group_key]))
-            seq_embs_list.append(fixed_seq_embs.tolist())
-
-        # ======================
-        # 批量计算并保存
-        # ======================
-        if scene == "search":
-            # 批量编码 query 文本
-            all_query_vecs = []
-            for i in range(0, len(query_embs_list), BATCH_SIZE):
-                batch_txt = query_embs_list[i : i + BATCH_SIZE]
-                all_query_vecs.extend(list(encode(batch_txt)))
-            
-            out_df = pd.DataFrame({
-                group_key: keys,
-                "query_emb": all_query_vecs,
-                "seq_embs": seq_embs_list
-            })
+def build_sequence_embeddings(raw_ids, note_store, seq_len=SEQ_LEN):
+    """Select recent prefix, reverse once, and pad to oldest-first RNN input."""
+    ids = history_ids_oldest_first(raw_ids, seq_len)
+    output = np.zeros((seq_len, HIDDEN_DIM), dtype=np.float16)
+    if ids:
+        if isinstance(note_store, dict):
+            missing = [note for note in ids if note not in note_store]
+            if missing:
+                raise ValueError(f"Missing required history embeddings: {len(missing)}")
+            values = np.asarray([note_store[note] for note in ids], dtype=np.float16)
         else:
-            out_df = pd.DataFrame({
-                group_key: keys,
-                "seq_embs": seq_embs_list
-            })
+            values = note_store.get(ids, required=True)
+        if values.shape != (len(ids), HIDDEN_DIM):
+            raise ValueError("History embedding dimensions do not match the model contract")
+        output[:len(ids)] = values
+    return output
 
-        out_df.to_parquet(tmp_file, index=False, engine='pyarrow')
-        tmp_file.rename(out_file)
-        print(f"✅ {scene} committed {out_file}")
 
-    print("🎉 All query embeddings done!")
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-# ======================
+
+def main(scene, *, split="train", sample_dir=None, output_dir=None, note_emb_dir=None):
+    if scene not in {"search", "rec"} or split not in {"train", "test"}:
+        raise ValueError("Expected scene search/rec and split train/test")
+    source = _resolve_train_sample_path(scene, sample_dir, split)
+    destination = Path(output_dir) if output_dir is not None else OUT_DIR
+    destination.mkdir(parents=True, exist_ok=True)
+    key = "search_idx" if scene == "search" else "request_idx"
+    columns = [key, "recent_clicked_note_idxs"] + (["query"] if scene == "search" else [])
+    frame = pd.read_parquet(source, columns=columns).drop_duplicates(subset=[key], keep="first").reset_index(drop=True)
+    if scene == "search":
+        frame["query"] = frame["query"].map(build_search_text)
+        if (frame["query"] == "").any():
+            raise ValueError("Empty query contexts require an explicit policy; refusing to drop requests")
+    embedding_folder = Path(note_emb_dir) if note_emb_dir is not None else NOTE_TEXT_EMB_DIR
+    files = [embedding_folder / "note_text_map.json", embedding_folder / "note_text.bin"]
+    if not all(path.exists() for path in files):
+        files = sorted(embedding_folder.glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No note text embeddings in {embedding_folder}")
+    embedding_inputs = {str(path): {"bytes": path.stat().st_size, "sha256": _sha256(path)} for path in files}
+    manifest = {"feature_contract": "query_history_v2", "scene": scene, "split": split,
+        "history_order": HISTORY_ORDER, "sequence_order": SEQUENCE_ORDER, "source": str(source),
+        "source_sha256": _sha256(source), "requests": len(frame), "dimension": HIDDEN_DIM,
+        "sequence_length": SEQ_LEN, "encoder": MODEL_NAME,
+        "note_embeddings": str(embedding_folder), "embedding_inputs": embedding_inputs,
+        "limitations": ["Source history event timestamps are unavailable; order is a versioned input assumption."]}
+    manifest_path = destination / f"{scene}_{split}_manifest.json"
+    existing = list(destination.glob(f"{scene}_{split}-part-*.parquet"))
+    legacy = list(destination.glob(f"{scene}-part-*.parquet"))
+    if legacy or (existing and not manifest_path.exists()):
+        raise ValueError("Unversioned embedding outputs exist; choose a separate --output-dir for the new history contract")
+    if manifest_path.exists():
+        recorded = json.loads(manifest_path.read_text())
+        immutable = {name: value for name, value in recorded.items() if name not in {"completed", "outputs_sha256"}}
+        if immutable != manifest:
+            raise ValueError("Embedding manifest changed; use a new output directory")
+    manifest_path.write_text(json.dumps({**manifest, "completed": False}, ensure_ascii=False, indent=2) + "\n")
+    note_store = load_note_text_emb(note_emb_dir)
+    for start in range(0, len(frame), SHARD_SIZE):
+        path = destination / f"{scene}_{split}-part-{start // SHARD_SIZE:05d}.parquet"
+        shard = frame.iloc[start:start + SHARD_SIZE]
+        if path.exists():
+            if pd.read_parquet(path, columns=[key])[key].tolist() != shard[key].tolist():
+                raise ValueError("Cached embedding shard request IDs changed")
+            continue
+        data = {key: shard[key].to_numpy(), "seq_embs": [build_sequence_embeddings(ids, note_store).tolist() for ids in shard.recent_clicked_note_idxs]}
+        if scene == "search":
+            values = [encode(shard["query"].iloc[index:index+BATCH_SIZE].tolist()) for index in range(0, len(shard), BATCH_SIZE)]
+            data["query_emb"] = list(np.vstack(values))
+        temporary = path.with_suffix(".tmp.parquet")
+        pd.DataFrame(data).to_parquet(temporary, index=False)
+        temporary.replace(path)
+    manifest.update({"completed": True, "outputs_sha256": {str(path): _sha256(path) for path in sorted(destination.glob(f"{scene}_{split}-part-*.parquet"))}})
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    print(f"[Query embeddings] {scene}/{split}: {len(frame)} requests -> {destination}")
+    return manifest_path
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene", required=True, choices=["search", "rec"])
+    parser.add_argument("--split", default="train", choices=["train", "test"])
+    parser.add_argument("--sample-dir", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--note-emb-dir", type=Path, default=None)
     args = parser.parse_args()
-
-    main(args.scene)
+    main(args.scene, split=args.split, sample_dir=args.sample_dir, output_dir=args.output_dir, note_emb_dir=args.note_emb_dir)

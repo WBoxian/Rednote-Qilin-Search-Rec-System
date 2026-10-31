@@ -253,14 +253,18 @@ class EmbeddingStore:
         self.bin_path = Path(emb_dir) / f"{name}.bin" if name else None
         self.map_path = Path(emb_dir) / f"{name}_map.json" if name else None
         
-        if self.bin_path.exists() and self.map_path.exists():
+        if self.use_mmap and self.bin_path is not None and self.bin_path.exists() and self.map_path.exists():
             self._load_mmap()
         else:
             print(f"⚠️ [Store] MMap files for {name} not found or disabled. Falling back to Parquet...")
             self.use_mmap = False
             self.files = sorted(list(Path(emb_dir).glob(f"{prefix or ''}*.parquet")))
+            if not self.files:
+                raise FileNotFoundError(f"No embedding parquet files in {emb_dir}")
             self.global_emb_dict = {}
             self._load_parquet()
+            self.shape = (len(self.global_emb_dict), SEQ_LEN, EMB_DIM) if self.is_sequence else (len(self.global_emb_dict), EMB_DIM)
+            self.zero_fill = np.zeros(self.shape[1:], dtype=np.float16)
 
     def _load_mmap(self):
         """加载内存映射索引和二进制文件"""
@@ -286,7 +290,14 @@ class EmbeddingStore:
             df = pd.read_parquet(f)
             for k, emb in zip(df[self.key_col].values, df[self.emb_col].values):
                 if k in self.global_emb_dict: continue
-                emb_np = np.array(list(emb) if self.is_sequence else emb, dtype=np.float16)
+                emb_np = np.asarray(list(emb) if self.is_sequence else emb, dtype=np.float16)
+                if self.is_sequence and emb_np.size == 0:
+                    emb_np = np.zeros((0, EMB_DIM), dtype=np.float16)
+                expected = (EMB_DIM,)
+                if ((self.is_sequence and (emb_np.ndim != 2 or emb_np.shape[1:] != expected))
+                        or (not self.is_sequence and emb_np.shape != expected)
+                        or not np.isfinite(emb_np).all()):
+                    raise ValueError(f"Invalid embedding dimensions/values for {self.name}, key={k}")
                 if self.is_sequence:
                     if emb_np.shape[0] < SEQ_LEN:
                         pad = np.zeros((SEQ_LEN - emb_np.shape[0], EMB_DIM), dtype=np.float16)

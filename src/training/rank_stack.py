@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from backend.online.item_features import STATIC_ITEM_FEATURES
+from training.history import recent_history_ids, history_ids_oldest_first
 
 SEMANTIC_FEATURES = ('history_mean_cosine', 'history_recent_cosine')
 
@@ -79,7 +80,7 @@ class RequestContext:
         self.positions = {int(gid):i for i,gid in enumerate(self.requests.index)}
         self.histories = []
         for value in self.requests.recent_clicked_note_idxs:
-            history = [] if value is None else [int(v) for v in value if int(v)>=0][:seq_len]
+            history = recent_history_ids(value, seq_len)
             self.histories.append(history)
         self.query_vectors = query_vectors
         self.mean = np.zeros((len(requests),768), dtype=np.float32)
@@ -119,7 +120,7 @@ class RequestContext:
         ids = [self.positions[int(v)] for v in frame[self.key]]
         # The raw snapshot lists most-recent first; DIEN consumes oldest first.
         sequences = np.zeros((len(frame),self.seq_len,768),dtype=np.float32)
-        histories = [self.histories[pos][::-1] for pos in ids]
+        histories = [history_ids_oldest_first(self.histories[pos], self.seq_len) for pos in ids]
         lengths = np.array([len(history) for history in histories], dtype=np.int64)
         if lengths.sum():
             flat = np.concatenate([np.asarray(history, dtype=np.int64) for history in histories])
