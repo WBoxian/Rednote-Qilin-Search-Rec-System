@@ -9,6 +9,7 @@ import torch
 from backend.online.item_features import get_item_feature_store, STATIC_ITEM_FEATURES
 from backend.offline.evaluate_full_test import ranking_metrics, confidence
 from training.rank_stack import RequestContext, MappedVectors, SEMANTIC_FEATURES, forward_blocks, group_minmax
+from training.selection import choose_rank_model
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -89,8 +90,9 @@ def prepare(args):
     out=args.output
     out.mkdir(parents=True,exist_ok=False)
     key='search_idx' if args.scene=='search' else 'request_idx'
-    source=ROOT/f'features/{args.scene}_train_features.parquet'
-    target=ROOT/f'features/{args.scene}_test_features.parquet'
+    feature_dir=Path(getattr(args, 'feature_dir', None) or ROOT/'features').resolve()
+    source=feature_dir/f'{args.scene}_train_features.parquet'
+    target=feature_dir/f'{args.scene}_test_features.parquet'
     cols=[key,'user_idx','note_idx','event_timestamp','click']
     train=pd.read_parquet(source,columns=cols)
     # Only the official-test time boundary/IDs are read before final evaluation.
@@ -119,7 +121,7 @@ def prepare(args):
               'limitations':['Provided catalog/vocabulary/history snapshots lack event-time provenance; benchmark assumes these fixed snapshots',
                              'Official test previously diagnosed; this is a full regression benchmark, not a new untouched holdout',
                              'Logged-exposure ranking does not measure full-catalog retrieval quality'],
-              'query_cache':str(args.train_query_cache) if args.train_query_cache else None}
+              'feature_dir':str(feature_dir),'query_cache':str(args.train_query_cache) if args.train_query_cache else None}
     assert manifest['fit_last_event']<manifest['validation_first_event']<=manifest['validation_last_event']<test_start
     write_json(out/'manifest.json',manifest)
     print(json.dumps(manifest),flush=True)
@@ -144,8 +146,8 @@ def train_trees(args):
             model.save_model(str(out/(name+'.txt')))
             candidates.append({'name':name,'config':config,'validation':result,'iterations':model.current_iteration()})
             print(name,json.dumps(result),flush=True)
-    # Pick only on train-internal validation NDCG; AUC is the deterministic tie breaker.
-    chosen=max(candidates,key=lambda c:(c['validation']['NDCG@10'],c['validation']['AUC']))
+    # Select on train-internal validation with NDCG/AUC/GAUC nonregression guards.
+    chosen=choose_rank_model(candidates)
     model=lgb.Booster(model_file=str(out/(chosen['name']+'.txt')))
     model.save_model(str(out/'gbdt.txt'))
     manifest['trees']={'candidates':candidates,'chosen':chosen,'model_sha256':digest(out/'gbdt.txt')}
@@ -234,6 +236,8 @@ def score_dien(model, frame, context, numeric, device):
 
 def train_dien(args):
     from training.dien_ranker import DIENRanker
+    from training.losses import balanced_losses
+    from training.selection import choose_rank_blend
     import torch.nn.functional as F
     torch.manual_seed(42);np.random.seed(42);torch.set_num_threads(4)
     out=args.output;manifest=json.loads((out/'manifest.json').read_text())
@@ -259,7 +263,11 @@ def train_dien(args):
                 pair=(groups[:,None]==groups[None,:]) & (labels[:,None]>labels[None,:])
                 differences=score[:,None]-score[None,:]
                 pair_loss=F.softplus(-differences[pair]).mean() if pair.any() else score.sum()*0
-                loss=F.binary_cross_entropy_with_logits(score,labels)+.25*pair_loss+.01*aux
+                if getattr(args, 'objective', 'balanced_top10') == 'balanced_top10':
+                    bce, rank = balanced_losses(score, labels, groups, topk=10)
+                    loss=bce+.25*rank+.01*aux
+                else:
+                    loss=F.binary_cross_entropy_with_logits(score,labels)+.25*pair_loss+.01*aux
             if not torch.isfinite(loss):raise ValueError('Non-finite training loss')
             loss.backward();torch.nn.utils.clip_grad_norm_(model.parameters(),5.)
             optimizer.step();losses.append(float(loss.detach()))
@@ -283,10 +291,10 @@ def train_dien(args):
         result,_,_=metrics(val,score,key)
         choices.append({'weight':weight,'validation':result})
     # Include bypass: a negative increment is never forced into the pipeline.
-    chosen=max(choices,key=lambda c:(c['validation']['NDCG@10'],-c['weight']))
+    chosen=choose_rank_blend(choices)
     val['dien_raw_score']=raw
     val.to_parquet(out/'validation.parquet',index=False)
-    manifest['dien']={'numeric_features':numeric,'normalization_fit':'forward OOF rows only','aux_negative_contract':'same-request unclicked; missing negatives masked (v2)' if not args.legacy_aux_negatives else 'legacy batch-zero fallback (v1)',
+    manifest['dien']={'objective':getattr(args,'objective','balanced_top10'),'selection_guards':['NDCG@10','AUC','GAUC'],'numeric_features':numeric,'normalization_fit':'forward OOF rows only','aux_negative_contract':'same-request unclicked; missing negatives masked (v2)' if not args.legacy_aux_negatives else 'legacy batch-zero fallback (v1)',
                       'architecture':{'hidden_dim':64,'mlp_dims':[128,64],'dropout':.15,'mask_padded_history':True,'auxiliary_gradients':True,'mask_missing_aux_negatives':not args.legacy_aux_negatives,'inference_precision':args.inference_precision},
                       'training_history':history,'blend_candidates':choices,'chosen':chosen,
                       'seconds':time.monotonic()-start,'model_sha256':digest(out/'dien.pt')}
@@ -296,12 +304,14 @@ def train_dien(args):
 
 def evaluate(args):
     from training.dien_ranker import DIENRanker
+    from training.losses import balanced_losses
+    from training.selection import choose_rank_blend
     import duckdb
     out=args.output
     if (out/'test_metrics.json').exists():raise ValueError('Final test already evaluated in this run; use saved artifacts')
     manifest=json.loads((out/'manifest.json').read_text());key=manifest['key']
     if manifest['scene']!=args.scene:raise ValueError('Scene does not match training manifest')
-    source=ROOT/f'features/{args.scene}_test_features.parquet'
+    source=Path(getattr(args, 'feature_dir', None) or manifest.get('feature_dir',ROOT/'features'))/f'{args.scene}_test_features.parquet'
     test=pd.read_parquet(source,columns=[key,'user_idx','note_idx','event_timestamp','click'])
     folder='search' if args.scene=='search' else 'recommendation'
     nested='search_result_details_with_idx' if args.scene=='search' else 'rec_result_details_with_idx'
@@ -362,6 +372,8 @@ def main():
     parser.add_argument('--train-query-cache',type=Path)
     parser.add_argument('--test-query-cache',type=Path)
     parser.add_argument('--epochs',type=int,default=6)
+    parser.add_argument('--feature-dir',type=Path)
+    parser.add_argument('--objective',choices=['balanced_top10','pairwise'],default='balanced_top10')
     parser.add_argument('--inference-precision',choices=['fp32','bf16'],default='fp32')
     parser.add_argument('--legacy-aux-negatives',action='store_true',help='Reproduce the frozen v1 training objective; new training masks missing negatives')
     args=parser.parse_args()

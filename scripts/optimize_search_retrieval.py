@@ -13,12 +13,12 @@ def digest(path):
         for chunk in iter(lambda:f.read(16*1024*1024),b""):h.update(chunk)
     return h.hexdigest()
 
-def prepare(output):
+def prepare(output, features_path=None):
     output.mkdir(parents=True,exist_ok=True)
     if (output/"manifest.json").exists():raise FileExistsError("Refuse to replace Search manifest")
     train_path=ROOT/"datasets/search_train/train-00000-of-00001.parquet"
     test_path=ROOT/"datasets/search_test/train-00000-of-00001.parquet"
-    features_path=ROOT/"features/search_train_features.parquet"
+    features_path=Path(features_path or ROOT/"features/search_train_features.parquet").resolve()
     raw=pd.read_parquet(train_path);test=pd.read_parquet(test_path)
     if set(raw.search_idx)&set(test.search_idx):raise ValueError("Official train/test request overlap")
     def interval(details):

@@ -65,7 +65,7 @@ def main():
                 selected['dien_raw_score']=rawscore
                 selected['selected_score']=(1-weight)*experiment.group_minmax(selected.coarse_score,selected[key])+weight*experiment.group_minmax(rawscore,selected[key])
             else:
-                selected['dien_raw_score']=np.nan;selected['selected_score']=selected.coarse_score
+                selected['dien_raw_score']=np.nan;selected['selected_score']=experiment.group_minmax(selected.coarse_score,selected[key])
             ranked=selected.sort_values(['selected_score','rank'],ascending=[False,True],kind='stable')
             stages.update(fine_budget=ranked.note_idx.tolist(),fine10=ranked.note_idx.head(10).tolist(),fine20=ranked.note_idx.head(20).tolist())
             parts.append(ranked[[key,'note_idx','rank','coarse_score','dien_raw_score','selected_score']])

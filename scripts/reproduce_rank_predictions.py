@@ -30,7 +30,7 @@ def main():
     verify_input_files(ROOT, frozen['inputs'])
 
     scene=manifest['scene'];key=manifest['key']
-    frame=pd.read_parquet(ROOT/f'features/{scene}_test_features.parquet',columns=[key,'user_idx','note_idx','event_timestamp','click'])
+    frame=pd.read_parquet(Path(manifest.get('feature_dir',ROOT/'features'))/f'{scene}_test_features.parquet',columns=[key,'user_idx','note_idx','event_timestamp','click'])
     context=training.contexts(scene,'test',args.query_cache)
     frame=context.feature_frame(frame,get_item_feature_store(ROOT))
     coarse=lgb.Booster(model_file=str(run/'gbdt.txt'))
