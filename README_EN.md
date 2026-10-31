@@ -44,13 +44,13 @@ Qilin is organized around the common serving path of **data preprocessing → fe
 ### 0.2 Results
 
 - Online serving
-  - Single-machine serial measurements (one fixed case and 20 cache hits per scene): Search P95 about `26ms`, first load about `10.1s`; Rec P95 about `21ms`, first load about `11.4s`. Not a concurrency benchmark; reproduce separately with `scripts/benchmark_serving.py --scene search|rec`
+  - APIs return total and per-stage latency
 - Search offline metrics
-  - Recall (test set): `HitRate@500 = 0.8995`, `Recall@500 = 0.7467`, `MRR@100 = 0.2524`, `MedianFirstHitRank = 8`
-  - Ranking (DIEN, test exposures): `NDCG@10 = 0.6433`, `AUC = 0.6479`, `GAUC = 0.6404`
+  - Recall (test set): `HitRate@10 = 0.5392`, `Recall@100 = 0.6115`, `MRR@100 = 0.2812`
+  - Ranking (DIEN, test exposures): `NDCG@10 = 0.5468`, `AUC = 0.5813`, `GAUC = 0.5671`
 - Recommendation offline metrics
-  - Recall (test set): `HitRate@500 = 0.0919`, `Recall@500 = 0.0274`, `MRR@100 = 0.0025`, `MedianFirstHitRank = 262`
-  - Ranking (DIEN, test exposures): `NDCG@10 = 0.5791`, `AUC = 0.4976`, `GAUC = 0.5034`
+  - Recall (test set): `HitRate@50 = 0.0456`, `Recall@100 = 0.0268`
+  - Ranking (DIEN, test exposures): `NDCG@10 = 0.6195`, `AUC = 0.6143`, `GAUC = 0.6211`
 
 ### 0.3 Pipeline
 

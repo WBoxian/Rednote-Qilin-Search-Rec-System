@@ -19,6 +19,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from backend.online.bundle import bundle_identity
+from scripts.evaluation_comparisons import attach_comparisons
 
 DEFAULT_BASE = ROOT / "outputs/evaluation/northstar_fix_20261031"
 DEFAULT_OUTPUT = ROOT / "src/backend/online/full_test_metrics.json"
@@ -237,6 +238,143 @@ def bind_recall_provenance(root, base, scene, candidate_path, bundle, sources):
     return {"selection_sha256": sha256(selection_path), "nprobe": nprobe,
             "route_topk": 1000, "final_topk": 500}
 
+def load_rec_release(root, bundle, sources):
+    bound = bundle.get("evaluation", {}).get("release_evidence")
+    if bound is None:
+        return None
+    evidence_path = sources.add(root / bound["path"])
+    if sha256(evidence_path) != bound["sha256"] or bundle["assets"].get(bound["path"]) != bound["sha256"]:
+        raise ValueError("Release evidence is not bound to serving bundle")
+    release = json.loads(evidence_path.read_text())
+    if release.get("scene") != "rec" or release.get("ranking_strategy") != "recall_only" or not release.get("accepted_for_release"):
+        raise ValueError("Invalid Recommendation release decision")
+    for entry in release["sources"].values():
+        path = sources.add(root / entry["path"])
+        if sha256(path) != entry["sha256"]:
+            raise ValueError("Recommendation release input changed")
+    docs = {name: json.loads((root / release["sources"][name]["path"]).read_text())
+            for name in ("selection", "test_metrics", "independent_verification", "model_selection", "index_selection")}
+    selection, test = docs["selection"], docs["test_metrics"]
+    if (not selection.get("accepted") or not selection.get("frozen_before_official_test")
+            or not test.get("accepted_for_release") or test.get("parameter_choice_after_test") is not False
+            or test.get("selection_sha256") != release["sources"]["selection"]["sha256"]
+            or (test.get("all_requests"), test.get("unique_clicked_pairs")) != (11115, 44683)):
+        raise ValueError("Recommendation release does not bind frozen full-test selection")
+    fusion = "fusion_selection" in release["sources"]
+    proof = docs["independent_verification"]
+    model_candidate_key = "residual_candidates" if fusion else "candidates"
+    if (proof.get("selection_sha256") != release["sources"]["selection"]["sha256"]
+            or proof.get("source_sha256") != release["sources"]["raw_test"]["sha256"]
+            or proof.get("graphs", {}).get("allpast", {}).get("candidate_sha256", {}).get("new") != release["sources"][model_candidate_key]["sha256"]):
+        raise ValueError("Independent residual proof binds different selection, raw truth or candidates")
+    if docs["independent_verification"].get("status") != "PASS":
+        raise ValueError("Recommendation release lacks independent verification")
+    model = docs["model_selection"].get("selected", docs["model_selection"])
+    if (model["checkpoint_sha256"] != selection["model_checkpoint_sha256"]
+            or model["item_vectors_sha256"] != selection["selected"]["item_vectors_sha256"]
+            or bundle["packaging_provenance"]["full_checkpoint_source_sha256"] != model["checkpoint_sha256"]):
+        raise ValueError("Serving residual DSSM differs from evaluated model")
+    index_meta = sources.read(root / bundle["recall_dir"] / "index/dssm_rec_hard_ivfpq_meta.json")
+    if index_meta["index_sha256"] != selection["index_sha256"] or index_meta["nprobe"] != 32:
+        raise ValueError("Serving residual ANN differs from evaluated index")
+    expected_weights = {"ann": 1, "swing": 2, "usercf": 1}
+    expected_context = "filter_history"
+    if fusion:
+        selected = sources.read(root / release["sources"]["fusion_selection"]["path"])
+        evaluated = sources.read(root / release["sources"]["fusion_test_metrics"]["path"])
+        verified = sources.read(root / release["sources"]["fusion_independent_verification"]["path"])
+        selection_sha = release["sources"]["fusion_selection"]["sha256"]
+        if (not selected.get("accepted") or not selected.get("frozen_before_official_test")
+                or not evaluated.get("accepted_for_release") or evaluated.get("parameter_choice_after_test") is not False
+                or (evaluated.get("all_requests"), evaluated.get("clicked_pairs")) != (11115, 44683)
+                or evaluated.get("selection_sha256") != selection_sha
+                or evaluated.get("approval_sha256") != release["sources"]["fusion_approval"]["sha256"]):
+            raise ValueError("Fusion release is not a frozen validation-selected full-test decision")
+        if (verified.get("status") != "PASS" or verified.get("fusion_selection_sha256") != selection_sha
+                or verified.get("frozen_model_selection_sha256") != release["sources"]["selection"]["sha256"]
+                or verified.get("raw_test_sha256") != release["sources"]["raw_test"]["sha256"]
+                or verified.get("graphs", {}).get("allpast", {}).get("candidate_sha256") != release["sources"]["candidates"]["sha256"]
+                or evaluated["results"]["allpast"]["winner_candidates_sha256"] != release["sources"]["candidates"]["sha256"]):
+            raise ValueError("Fusion proof does not bind current model, raw truth and candidate output")
+        expected_weights = selected["selected"]["weights"]
+        if evaluated["selected_weights"] != expected_weights or verified["winner_weights"] != expected_weights:
+            raise ValueError("Fusion release weight choice differs from validation")
+        expected_context = "weighted_filter_history"
+    policy = bundle["recall_policy"]
+    if (policy.get("context_policy") != expected_context or policy.get("weights") != expected_weights
+            or policy.get("rrf_k") != 60 or policy.get("topk") != 500 or policy.get("route_topk") != 1000
+            or policy.get("cf_config") != {"fold_in": True, "neighbors": 200, "history_weight": .25}):
+        raise ValueError("Serving residual fusion differs from frozen evaluated recipe")
+    for filename in ("graph.npz", "users.npy", "items.npy", "swing.npz"):
+        bundled = sources.add(root / policy["cf_graph_dir"] / filename)
+        if sha256(bundled) != release["sources"]["cf_" + filename]["sha256"]:
+            raise ValueError("Serving CF graph differs from full-test evaluated graph")
+    release["lineage"] = dict(selection_sha256=release["sources"]["selection"]["sha256"],
+                              nprobe=32, route_topk=1000, final_topk=500,
+                              model_family="residual_dssm_v1", residual_learned_weight=.25,
+                              gradient_updates=0, pca_fit_split="original_train_fit")
+    if fusion:
+        release["lineage"]["fusion_selection_sha256"] = release["sources"]["fusion_selection"]["sha256"]
+    return release
+
+
+def load_search_numerical_replay(root, bundle, sources):
+    bound = bundle.get("evaluation", {}).get("numerical_replay")
+    if bound is None:
+        return None
+    path = sources.add(root / bound["path"])
+    if sha256(path) != bound["sha256"] or bundle["assets"].get(bound["path"]) != bound["sha256"]:
+        raise ValueError("Numerical replay evidence is not bound to serving bundle")
+    release = json.loads(path.read_text())
+    for entry in release["sources"].values():
+        source = sources.add(root / entry["path"])
+        if sha256(source) != entry["sha256"]:
+            raise ValueError("Numerical replay source changed")
+    plan = sources.read(root / release["sources"]["plan"]["path"])
+    test = sources.read(root / release["sources"]["test_metrics"]["path"])
+    proof = sources.read(root / release["sources"]["independent_verification"]["path"])
+    if (plan.get("scene") != "search" or plan.get("inference_contract") != "request_fp32_v1"
+            or not plan.get("frozen_before_official_test") or plan.get("input_cap") != 160 or plan.get("coarse_cap") != 160
+            or not test.get("accepted_for_release") or test.get("all_test_requests") != 6192
+            or test.get("parameter_choice_after_test") is not False
+            or test.get("selection_sha256") != release["sources"]["plan"]["sha256"]):
+        raise ValueError("Numerical replay violates frozen model inference contract")
+    if (proof.get("status") != "PASS" or proof.get("selection_sha256") != release["sources"]["plan"]["sha256"]
+            or proof.get("raw_candidate_sha256") != release["sources"]["candidates"]["sha256"]
+            or proof.get("final_candidate_sha256") != release["sources"]["final_candidates"]["sha256"]
+            or (proof.get("original_requests"), proof.get("original_positive_pairs")) != (6192, 27597)):
+        raise ValueError("Numerical replay lacks matching independent full-test proof")
+    if (plan.get("input_contract") != "LiveContextBuilder_bound_user_profile_v2"
+            or plan.get("profile_categories") != ["gender_enc", "platform_enc", "age_enc", "location_enc"]):
+        raise ValueError("Numerical replay omitted the shared live user-profile input contract")
+    profile_entry = release["sources"].get("profile_input_verification")
+    if profile_entry is None:
+        raise ValueError("Numerical replay lacks full-request profile-input verification")
+    profile = sources.read(root / profile_entry["path"])
+    if (profile.get("status") != "PASS" or profile.get("original_requests") != 6192
+            or profile.get("profile_mismatches") != 0 or profile.get("raw_context_mismatches") != 0
+            or profile.get("nonzero_profile_requests", 0) <= 0):
+        raise ValueError("Numerical replay has an invalid or neutral-only profile reference")
+    if (profile.get("selection_sha256") != release["sources"]["plan"]["sha256"]
+            or profile.get("input_contract") != plan["input_contract"]
+            or profile.get("profile_fields") != plan["profile_categories"]
+            or profile.get("user_profile_contract") != "shared_live_context_v1"):
+        raise ValueError("Profile verification belongs to a different input contract or plan")
+    for logical in ("plan", "test_metrics", "request_context", "raw_test"):
+        entry = release["sources"].get(logical)
+        if entry is None or profile.get("inputs_sha256", {}).get(str((root / entry["path"]).resolve())) != entry["sha256"]:
+            raise ValueError("Profile verification does not bind the current test phase and request context")
+    profile_vocab = {"features/vocab_dict/" + name + ".pkl" for name in ("gender", "platform", "age", "location")}
+    for name, digest in bundle.get("assets", {}).items():
+        if name in profile_vocab or name.startswith("datasets/user_feat/"):
+            if profile["inputs_sha256"].get(str((root / name).resolve())) != digest:
+                raise ValueError("Profile verification used different user features or vocabulary")
+    rank_meta = sources.read(root / bundle["rank_dir"] / "manifest.json")
+    if rank_meta["dien"].get("inference_contract") != "request_fp32_v1":
+        raise ValueError("Serving bundle did not enable the evaluated numerical contract")
+    return release
+
+
 def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = ROOT, preview=False) -> dict:
     root, base = root.resolve(), base.resolve()
     sources = Sources(root)
@@ -244,28 +382,36 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
     scenes = {}
     for scene, counts in EXPECTED.items():
         prior_dir = base / f"{scene}_rank_prior_gate"
-        gate_selection_path = sources.add(prior_dir / "selection.json")
+        numerical = load_search_numerical_replay(root, sources.read(bundle_paths[scene]), sources) if scene == "search" else None
+        gate_selection_path = sources.add(root / numerical["sources"]["plan"]["path"] if numerical else prior_dir / "selection.json")
         gate_selection = json.loads(gate_selection_path.read_text())
-        gate = sources.read(prior_dir / "test/metrics.json")
+        gate = sources.read(root / numerical["sources"]["test_metrics"]["path"] if numerical else prior_dir / "test/metrics.json")
         if gate["selection_sha256"] != sha256(gate_selection_path) or not gate_selection["frozen_before_official_test"] or gate.get("parameter_choice_after_test") is not False:
             raise ValueError("Pipeline test recipe is not frozen before test scoring")
         if gate["all_test_requests"] != counts[0] or not isinstance(gate.get("accepted_for_release"), bool):
             raise ValueError("Missing full-test release decision")
         strategy = "learned" if gate["accepted_for_release"] else "recall_only"
         bundle = verify_bundle(bundle_paths[scene], scene, strategy, sources)
+        release = load_rec_release(root, bundle, sources) if scene == "rec" else None
         raw, exposures = load_raw(root, scene, sources)
         candidate_path = sources.add(base / ("search_v3/test_selected.parquet" if scene == "search" else "rec_v3/refit_cf_pretest/selected.parquet"))
+        original_candidate_path = candidate_path
+        if release or numerical:
+            current_evidence = release or numerical
+            candidate_path = sources.add(root / current_evidence["sources"]["candidates"]["path"])
         candidates = pd.read_parquet(candidate_path)
         recall = recall_metrics(raw, candidates)
         if (len(raw), exposures, recall["positive_pairs"]) != counts:
             raise ValueError(f"{scene} original test counts changed")
-        for path in [candidate_path, *sorted((root / "datasets" / ("search_test" if scene == "search" else "recommendation_test")).glob("*.parquet"))]:
+        baseline_recall = recall_metrics(raw, pd.read_parquet(original_candidate_path)) if release else recall
+        gate_candidate_path = candidate_path if numerical else original_candidate_path
+        for path in [gate_candidate_path, *sorted((root / "datasets" / ("search_test" if scene == "search" else "recommendation_test")).glob("*.parquet"))]:
             if gate["inputs"].get(str(path.resolve())) != sha256(path):
                 raise ValueError("Pipeline test uses a different raw dataset or recall snapshot")
         for name in ("HitRate@10", "HitRate@50", "Recall@100", "MRR@10", "MRR@100", "known_positive_NDCG@10"):
-            if not math.isclose(gate["stages"]["raw"][name], recall[name], abs_tol=1e-12, rel_tol=0):
+            if not math.isclose(gate["stages"]["raw"][name], baseline_recall[name], abs_tol=1e-12, rel_tol=0):
                 raise ValueError(f"Pipeline raw order differs from actual recall output: {scene} {name}")
-        recall_lineage = bind_recall_provenance(root, base, scene, candidate_path, bundle, sources)
+        recall_lineage = release["lineage"] if release else bind_recall_provenance(root, base, scene, original_candidate_path, bundle, sources)
         ranking = conditional_ranking(root, scene, selection, sources, counts)
         chosen_run = root / ranking["selection"]["run"]
         for name in ("gbdt.txt", "dien.pt"):
@@ -275,6 +421,8 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
             if sha256(original) != sha256(bundled) or bundle["assets"].get(relative) != sha256(bundled):
                 raise ValueError("Published rank model differs from validation-selected exposure model")
         dssm_selection = base / ("search_v3/index/model_selection.json" if scene == "search" else "rec_v3/dssm/selected.json")
+        if release:
+            dssm_selection = root / release["sources"]["model_selection"]["path"]
         sources.add(dssm_selection)
         if bundle["packaging_provenance"]["selected_dssm_sha256"] != sha256(dssm_selection):
             raise ValueError("Bundle DSSM selection differs from evaluated recall experiment")
@@ -283,13 +431,23 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
         pipeline = {
             "test": pipeline_test, "serving_strategy": strategy,
             "input_cap": bundle["input_cap"], "coarse_cap": bundle["coarse_cap"],
-            "test_release_passed": gate["accepted_for_release"],
+            "test_release_passed": bool(release) or gate["accepted_for_release"],
+            "learned_ranking_release_passed": gate["accepted_for_release"],
             "evaluated_recipe_stage": "final" if strategy == "learned" else "raw",
             "diagnostic_raw_pool_cap": gate_selection["input_cap"],
             "label_scope": "Known positives from all original test requests; not conditional exposure NDCG or online CTR",
         }
         proof_path = root / f".qilin/fix_20261031_{scene}_prior_verification.json"
-        if proof_path.is_file():
+        if release:
+            pipeline["independent_verification_sha256"] = release["sources"]["fusion_independent_verification" if "fusion_selection" in release["sources"] else "independent_verification"]["sha256"]
+            pipeline["release_evidence"] = bundle["evaluation"]["release_evidence"]
+        if numerical:
+            pipeline["independent_verification_sha256"] = numerical["sources"]["independent_verification"]["sha256"]
+            pipeline["numerical_replay"] = bundle["evaluation"]["numerical_replay"]
+            recall_lineage["inference_contract"] = "request_fp32_v1"
+            pipeline["inference_contract"] = "request_fp32_v1"
+            pipeline["accepted_execution_scope"] = numerical.get("execution_scope")
+        if proof_path.is_file() and not release and not numerical:
             proof = sources.read(proof_path)
             if (proof.get("status") != "PASS" or proof["selection_sha256"] != sha256(gate_selection_path)
                     or proof["original_requests"] != counts[0] or proof["original_positive_pairs"] != counts[2]):
@@ -300,8 +458,15 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
                     raise ValueError("Independent pipeline proof input changed")
             pipeline["independent_verification_sha256"] = sha256(proof_path)
         ranking["serving_enabled"] = strategy == "learned"
+        ranking["inference_contract"] = "frozen_logged_exposure_fp32"
+        ranking["scope_note"] = "Frozen complete logged-exposure diagnostic; not rerun under the request-local serving numerical contract; not end-to-end serving quality."
         scenes[scene] = {"recall": {"test": recall, "lineage": recall_lineage}, "ranking": ranking,
                          "pipeline": pipeline, "model_bundle_id": bundle["bundle_id"]}
+    def load_catalog_metrics(scene, path):
+        raw, _ = load_raw(root, scene, sources)
+        return recall_metrics(raw, pd.read_parquet(path))
+    attach_comparisons(root, base, scenes, sources, load_catalog_metrics)
+    sources.add(root / "scripts/evaluation_comparisons.py")
     sources.add(Path(__file__))
     return {
         "tag": "hard",
@@ -329,7 +494,7 @@ def update_readme_text(text: str, snapshot: dict, *, english=False) -> str:
             scene = "search"
         elif body.startswith("- Recommendation "):
             scene = "rec"
-        if body.startswith("  - Single-machine serial measurements") or body.startswith("  - 单机串行实测") or (body.startswith("  - ") and "~150ms" in body):
+        if body.startswith(("  - Single-machine serial measurements", "  - 单机串行实测", "  - APIs return total and per-stage latency", "  - 接口返回总延迟与分阶段延迟")) or (body.startswith("  - ") and "~150ms" in body):
             body = "  - APIs return total and per-stage latency" if english else "  - 接口返回总延迟与分阶段延迟"
             counts["latency"] += 1
         elif scene and body.startswith("  - ") and (body.startswith("  - Recall (") or body.startswith("  - 召回（")):

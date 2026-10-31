@@ -1,14 +1,19 @@
 {
   "tag": "hard",
   "protocol": {
-    "name": "official_full_test_frozen_snapshot_v1",
+    "name": "official_full_test_bundle_bound_v2",
     "full_test": true,
     "held_out": false,
     "strict_acceptance": "blocked",
     "sampling": "none",
     "label": "binary_click",
-    "evaluated_at": "2026-10-22",
-    "warning": "全量测试集快照；模型与特征的时间隔离尚未完成核验，排序为完整日志曝光条件评估。"
+    "evaluated_at": "2026-10-31",
+    "publication_status": "active_bundle_bound",
+    "strict_acceptance_reasons": [
+      "feature_point_in_time_lineage_unknown",
+      "official_test_previously_observed"
+    ],
+    "warning": "全量测试集，测试集已被观察；特征时间隔离未完成核验。排序为完整日志曝光条件评估，端到端为已知正例保留评估。"
   },
   "scenes": {
     "search": {
@@ -16,57 +21,510 @@
         "test": {
           "all_requests": 6192,
           "positive_requests": 6192,
+          "zero_positive_requests": 0,
           "positive_pairs": 27597,
-          "HitRate@100": 0.772125322997416,
-          "Recall@100": 0.5633041961344907,
-          "MicroRecall@100": 0.4775881436388013,
-          "HitRate@500": 0.899547803617571,
-          "Recall@500": 0.7467326646114951,
-          "MicroRecall@500": 0.6546363735188607,
-          "HitRate@1000": 0.899547803617571,
-          "Recall@1000": 0.7467326646114951,
-          "MicroRecall@1000": 0.6546363735188607,
-          "MRR@100": 0.25243414164446387,
-          "missed_requests@1000": 622,
-          "MedianFirstHitRank": 8.0,
-          "sampled_groups": 6192
+          "sampled_groups": 6192,
+          "effective_groups": 6192,
+          "empty_candidate_requests": 0,
+          "candidate_pairs": 3096000,
+          "candidate_budget": 500,
+          "mean_candidates": 500.0,
+          "scope": "All original test requests; unique clicked request-item pairs; actual top500 retrieval; no forced positives",
+          "denominator": "All positive original test requests, including zero-hit and empty-candidate requests",
+          "label": "binary click > 0; repeated positive impressions deduplicated per request-item",
+          "known_positive_NDCG@10": 0.21708665601118518,
+          "HitRate@10": 0.5392441860465116,
+          "known_positive_pairs_top10": 5713,
+          "HitRate@50": 0.7483850129198967,
+          "known_positive_pairs_top50": 11748,
+          "HitRate@100": 0.8147609819121447,
+          "known_positive_pairs_top100": 14384,
+          "HitRate@500": 0.9098837209302325,
+          "known_positive_pairs_top500": 19461,
+          "Recall@100": 0.61153933063259,
+          "MicroRecall@100": 0.5212160742109649,
+          "Recall@500": 0.7721279750564886,
+          "MicroRecall@500": 0.7051853462332862,
+          "MRR@10": 0.2700043707190025,
+          "MRR@100": 0.2812461587039031,
+          "MedianFirstHitRank": 6.0,
+          "MedianFirstHitRank_among_hits_at500": 6.0,
+          "median_scope": "Only requests with a hit in actual top500; misses excluded from median and reported separately",
+          "missed_requests_at_500": 558,
+          "missed_requests@500": 558
+        },
+        "lineage": {
+          "selection_sha256": "7140aca7a397afb667afc903fd22636e943890d25747129519e9673152060fef",
+          "nprobe": 128,
+          "route_topk": 1000,
+          "final_topk": 500,
+          "inference_contract": "request_fp32_v1"
         }
       },
       "ranking": {
         "preranking": {
           "test": {
-            "NDCG@10": 0.6532217548908399,
-            "AUC": 0.6535310811449303,
-            "GAUC": 0.6413021849898876,
-            "rows": 128191,
-            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "scope": "complete original official test logged exposures; repeated impressions retained; NOT serving funnel",
             "label": "binary click",
+            "rows": 128191,
+            "all_requests": 6192,
+            "NDCG@10": 0.5394266414525319,
+            "AUC": 0.5776265660600521,
+            "GAUC": 0.5580255999479573,
             "gauc_group": "user_idx",
             "gauc_weight": "exposure count of users with both classes",
             "gauc_effective_users": 2542,
             "gauc_effective_rows": 128176,
             "gauc_excluded_users": 6,
+            "zero_positive_requests": 0,
+            "random_expected_NDCG@10": 0.48880826128892707,
+            "NDCG@10_user_cluster_CI95": [
+              0.5298994512180454,
+              0.5476964317820873
+            ],
+            "tie_policy": "average DCG over equal-score permutations; AUC ties count 0.5",
             "sampled_groups": 6192,
-            "effective_groups": 6192
+            "effective_groups": 6192,
+            "selection_split": "train_internal_validation"
           }
         },
         "ranking": {
           "test": {
-            "NDCG@10": 0.6433348137573045,
-            "AUC": 0.6478615610079044,
-            "GAUC": 0.6403953429681222,
-            "rows": 128191,
-            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "scope": "complete original official test logged exposures; repeated impressions retained; NOT serving funnel",
             "label": "binary click",
+            "rows": 128191,
+            "all_requests": 6192,
+            "NDCG@10": 0.5467512038564768,
+            "AUC": 0.5813051553238919,
+            "GAUC": 0.5670798820506202,
             "gauc_group": "user_idx",
             "gauc_weight": "exposure count of users with both classes",
             "gauc_effective_users": 2542,
             "gauc_effective_rows": 128176,
             "gauc_excluded_users": 6,
+            "zero_positive_requests": 0,
+            "random_expected_NDCG@10": 0.48880826128892707,
+            "NDCG@10_user_cluster_CI95": [
+              0.5364638264596365,
+              0.5552662311030021
+            ],
+            "tie_policy": "average DCG over equal-score permutations; AUC ties count 0.5",
             "sampled_groups": 6192,
-            "effective_groups": 6192
+            "effective_groups": 6192,
+            "selection_split": "train_internal_validation"
+          }
+        },
+        "selection": {
+          "name": "balanced_top10",
+          "run": "outputs/evaluation/northstar_fix_20261031/search_rank/balanced_top10",
+          "weight": 1.0,
+          "manifest_sha256": "e49fa4c088aad9fa7e00fba3f12508b4e05460fdb22ae37f1d0ac401ca4ab5f6"
+        },
+        "serving_enabled": true,
+        "inference_contract": "frozen_logged_exposure_fp32",
+        "scope_note": "Frozen complete logged-exposure diagnostic; not rerun under the request-local serving numerical contract; not end-to-end serving quality."
+      },
+      "pipeline": {
+        "test": {
+          "HitRate@10": 0.5523255813953488,
+          "HitRate@50": 0.7842377260981912,
+          "Recall@100": 0.6370592613868877,
+          "known_positive_NDCG@10": 0.22252257141416532,
+          "MRR@10": 0.2774004347647759,
+          "MRR@100": 0.2904590795771922,
+          "requests": 6192,
+          "positive_requests": 6192,
+          "empty_candidate_requests": 0,
+          "known_positive_pairs_pool": 15959,
+          "mean_candidates": 160.0,
+          "known_positive_pairs_top10": 5887,
+          "known_positive_pairs_top50": 12624,
+          "known_positive_pairs_top100": 14982,
+          "scope": "Full original test known-click retention after selected pipeline; all test positives form IDCG; unexposed candidates have no invented click labels"
+        },
+        "serving_strategy": "learned",
+        "input_cap": 160,
+        "coarse_cap": 160,
+        "test_release_passed": true,
+        "learned_ranking_release_passed": true,
+        "evaluated_recipe_stage": "final",
+        "diagnostic_raw_pool_cap": 160,
+        "label_scope": "Known positives from all original test requests; not conditional exposure NDCG or online CTR",
+        "independent_verification_sha256": "5fb0138d2d1ebf012a7bd73411f9ddff5f8eedf08d0cd57fc289c0d877393baa",
+        "numerical_replay": {
+          "path": "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/deployment_v1/numerical_release.json",
+          "sha256": "9962a0cae71151c2f182971a85ffa6a9e8d4923f4a3509db2620df54e7cc5e68"
+        },
+        "inference_contract": "request_fp32_v1",
+        "accepted_execution_scope": {
+          "fine_device": "cuda",
+          "cpu_query_threads": 4,
+          "contract": "request_fp32_v1",
+          "input_contract": "LiveContextBuilder_bound_user_profile_v2",
+          "cross_backend_accepted": false,
+          "environment": {
+            "inference_contract": "request_fp32_v1",
+            "scope": "Locally verified hardware/software numerical reproducibility; no claim of bitwise equality across CPU/GPU or GPU architectures",
+            "python": "3.10.16",
+            "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+            "torch": "2.9.1+cu128",
+            "torch_cuda": "12.8",
+            "cudnn": 91002,
+            "faiss": "1.7.4",
+            "transformers": "4.57.3",
+            "gpu": "NVIDIA GeForce RTX 5070 Ti",
+            "gpu_capability": [
+              12,
+              0
+            ],
+            "matmul_allow_tf32": false,
+            "cudnn_allow_tf32": false,
+            "cudnn_benchmark": false,
+            "torch_cpu_threads": 4,
+            "query_device": "CPU_FP32_single_query",
+            "fine_device": "cuda:0_FP32_canonical1024",
+            "autocast": false,
+            "query_max_length": 512,
+            "plan_sha256": "ada0545449eee37a9ee5179301525b2e4c6d05da13a178199541d2f14bf0629d"
+          },
+          "warning": "Accepted on this recorded machine/backend only. CPU/GPU or package-version equivalence is not established."
+        }
+      },
+      "model_bundle_id": "f322a33d96d31049724c5a8075ba08d2a1f9948e15a1cdc5b473c9a40a264245",
+      "comparisons": {
+        "end_to_end": {
+          "scope": "full_catalog_known_click",
+          "baseline_name": "Frozen DSSM v3 + original fusion",
+          "current_name": "Current released ordering",
+          "metrics": [
+            {
+              "name": "HitRate@10",
+              "baseline": 0.5392441860465116,
+              "current": 0.5523255813953488,
+              "absolute_delta": 0.013081395348837233,
+              "absolute_delta_pp": 1.3081395348837233,
+              "relative_delta_pct": 2.4258760107816757
+            },
+            {
+              "name": "Recall@100",
+              "baseline": 0.61153933063259,
+              "current": 0.6370592613868877,
+              "absolute_delta": 0.025519930754297704,
+              "absolute_delta_pp": 2.5519930754297704,
+              "relative_delta_pct": 4.173064507216456
+            },
+            {
+              "name": "known_positive_NDCG@10",
+              "baseline": 0.21708665601118518,
+              "current": 0.22252257141416532,
+              "absolute_delta": 0.005435915402980135,
+              "absolute_delta_pp": 0.5435915402980135,
+              "relative_delta_pct": 2.5040301890780676
+            },
+            {
+              "name": "MRR@100",
+              "baseline": 0.2812461587039031,
+              "current": 0.2904590795771922,
+              "absolute_delta": 0.009212920873289066,
+              "absolute_delta_pp": 0.9212920873289066,
+              "relative_delta_pct": 3.275749939393291
+            }
+          ]
+        },
+        "logged_exposure": {
+          "scope": "logged_exposure_conditional",
+          "baseline_name": "Random expected ordering",
+          "current_name": "Validation-selected exposure ranker",
+          "metrics": [
+            {
+              "name": "NDCG@10",
+              "baseline": 0.48880826128892707,
+              "current": 0.5467512038564768,
+              "absolute_delta": 0.05794294256754973,
+              "absolute_delta_pp": 5.794294256754973,
+              "relative_delta_pct": 11.853920474822036
+            },
+            {
+              "name": "AUC",
+              "baseline": 0.5,
+              "current": 0.5813051553238919,
+              "absolute_delta": 0.08130515532389193,
+              "absolute_delta_pp": 8.130515532389193,
+              "relative_delta_pct": 16.261031064778386
+            },
+            {
+              "name": "GAUC",
+              "baseline": 0.5,
+              "current": 0.5670798820506202,
+              "absolute_delta": 0.06707988205062021,
+              "absolute_delta_pp": 6.707988205062021,
+              "relative_delta_pct": 13.415976410124042
+            }
+          ],
+          "diagnostics": {
+            "median_candidates": 12.0,
+            "requests_at_most_10_fraction": 0.4496124031007752,
+            "original_position_NDCG_at10": 0.6671167940143841,
+            "warning": "Position order reflects historical exposure bias; this comparison does not establish online causal gain."
           }
         }
+      },
+      "ablations": {
+        "scope": "full_catalog_known_click",
+        "baseline_name": "Frozen DSSM v3 + original fusion",
+        "rows": [
+          {
+            "id": "frozen_v3",
+            "label": "Frozen v3 recall order",
+            "status": "baseline",
+            "changed": "Reference before ranking-prior and subsequent recall iterations",
+            "metrics": {
+              "HitRate@10": 0.5392441860465116,
+              "HitRate@50": 0.7483850129198967,
+              "Recall@100": 0.61153933063259,
+              "known_positive_NDCG@10": 0.21708665601118518,
+              "MRR@100": 0.2812461587039031
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.5392441860465116,
+                "current": 0.5392441860465116,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "HitRate@50": {
+                "baseline": 0.7483850129198967,
+                "current": 0.7483850129198967,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "Recall@100": {
+                "baseline": 0.61153933063259,
+                "current": 0.61153933063259,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.21708665601118518,
+                "current": 0.21708665601118518,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "MRR@100": {
+                "baseline": 0.2812461587039031,
+                "current": 0.2812461587039031,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              }
+            }
+          },
+          {
+            "id": "canonical_raw",
+            "label": "Canonical request recall order",
+            "status": "diagnostic",
+            "changed": "Same frozen model and fusion; current-request numerical contract replay",
+            "metrics": {
+              "HitRate@10": 0.5392441860465116,
+              "HitRate@50": 0.7483850129198967,
+              "Recall@100": 0.61153933063259,
+              "known_positive_NDCG@10": 0.21708665601118518,
+              "MRR@100": 0.2812461587039031
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.5392441860465116,
+                "current": 0.5392441860465116,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "HitRate@50": {
+                "baseline": 0.7483850129198967,
+                "current": 0.7483850129198967,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "Recall@100": {
+                "baseline": 0.61153933063259,
+                "current": 0.61153933063259,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.21708665601118518,
+                "current": 0.21708665601118518,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "MRR@100": {
+                "baseline": 0.2812461587039031,
+                "current": 0.2812461587039031,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              }
+            }
+          },
+          {
+            "id": "coarse",
+            "label": "Coarse only",
+            "status": "diagnostic_rejected",
+            "changed": "Fixed input pool, ordering=coarse; no model retraining in this contrast",
+            "metrics": {
+              "HitRate@10": 0.4518733850129199,
+              "HitRate@50": 0.7065568475452196,
+              "Recall@100": 0.588737936546378,
+              "known_positive_NDCG@10": 0.16687184034445215,
+              "MRR@100": 0.22830869811594415
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.5392441860465116,
+                "current": 0.4518733850129199,
+                "absolute_delta": -0.08737080103359168,
+                "absolute_delta_pp": -8.737080103359169,
+                "relative_delta_pct": -16.202455825097328
+              },
+              "HitRate@50": {
+                "baseline": 0.7483850129198967,
+                "current": 0.7065568475452196,
+                "absolute_delta": -0.04182816537467704,
+                "absolute_delta_pp": -4.182816537467704,
+                "relative_delta_pct": -5.589123867069491
+              },
+              "Recall@100": {
+                "baseline": 0.61153933063259,
+                "current": 0.588737936546378,
+                "absolute_delta": -0.022801394086212068,
+                "absolute_delta_pp": -2.280139408621207,
+                "relative_delta_pct": -3.728524551744823
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.21708665601118518,
+                "current": 0.16687184034445215,
+                "absolute_delta": -0.050214815666733026,
+                "absolute_delta_pp": -5.021481566673303,
+                "relative_delta_pct": -23.131230905388193
+              },
+              "MRR@100": {
+                "baseline": 0.2812461587039031,
+                "current": 0.22830869811594415,
+                "absolute_delta": -0.05293746058795898,
+                "absolute_delta_pp": -5.2937460587958975,
+                "relative_delta_pct": -18.822465285185178
+              }
+            }
+          },
+          {
+            "id": "fine",
+            "label": "Coarse + fine",
+            "status": "diagnostic_rejected",
+            "changed": "Fixed input pool, ordering=fine; no model retraining in this contrast",
+            "metrics": {
+              "HitRate@10": 0.48594961240310075,
+              "HitRate@50": 0.7311046511627907,
+              "Recall@100": 0.6143934262212687,
+              "known_positive_NDCG@10": 0.1836864899151784,
+              "MRR@100": 0.2505353896731913
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.5392441860465116,
+                "current": 0.48594961240310075,
+                "absolute_delta": -0.053294573643410836,
+                "absolute_delta_pp": -5.329457364341083,
+                "relative_delta_pct": -9.883198562443843
+              },
+              "HitRate@50": {
+                "baseline": 0.7483850129198967,
+                "current": 0.7311046511627907,
+                "absolute_delta": -0.01728036175710601,
+                "absolute_delta_pp": -1.728036175710601,
+                "relative_delta_pct": -2.3090202848511097
+              },
+              "Recall@100": {
+                "baseline": 0.61153933063259,
+                "current": 0.6143934262212687,
+                "absolute_delta": 0.0028540955886786623,
+                "absolute_delta_pp": 0.28540955886786623,
+                "relative_delta_pct": 0.4667067914873638
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.21708665601118518,
+                "current": 0.1836864899151784,
+                "absolute_delta": -0.03340016609600677,
+                "absolute_delta_pp": -3.340016609600677,
+                "relative_delta_pct": -15.38563756506796
+              },
+              "MRR@100": {
+                "baseline": 0.2812461587039031,
+                "current": 0.2505353896731913,
+                "absolute_delta": -0.03071076903071185,
+                "absolute_delta_pp": -3.0710769030711846,
+                "relative_delta_pct": -10.919533682607286
+              }
+            }
+          },
+          {
+            "id": "final",
+            "label": "Fine with recall prior",
+            "status": "accepted",
+            "changed": "Fixed input pool, ordering=final; no model retraining in this contrast",
+            "metrics": {
+              "HitRate@10": 0.5523255813953488,
+              "HitRate@50": 0.7842377260981912,
+              "Recall@100": 0.6370592613868877,
+              "known_positive_NDCG@10": 0.22252257141416532,
+              "MRR@100": 0.2904590795771922
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.5392441860465116,
+                "current": 0.5523255813953488,
+                "absolute_delta": 0.013081395348837233,
+                "absolute_delta_pp": 1.3081395348837233,
+                "relative_delta_pct": 2.4258760107816757
+              },
+              "HitRate@50": {
+                "baseline": 0.7483850129198967,
+                "current": 0.7842377260981912,
+                "absolute_delta": 0.035852713178294526,
+                "absolute_delta_pp": 3.5852713178294526,
+                "relative_delta_pct": 4.790677600345267
+              },
+              "Recall@100": {
+                "baseline": 0.61153933063259,
+                "current": 0.6370592613868877,
+                "absolute_delta": 0.025519930754297704,
+                "absolute_delta_pp": 2.5519930754297704,
+                "relative_delta_pct": 4.173064507216456
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.21708665601118518,
+                "current": 0.22252257141416532,
+                "absolute_delta": 0.005435915402980135,
+                "absolute_delta_pp": 0.5435915402980135,
+                "relative_delta_pct": 2.5040301890780676
+              },
+              "MRR@100": {
+                "baseline": 0.2812461587039031,
+                "current": 0.2904590795771922,
+                "absolute_delta": 0.009212920873289066,
+                "absolute_delta_pp": 0.9212920873289066,
+                "relative_delta_pct": 3.275749939393291
+              }
+            }
+          }
+        ],
+        "warning": "All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed. Canonical Search stages share one regenerated input pool; the frozen baseline retains its recorded numerical contract."
       }
     },
     "rec": {
@@ -74,58 +532,1103 @@
         "test": {
           "all_requests": 11115,
           "positive_requests": 11115,
+          "zero_positive_requests": 0,
           "positive_pairs": 44683,
-          "HitRate@100": 0.03625730994152047,
-          "Recall@100": 0.010102144755591227,
-          "MicroRecall@100": 0.010003804578922634,
-          "HitRate@500": 0.09194781826360773,
-          "Recall@500": 0.027421182600484716,
-          "MicroRecall@500": 0.02835530291162187,
-          "HitRate@1000": 0.13126405757984705,
-          "Recall@1000": 0.04031870715327192,
-          "MicroRecall@1000": 0.04317078083387418,
-          "MRR@100": 0.002507132249114041,
-          "missed_requests@1000": 9656,
-          "MedianFirstHitRank": 262.0,
-          "sampled_groups": 11115
+          "sampled_groups": 11115,
+          "effective_groups": 11115,
+          "empty_candidate_requests": 0,
+          "candidate_pairs": 5557500,
+          "candidate_budget": 500,
+          "mean_candidates": 500.0,
+          "scope": "All original test requests; unique clicked request-item pairs; actual top500 retrieval; no forced positives",
+          "denominator": "All positive original test requests, including zero-hit and empty-candidate requests",
+          "label": "binary click > 0; repeated positive impressions deduplicated per request-item",
+          "known_positive_NDCG@10": 0.003236697834438843,
+          "HitRate@10": 0.015024741340530815,
+          "known_positive_pairs_top10": 172,
+          "HitRate@50": 0.0456140350877193,
+          "known_positive_pairs_top50": 559,
+          "HitRate@100": 0.07197480881691408,
+          "known_positive_pairs_top100": 892,
+          "HitRate@500": 0.1647323436797121,
+          "known_positive_pairs_top500": 2242,
+          "Recall@100": 0.026752250835630695,
+          "MicroRecall@100": 0.019962849405814293,
+          "Recall@500": 0.06548263519638632,
+          "MicroRecall@500": 0.05017568202672157,
+          "MRR@10": 0.004499817920870552,
+          "MRR@100": 0.006225164933763815,
+          "MedianFirstHitRank": 126.0,
+          "MedianFirstHitRank_among_hits_at500": 126.0,
+          "median_scope": "Only requests with a hit in actual top500; misses excluded from median and reported separately",
+          "missed_requests_at_500": 9284,
+          "missed_requests@500": 9284
+        },
+        "lineage": {
+          "selection_sha256": "7ae4490598072ba7e87bc7f70aee63b3fb731ea3586465b636cf57e802817609",
+          "nprobe": 32,
+          "route_topk": 1000,
+          "final_topk": 500,
+          "model_family": "residual_dssm_v1",
+          "residual_learned_weight": 0.25,
+          "gradient_updates": 0,
+          "pca_fit_split": "original_train_fit",
+          "fusion_selection_sha256": "6c9a52d75ffb49253bc9bbd58dd74ca746e7455127f10f80f0761dfec274b435"
         }
       },
       "ranking": {
         "preranking": {
           "test": {
-            "NDCG@10": 0.6089359783028481,
-            "AUC": 0.5427469011977633,
-            "GAUC": 0.5558750559119142,
-            "rows": 182567,
-            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "scope": "complete original official test logged exposures; repeated impressions retained; NOT serving funnel",
             "label": "binary click",
+            "rows": 182567,
+            "all_requests": 11115,
+            "NDCG@10": 0.611582434860219,
+            "AUC": 0.6035681855006874,
+            "GAUC": 0.6139081894905111,
             "gauc_group": "user_idx",
             "gauc_weight": "exposure count of users with both classes",
             "gauc_effective_users": 4563,
             "gauc_effective_rows": 182522,
             "gauc_excluded_users": 13,
+            "zero_positive_requests": 0,
+            "random_expected_NDCG@10": 0.5317232815293095,
+            "NDCG@10_user_cluster_CI95": [
+              0.6037186930574765,
+              0.6198126053338634
+            ],
+            "tie_policy": "average DCG over equal-score permutations; AUC ties count 0.5",
             "sampled_groups": 11115,
-            "effective_groups": 11115
+            "effective_groups": 11115,
+            "selection_split": "train_internal_validation"
           }
         },
         "ranking": {
           "test": {
-            "NDCG@10": 0.5791201575213493,
-            "AUC": 0.49760396156292885,
-            "GAUC": 0.5033739359495907,
-            "rows": 182567,
-            "scope": "all original official test logged exposures, repeated impressions retained; NOT serving funnel",
+            "scope": "complete original official test logged exposures; repeated impressions retained; NOT serving funnel",
             "label": "binary click",
+            "rows": 182567,
+            "all_requests": 11115,
+            "NDCG@10": 0.619474028632609,
+            "AUC": 0.6142788164935501,
+            "GAUC": 0.6211497181691649,
             "gauc_group": "user_idx",
             "gauc_weight": "exposure count of users with both classes",
             "gauc_effective_users": 4563,
             "gauc_effective_rows": 182522,
             "gauc_excluded_users": 13,
+            "zero_positive_requests": 0,
+            "random_expected_NDCG@10": 0.5317232815293095,
+            "NDCG@10_user_cluster_CI95": [
+              0.61112277617378,
+              0.627086896136012
+            ],
+            "tie_policy": "average DCG over equal-score permutations; AUC ties count 0.5",
             "sampled_groups": 11115,
-            "effective_groups": 11115
+            "effective_groups": 11115,
+            "selection_split": "train_internal_validation"
           }
+        },
+        "selection": {
+          "name": "balanced_top10",
+          "run": "outputs/evaluation/northstar_fix_20261031/rec_rank/balanced_top10",
+          "weight": 1.0,
+          "manifest_sha256": "1a1fadb6c1fa4e9caf28a8a4526affc1ab75575fcfb5cc3b35d92318d150508f"
+        },
+        "serving_enabled": false,
+        "inference_contract": "frozen_logged_exposure_fp32",
+        "scope_note": "Frozen complete logged-exposure diagnostic; not rerun under the request-local serving numerical contract; not end-to-end serving quality."
+      },
+      "pipeline": {
+        "test": {
+          "all_requests": 11115,
+          "positive_requests": 11115,
+          "zero_positive_requests": 0,
+          "positive_pairs": 44683,
+          "sampled_groups": 11115,
+          "effective_groups": 11115,
+          "empty_candidate_requests": 0,
+          "candidate_pairs": 5557500,
+          "candidate_budget": 500,
+          "mean_candidates": 500.0,
+          "scope": "All original test requests; unique clicked request-item pairs; actual top500 retrieval; no forced positives",
+          "denominator": "All positive original test requests, including zero-hit and empty-candidate requests",
+          "label": "binary click > 0; repeated positive impressions deduplicated per request-item",
+          "known_positive_NDCG@10": 0.003236697834438843,
+          "HitRate@10": 0.015024741340530815,
+          "known_positive_pairs_top10": 172,
+          "HitRate@50": 0.0456140350877193,
+          "known_positive_pairs_top50": 559,
+          "HitRate@100": 0.07197480881691408,
+          "known_positive_pairs_top100": 892,
+          "HitRate@500": 0.1647323436797121,
+          "known_positive_pairs_top500": 2242,
+          "Recall@100": 0.026752250835630695,
+          "MicroRecall@100": 0.019962849405814293,
+          "Recall@500": 0.06548263519638632,
+          "MicroRecall@500": 0.05017568202672157,
+          "MRR@10": 0.004499817920870552,
+          "MRR@100": 0.006225164933763815,
+          "MedianFirstHitRank": 126.0,
+          "MedianFirstHitRank_among_hits_at500": 126.0,
+          "median_scope": "Only requests with a hit in actual top500; misses excluded from median and reported separately",
+          "missed_requests_at_500": 9284,
+          "missed_requests@500": 9284
+        },
+        "serving_strategy": "recall_only",
+        "input_cap": 500,
+        "coarse_cap": 500,
+        "test_release_passed": true,
+        "learned_ranking_release_passed": false,
+        "evaluated_recipe_stage": "raw",
+        "diagnostic_raw_pool_cap": 320,
+        "label_scope": "Known positives from all original test requests; not conditional exposure NDCG or online CTR",
+        "independent_verification_sha256": "fcb948146f02256ede6be3a0e747eea6a848ba60b76587fe63fc156f47058ddc",
+        "release_evidence": {
+          "path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json",
+          "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621"
         }
+      },
+      "model_bundle_id": "3f4bab6f3abc286d9c9891d07cdc8bb6942143caf0675eb32de59ccfdbf4e2f1",
+      "comparisons": {
+        "end_to_end": {
+          "scope": "full_catalog_known_click",
+          "baseline_name": "Frozen DSSM v3 + original fusion",
+          "current_name": "Current released ordering",
+          "metrics": [
+            {
+              "name": "HitRate@50",
+              "baseline": 0.022762033288349078,
+              "current": 0.0456140350877193,
+              "absolute_delta": 0.022852001799370223,
+              "absolute_delta_pp": 2.2852001799370223,
+              "relative_delta_pct": 100.39525691699606
+            },
+            {
+              "name": "Recall@100",
+              "baseline": 0.010468837728634469,
+              "current": 0.026752250835630695,
+              "absolute_delta": 0.016283413106996228,
+              "absolute_delta_pp": 1.6283413106996227,
+              "relative_delta_pct": 155.54174712688186
+            },
+            {
+              "name": "known_positive_NDCG@10",
+              "baseline": 0.0016306093888105813,
+              "current": 0.003236697834438843,
+              "absolute_delta": 0.0016060884456282616,
+              "absolute_delta_pp": 0.16060884456282615,
+              "relative_delta_pct": 98.49620986174953
+            },
+            {
+              "name": "MRR@100",
+              "baseline": 0.003682917126909296,
+              "current": 0.006225164933763815,
+              "absolute_delta": 0.0025422478068545186,
+              "absolute_delta_pp": 0.25422478068545185,
+              "relative_delta_pct": 69.02810243216015
+            }
+          ]
+        },
+        "logged_exposure": {
+          "scope": "logged_exposure_conditional",
+          "baseline_name": "Random expected ordering",
+          "current_name": "Validation-selected exposure ranker",
+          "metrics": [
+            {
+              "name": "NDCG@10",
+              "baseline": 0.5317232815293095,
+              "current": 0.619474028632609,
+              "absolute_delta": 0.08775074710329955,
+              "absolute_delta_pp": 8.775074710329955,
+              "relative_delta_pct": 16.503085373827584
+            },
+            {
+              "name": "AUC",
+              "baseline": 0.5,
+              "current": 0.6142788164935501,
+              "absolute_delta": 0.1142788164935501,
+              "absolute_delta_pp": 11.42788164935501,
+              "relative_delta_pct": 22.85576329871002
+            },
+            {
+              "name": "GAUC",
+              "baseline": 0.5,
+              "current": 0.6211497181691649,
+              "absolute_delta": 0.12114971816916487,
+              "absolute_delta_pp": 12.114971816916487,
+              "relative_delta_pct": 24.229943633832974
+            }
+          ],
+          "diagnostics": {
+            "median_candidates": 10.0,
+            "requests_at_most_10_fraction": 0.5396311291048134,
+            "original_position_NDCG_at10": 0.6489969356898043,
+            "warning": "Position order reflects historical exposure bias; this comparison does not establish online causal gain."
+          }
+        },
+        "residual_vs_history_filter": {
+          "scope": "full_catalog_known_click",
+          "baseline_name": "v3 + accepted history filter",
+          "current_name": "Residual DSSM + same history filter",
+          "metrics": [
+            {
+              "name": "HitRate@50",
+              "baseline": 0.022941970310391364,
+              "current": 0.03832658569500675,
+              "absolute_delta": 0.015384615384615385,
+              "absolute_delta_pp": 1.5384615384615385,
+              "relative_delta_pct": 67.05882352941177,
+              "ci95_delta": [
+                0.012511167313913768,
+                0.018136088001228387
+              ]
+            },
+            {
+              "name": "Recall@100",
+              "baseline": 0.010746776164467642,
+              "current": 0.023194692012147168,
+              "absolute_delta": 0.012447915847679526,
+              "absolute_delta_pp": 1.2447915847679525,
+              "relative_delta_pct": 115.82930226867856,
+              "ci95_delta": [
+                0.010014027015262904,
+                0.014919149477811129
+              ]
+            },
+            {
+              "name": "known_positive_NDCG@10",
+              "baseline": 0.0017229595093839428,
+              "current": 0.002548425237756525,
+              "absolute_delta": 0.0008254657283725821,
+              "absolute_delta_pp": 0.08254657283725822,
+              "relative_delta_pct": 47.90975782522792,
+              "ci95_delta": [
+                0.00047809775705288693,
+                0.0011493324646398373
+              ]
+            },
+            {
+              "name": "MRR@100",
+              "baseline": 0.0038409602906676944,
+              "current": 0.005561775410866889,
+              "absolute_delta": 0.0017208151201991945,
+              "absolute_delta_pp": 0.17208151201991945,
+              "relative_delta_pct": 44.801689941450974,
+              "ci95_delta": [
+                0.0011806855540178577,
+                0.0022573020668693183
+              ]
+            }
+          ]
+        },
+        "fusion_vs_residual_control": {
+          "scope": "full_catalog_known_click",
+          "baseline_name": "Residual model + 1:2:1",
+          "current_name": "Same residual model + 2:1:1",
+          "metrics": [
+            {
+              "name": "HitRate@50",
+              "baseline": 0.03832658569500675,
+              "current": 0.0456140350877193,
+              "absolute_delta": 0.007287449392712551,
+              "absolute_delta_pp": 0.7287449392712552,
+              "relative_delta_pct": 19.014084507042256
+            },
+            {
+              "name": "Recall@100",
+              "baseline": 0.02319469201214716,
+              "current": 0.026752250835630695,
+              "absolute_delta": 0.0035575588234835337,
+              "absolute_delta_pp": 0.35575588234835337,
+              "relative_delta_pct": 15.337814451773815
+            },
+            {
+              "name": "known_positive_NDCG@10",
+              "baseline": 0.002548425237756525,
+              "current": 0.003236697834438843,
+              "absolute_delta": 0.0006882725966823179,
+              "absolute_delta_pp": 0.06882725966823179,
+              "relative_delta_pct": 27.00776096881815
+            },
+            {
+              "name": "MRR@100",
+              "baseline": 0.005561775410866889,
+              "current": 0.006225164933763815,
+              "absolute_delta": 0.0006633895228969258,
+              "absolute_delta_pp": 0.06633895228969258,
+              "relative_delta_pct": 11.927657517431584
+            }
+          ]
+        }
+      },
+      "ablations": {
+        "scope": "full_catalog_known_click",
+        "baseline_name": "Frozen DSSM v3 + original fusion",
+        "rows": [
+          {
+            "id": "frozen_v3",
+            "label": "Frozen v3 recall order",
+            "status": "baseline",
+            "changed": "Reference before ranking-prior and subsequent recall iterations",
+            "metrics": {
+              "HitRate@10": 0.008367071524966262,
+              "HitRate@50": 0.022762033288349078,
+              "Recall@100": 0.010468837728634469,
+              "known_positive_NDCG@10": 0.0016306093888105813,
+              "MRR@100": 0.003682917126909296
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.008367071524966262,
+                "current": 0.008367071524966262,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.022762033288349078,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.010468837728634469,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0016306093888105813,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.003682917126909296,
+                "absolute_delta": 0.0,
+                "absolute_delta_pp": 0.0,
+                "relative_delta_pct": 0.0
+              }
+            }
+          },
+          {
+            "id": "rank_prior_rejected",
+            "label": "Ranking-prior experiment",
+            "status": "diagnostic_rejected",
+            "changed": "Frozen validation-selected reranker; rejected by full-test release guard",
+            "metrics": {
+              "HitRate@10": 0.007467386414754836,
+              "HitRate@50": 0.025820962663067926,
+              "Recall@100": 0.012460992612053579,
+              "known_positive_NDCG@10": 0.0013607122084273936,
+              "MRR@100": 0.003089511747579636
+            },
+            "comparison": {
+              "HitRate@10": {
+                "baseline": 0.008367071524966262,
+                "current": 0.007467386414754836,
+                "absolute_delta": -0.0008996851102114258,
+                "absolute_delta_pp": -0.08996851102114259,
+                "relative_delta_pct": -10.75268817204301
+              },
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.025820962663067926,
+                "absolute_delta": 0.003058929374718848,
+                "absolute_delta_pp": 0.30589293747188484,
+                "relative_delta_pct": 13.438735177865613
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.012460992612053579,
+                "absolute_delta": 0.00199215488341911,
+                "absolute_delta_pp": 0.199215488341911,
+                "relative_delta_pct": 19.029379717770848
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0013607122084273936,
+                "absolute_delta": -0.0002698971803831876,
+                "absolute_delta_pp": -0.02698971803831876,
+                "relative_delta_pct": -16.551921155075604
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.003089511747579636,
+                "absolute_delta": -0.0005934053793296601,
+                "absolute_delta_pp": -0.05934053793296601,
+                "relative_delta_pct": -16.11237393841783
+              }
+            }
+          },
+          {
+            "id": "continuation_control_epoch_6",
+            "label": "continuation_control_epoch_6",
+            "status": "diagnostic_rejected",
+            "changed": "Three extra train-only epochs; A/B/C duration-matched controls; none passed validation",
+            "metrics": {
+              "HitRate@50": 0.021952316689158795,
+              "Recall@100": 0.009567400944039066,
+              "known_positive_NDCG@10": 0.0016315557916399858,
+              "MRR@100": 0.0035763223481385035
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.021952316689158795,
+                "absolute_delta": -0.0008097165991902827,
+                "absolute_delta_pp": -0.08097165991902827,
+                "relative_delta_pct": -3.5573122529644237
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.009567400944039066,
+                "absolute_delta": -0.0009014367845954028,
+                "absolute_delta_pp": -0.09014367845954027,
+                "relative_delta_pct": -8.610667277130334
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0016315557916399858,
+                "absolute_delta": 9.464028294045319e-07,
+                "absolute_delta_pp": 9.464028294045319e-05,
+                "relative_delta_pct": 0.058039824613966465
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.0035763223481385035,
+                "absolute_delta": -0.00010659477877079243,
+                "absolute_delta_pp": -0.010659477877079243,
+                "relative_delta_pct": -2.8943029424136615
+              }
+            }
+          },
+          {
+            "id": "masked_inbatch_epoch_6",
+            "label": "masked_inbatch_epoch_6",
+            "status": "diagnostic_rejected",
+            "changed": "Three extra train-only epochs; A/B/C duration-matched controls; none passed validation",
+            "metrics": {
+              "HitRate@50": 0.02186234817813765,
+              "Recall@100": 0.009778826944938751,
+              "known_positive_NDCG@10": 0.0016400467715673793,
+              "MRR@100": 0.0035876697316587045
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.02186234817813765,
+                "absolute_delta": -0.0008996851102114276,
+                "absolute_delta_pp": -0.08996851102114276,
+                "relative_delta_pct": -3.9525691699604812
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.009778826944938751,
+                "absolute_delta": -0.0006900107836957173,
+                "absolute_delta_pp": -0.06900107836957173,
+                "relative_delta_pct": -6.591092550879769
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0016400467715673793,
+                "absolute_delta": 9.437382756797988e-06,
+                "absolute_delta_pp": 0.0009437382756797988,
+                "relative_delta_pct": 0.578764161518898
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.0035876697316587045,
+                "absolute_delta": -9.52473952505915e-05,
+                "absolute_delta_pp": -0.00952473952505915,
+                "relative_delta_pct": -2.58619436627191
+              }
+            }
+          },
+          {
+            "id": "masked_logged_hard_epoch_6",
+            "label": "masked_logged_hard_epoch_6",
+            "status": "diagnostic_rejected",
+            "changed": "Three extra train-only epochs; A/B/C duration-matched controls; none passed validation",
+            "metrics": {
+              "HitRate@50": 0.02141250562303194,
+              "Recall@100": 0.008676430816829117,
+              "known_positive_NDCG@10": 0.0015752773590341441,
+              "MRR@100": 0.0034461318739927686
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.02141250562303194,
+                "absolute_delta": -0.0013495276653171379,
+                "absolute_delta_pp": -0.13495276653171379,
+                "relative_delta_pct": -5.9288537549407065
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.008676430816829117,
+                "absolute_delta": -0.0017924069118053516,
+                "absolute_delta_pp": -0.17924069118053515,
+                "relative_delta_pct": -17.121355381244875
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0015752773590341441,
+                "absolute_delta": -5.5332029776437126e-05,
+                "absolute_delta_pp": -0.005533202977643713,
+                "relative_delta_pct": -3.393334427983276
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.0034461318739927686,
+                "absolute_delta": -0.00023678525291652734,
+                "absolute_delta_pp": -0.023678525291652736,
+                "relative_delta_pct": -6.429285394082097
+              }
+            }
+          },
+          {
+            "id": "filter_history",
+            "label": "filter_history",
+            "status": "accepted",
+            "changed": "Same v3 weights and all-past graph; history filtering and fixed context fusion controls",
+            "metrics": {
+              "HitRate@50": 0.022941970310391364,
+              "Recall@100": 0.010746776164467642,
+              "known_positive_NDCG@10": 0.0017229595093839428,
+              "MRR@100": 0.0038409602906676944
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.022941970310391364,
+                "absolute_delta": 0.0001799370220422862,
+                "absolute_delta_pp": 0.01799370220422862,
+                "relative_delta_pct": 0.7905138339920993,
+                "ci95_delta": [
+                  -0.0001793611323534294,
+                  0.0005458976853389905
+                ]
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.010746776164467642,
+                "absolute_delta": 0.0002779384358331735,
+                "absolute_delta_pp": 0.02779384358331735,
+                "relative_delta_pct": 2.654912064143984,
+                "ci95_delta": [
+                  6.013235610401061e-05,
+                  0.000556263291826541
+                ]
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0017229595093839428,
+                "absolute_delta": 9.235012057336157e-05,
+                "absolute_delta_pp": 0.009235012057336157,
+                "relative_delta_pct": 5.663534210404904,
+                "ci95_delta": [
+                  3.7862054772018604e-05,
+                  0.00016438463409311553
+                ]
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.0038409602906676944,
+                "absolute_delta": 0.0001580431637583984,
+                "absolute_delta_pp": 0.01580431637583984,
+                "relative_delta_pct": 4.291249526188178,
+                "ci95_delta": [
+                  7.486871717037319e-05,
+                  0.00027237237719986813
+                ]
+              }
+            }
+          },
+          {
+            "id": "filter_history_context",
+            "label": "filter_history_context",
+            "status": "diagnostic_rejected",
+            "changed": "Same v3 weights and all-past graph; history filtering and fixed context fusion controls",
+            "metrics": {
+              "HitRate@50": 0.02285200179937022,
+              "Recall@100": 0.01035196150072469,
+              "known_positive_NDCG@10": 0.0017025303028147772,
+              "MRR@100": 0.003875137702036841
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.02285200179937022,
+                "absolute_delta": 8.996851102114137e-05,
+                "absolute_delta_pp": 0.008996851102114137,
+                "relative_delta_pct": 0.395256916996042,
+                "ci95_delta": [
+                  -0.0008997221246045025,
+                  0.000988646717405842
+                ]
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.01035196150072469,
+                "absolute_delta": -0.00011687622790977799,
+                "absolute_delta_pp": -0.011687622790977799,
+                "relative_delta_pct": -1.1164202840788808,
+                "ci95_delta": [
+                  -0.0005417984582065181,
+                  0.0002926057053226001
+                ]
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0017025303028147772,
+                "absolute_delta": 7.192091400419595e-05,
+                "absolute_delta_pp": 0.007192091400419595,
+                "relative_delta_pct": 4.4106770448965325,
+                "ci95_delta": [
+                  -1.2982030177758894e-05,
+                  0.00015337523460949668
+                ]
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.003875137702036841,
+                "absolute_delta": 0.00019222057512754487,
+                "absolute_delta_pp": 0.019222057512754485,
+                "relative_delta_pct": 5.219247908759119,
+                "ci95_delta": [
+                  4.601634856162258e-05,
+                  0.00036521260577186053
+                ]
+              }
+            }
+          },
+          {
+            "id": "residual_f1",
+            "label": "DSSM residual + history filter",
+            "status": "accepted",
+            "changed": "Same learned weights and CF graph; train-only PCA residual representation; fixed 256-dimensional ANN",
+            "metrics": {
+              "HitRate@50": 0.03832658569500675,
+              "Recall@100": 0.023194692012147168,
+              "known_positive_NDCG@10": 0.002548425237756525,
+              "MRR@100": 0.005561775410866889
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.03832658569500675,
+                "absolute_delta": 0.015564552406657672,
+                "absolute_delta_pp": 1.5564552406657672,
+                "relative_delta_pct": 68.37944664031622
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.023194692012147168,
+                "absolute_delta": 0.0127258542835127,
+                "absolute_delta_pp": 1.2725854283512699,
+                "relative_delta_pct": 121.5593804525675
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.002548425237756525,
+                "absolute_delta": 0.0009178158489459437,
+                "absolute_delta_pp": 0.09178158489459437,
+                "relative_delta_pct": 56.286677560186746
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.005561775410866889,
+                "absolute_delta": 0.0018788582839575929,
+                "absolute_delta_pp": 0.1878858283957593,
+                "relative_delta_pct": 51.01549177497596
+              }
+            }
+          },
+          {
+            "id": "residual_fusion_selected",
+            "label": "Residual DSSM + validation-selected fusion",
+            "status": "accepted",
+            "changed": "Same residual model and CF graph; validation selected ANN2/Swing1/UserCF1 from eight fixed trials",
+            "metrics": {
+              "HitRate@50": 0.0456140350877193,
+              "Recall@100": 0.026752250835630695,
+              "known_positive_NDCG@10": 0.003236697834438843,
+              "MRR@100": 0.006225164933763815
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.0456140350877193,
+                "absolute_delta": 0.022852001799370223,
+                "absolute_delta_pp": 2.2852001799370223,
+                "relative_delta_pct": 100.39525691699606
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.026752250835630695,
+                "absolute_delta": 0.016283413106996228,
+                "absolute_delta_pp": 1.6283413106996227,
+                "relative_delta_pct": 155.54174712688186
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.003236697834438843,
+                "absolute_delta": 0.0016060884456282616,
+                "absolute_delta_pp": 0.16060884456282615,
+                "relative_delta_pct": 98.49620986174953
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.006225164933763815,
+                "absolute_delta": 0.0025422478068545186,
+                "absolute_delta_pp": 0.25422478068545185,
+                "relative_delta_pct": 69.02810243216015
+              }
+            }
+          }
+        ],
+        "warning": "All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed. Canonical Search stages share one regenerated input pool; the frozen baseline retains its recorded numerical contract."
       }
     }
+  },
+  "provenance": {
+    "sources": {
+      "outputs/evaluation/northstar_fix_20261031/exposure_model_selection.json": {
+        "sha256": "cc9a3ab7a9ab3351a0606272c728e701a7d8e2d4a28fa5b666824253f9a19bd0",
+        "bytes": 9650
+      },
+      "outputs/deploy/search/hard/active_bundle.json": {
+        "sha256": "2f0dd2437ababf714f2be93e2ecea819d7f6969c0b3589cadbbfbf5831f4c7c9",
+        "bytes": 14392
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/deployment_v1/numerical_release.json": {
+        "sha256": "9962a0cae71151c2f182971a85ffa6a9e8d4923f4a3509db2620df54e7cc5e68",
+        "bytes": 5605
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/plan.json": {
+        "sha256": "ada0545449eee37a9ee5179301525b2e4c6d05da13a178199541d2f14bf0629d",
+        "bytes": 24356
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/validation/metrics.json": {
+        "sha256": "4b48a44f911e89b84d94b0d69410b6a56f09c3a37e89271a8530d1e87abd1a16",
+        "bytes": 31103
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/metrics.json": {
+        "sha256": "3023ff65fbdadc768ea2bde2ca04a7a85aab6fa89435790eabe5b01a95945b94",
+        "bytes": 31194
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/raw_selected.parquet": {
+        "sha256": "8ebcaaeb338c4c18e9a0b3f2f617fa44c4288ceb05a6449d67db2e34dec992d6",
+        "bytes": 63120189
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/scores.parquet": {
+        "sha256": "83f6ce54248495b9bad0aa385e0903b7fc745dfc83eb59ddee5a7f7bd74be978",
+        "bytes": 144238867
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/final_candidates.parquet": {
+        "sha256": "5c7ba272f8bdd792063f413995705a6c6eb09bd4725529ee7b28ea94e0500e2c",
+        "bytes": 33215954
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/request_context.parquet": {
+        "sha256": "d403acd09565f8725952c6c34a44873dc05e20e819e74b5ef14d523abe7e01a3",
+        "bytes": 1304895
+      },
+      "datasets/search_test/train-00000-of-00001.parquet": {
+        "sha256": "89dd99821e365341860d69f77bab36eeb8d8b692194e082e40a9ea6ea39ff243",
+        "bytes": 19396047
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/test_independent_verification.json": {
+        "sha256": "5fb0138d2d1ebf012a7bd73411f9ddff5f8eedf08d0cd57fc289c0d877393baa",
+        "bytes": 14650
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/test_profile_input_verification.json": {
+        "sha256": "d5bb09e53f1d56f8effdd92848d83f30ecd7d290854e85489296a1d64be95e38",
+        "bytes": 11219
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/validation_independent_verification.json": {
+        "sha256": "66d4796382124b650a8e119073e5bf8b7f5e89046839847e1f7f3405d9da9af7",
+        "bytes": 14733
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/validation_profile_input_verification.json": {
+        "sha256": "fd085f52631a66dd96b1f8696d88877d7ff57f4ed0fcb43967396dfeaf00d26a",
+        "bytes": 11298
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/verification/test_reproducibility.json": {
+        "sha256": "4a316ab6695c631d1c067850cb1ec781122b106ee0e5ecae3882c4ab4cb6614f",
+        "bytes": 40822
+      },
+      ".qilin/search_request_fp32_v2_runtime_environment.json": {
+        "sha256": "79923b5679ff048f0a6f06347fcf013f02c8e32993dffd26682cdef2aae5400c",
+        "bytes": 819
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/source_snapshot/manifest.json": {
+        "sha256": "26f44317df33462b48e17b34195e8610e375534e8e7602cb86c417fe8f9ebc90",
+        "bytes": 13158
+      },
+      ".qilin/search_context_v2_preflight.json": {
+        "sha256": "d2c8ef380682c01319486edfa65090c7c40cf94bdb894d7cf3b7706484d0bb1f",
+        "bytes": 1600
+      },
+      "scripts/verify_search_numerical_contract.py": {
+        "sha256": "e53d97acdd1dd3449406342bc6e39ee57605b05cebc069166f1f2f53e12d2d65",
+        "bytes": 11770
+      },
+      "scripts/repeat_search_numerical_contract.py": {
+        "sha256": "08ab2cdcdf5d751c99e1d9cb76acc8ae34cabbf6ada6333973f2f40baef3bf35",
+        "bytes": 6859
+      },
+      ".qilin/search_v2_cosmetic_source_revision.json": {
+        "sha256": "0642cc67b464bd38d8c8aff704e83ff9a83420c024493dbe0c8a0d3147cd0507",
+        "bytes": 680
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/rank/manifest.json": {
+        "sha256": "f221506521c8b7c4a9e26b1bb6a2198451b9f6f71fca827c098e18d3c74d5ec4",
+        "bytes": 26213
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_v3/test_selected.parquet": {
+        "sha256": "805f45f5ae6e3ff5a526018e3363d8d3affe138d9fa9c37e38af7c75b8d70f4e",
+        "bytes": 36749888
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_v3/selection.json": {
+        "sha256": "7140aca7a397afb667afc903fd22636e943890d25747129519e9673152060fef",
+        "bytes": 31489
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_v3/test_metrics.json": {
+        "sha256": "e3af3522bb28736bb0f8190bd3228fb2bbf77d57118eb8f305c15f37243851a4",
+        "bytes": 3522
+      },
+      "outputs/deploy/search/hard/bundles/northstar_fix_20261031_v1/recall/index/dssm_search_hard_ivfpq_meta.json": {
+        "sha256": "adbbe3bb828242e1bcc3925bf29411370f151890659ccac3a8aea34b67028b84",
+        "bytes": 503
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank/balanced_top10/manifest.json": {
+        "sha256": "e49fa4c088aad9fa7e00fba3f12508b4e05460fdb22ae37f1d0ac401ca4ab5f6",
+        "bytes": 25804
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank/balanced_top10/test_manifest.json": {
+        "sha256": "946eef11a71ceccf4182509f24455fd9eb6dfcc0babc0e1f6ae9b41fa5ffdac4",
+        "bytes": 478
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank/balanced_top10/test_metrics.json": {
+        "sha256": "57f18d10fb055878b96e6d853de9606d0bab9b8dfd3743c6997f102d59f16bcb",
+        "bytes": 2659
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank/balanced_top10/independent_ranking_verification.json": {
+        "sha256": "153b485a01d5368a5ee3d85e7097188bd7addb63bec3effccf9dd00ed285d172",
+        "bytes": 2555
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank/balanced_top10/gbdt.txt": {
+        "sha256": "078051cdabde8649dc5cd9563f6556e9d0d08491fbb6ffffff1f64cad5355bb4",
+        "bytes": 913374
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/rank/gbdt.txt": {
+        "sha256": "078051cdabde8649dc5cd9563f6556e9d0d08491fbb6ffffff1f64cad5355bb4",
+        "bytes": 913374
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank/balanced_top10/dien.pt": {
+        "sha256": "5855765ec1373dc89e34e45d964694787f24d47dc1127d169d191209b7192fa6",
+        "bytes": 7524301
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/rank/dien.pt": {
+        "sha256": "5855765ec1373dc89e34e45d964694787f24d47dc1127d169d191209b7192fa6",
+        "bytes": 7524301
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_v3/index/model_selection.json": {
+        "sha256": "4ae5838b7cebf6e2db9cdfd60b0086c1beb3bc456f1c83e9e07f1b080e7402e7",
+        "bytes": 4542
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank_prior_gate/selection.json": {
+        "sha256": "c7d67672576a333d1c0603e9279e7f36981b3b113430e93c99917cfd47db1ffa",
+        "bytes": 26752
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank_prior_gate/test/metrics.json": {
+        "sha256": "ab82ce6d255fc9eeab7ba265a36953edfe32b5b62666b5b231b99a045f8a960b",
+        "bytes": 16557
+      },
+      "outputs/deploy/rec/hard/active_bundle.json": {
+        "sha256": "6299952a9cca55bf6d67d93169a3ff1fe6eeddf4baada948300d08d476ffff72",
+        "bytes": 14460
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json": {
+        "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621",
+        "bytes": 5219
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/selection.json": {
+        "sha256": "7ae4490598072ba7e87bc7f70aee63b3fb731ea3586465b636cf57e802817609",
+        "bytes": 4394
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/test/metrics.json": {
+        "sha256": "d6dd0b78b8e8d8e814d26d4e0526a0b7b303416c25159034f98e8600fd56a946",
+        "bytes": 3763
+      },
+      ".qilin/rec_residual_test_independent_verification.json": {
+        "sha256": "148665f27026eb9f6e6c4680cfb1fef9d50efcfea6bd661d6ea2671d24733585",
+        "bytes": 11016
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/deployment_v2/selected_dssm.json": {
+        "sha256": "3e78a3f3618dae01a76b8dcccb1db37d17ff7c3bd2b9bb05b860379e03166966",
+        "bytes": 700
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/deployment_v2/selected_index.json": {
+        "sha256": "1cb3abce1890c8abf050e6353bcde0e19a51fec78d44403a89cf3a538857dec2",
+        "bytes": 536
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/allpast/winner_selected.parquet": {
+        "sha256": "75c25fa4fac2f20bc84989d34bcba26b0e794b39ae11fc46ddb4df4b78241d61",
+        "bytes": 45702835
+      },
+      ".qilin/rec_residual_lineage_verification.json": {
+        "sha256": "96b42d2e056d8adf9f0aaad6adc66012a094fc057ecd970298d7e8170736cc12",
+        "bytes": 1839
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/plan.json": {
+        "sha256": "8f97a4e76a4b1d25a1ef1f9dd77b6b098f5763224a59344b8e36b97ab2d09fd8",
+        "bytes": 7693
+      },
+      "datasets/recommendation_test/train-00000-of-00001.parquet": {
+        "sha256": "849d5cce5b2244a535568f72230cc98e4fabb23634b30c98365d8a64cdf0c5f0",
+        "bytes": 10284114
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/graph.npz": {
+        "sha256": "75b51b113c722c25110979dc15a18d97b6f35db616f18962795241d18d710b42",
+        "bytes": 1701221
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/users.npy": {
+        "sha256": "dd8f6ac3e125d24f5530f8a2bc72f851cc9ab95e0a3d83c3a1d8c43fa1e36048",
+        "bytes": 74360
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/items.npy": {
+        "sha256": "80e13cadd8ebdb946caaebb06e9762a109ed80fb0810543e6bf129988b54f2b9",
+        "bytes": 3128104
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/swing.npz": {
+        "sha256": "a4dc574750071a2a83dd6671726180f64d429b02ffd4297c8cf34113d162cec4",
+        "bytes": 1246675
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/test/allpast_selected.parquet": {
+        "sha256": "beb6da0788301e1cb8501f0a1d5d55e3d8fccdde297353c251a8b738eac9fff7",
+        "bytes": 41043676
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/selection.json": {
+        "sha256": "6c9a52d75ffb49253bc9bbd58dd74ca746e7455127f10f80f0761dfec274b435",
+        "bytes": 7609
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/plan.json": {
+        "sha256": "b97c38f22d8839044d958c0f94ec66eecf98284cce53143f672c6c34102cec80",
+        "bytes": 4758
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/metrics.json": {
+        "sha256": "3f93a40c679c071375ff38df5a85f3e89e80a4abc90cb9a3123d6379525db5f0",
+        "bytes": 5402
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/independent_proof.json": {
+        "sha256": "fcb948146f02256ede6be3a0e747eea6a848ba60b76587fe63fc156f47058ddc",
+        "bytes": 5581
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/validation_independent_proof.json": {
+        "sha256": "433a084f72d64e68722ff53dc1ab0105f2d75aa16dd8a69e9e5ff631df4cda0a",
+        "bytes": 494
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/root_test_approval.json": {
+        "sha256": "b4280620dac2f688a51185083262739c54badf92bea104bb03ef23d5c6ff2259",
+        "bytes": 250
+      },
+      "scripts/select_residual_fusion.py": {
+        "sha256": "45bc44eb0dcb8d78d968a19a0cd76639c31942b49445563ff77d5ce048ef9984",
+        "bytes": 16950
+      },
+      "src/recall/weighted_context_fusion.py": {
+        "sha256": "715c5e8a30cb9c844b4b8e6eb38d7262e34c8ed629cfebfd242820b2a5b62a88",
+        "bytes": 2474
+      },
+      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/index/dssm_rec_hard_ivfpq_meta.json": {
+        "sha256": "dd7ba98efa76e379b3710a3ac8d48883c4f63c8f9fadeaa34f420325b0a89f56",
+        "bytes": 499
+      },
+      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/graph.npz": {
+        "sha256": "75b51b113c722c25110979dc15a18d97b6f35db616f18962795241d18d710b42",
+        "bytes": 1701221
+      },
+      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/users.npy": {
+        "sha256": "dd8f6ac3e125d24f5530f8a2bc72f851cc9ab95e0a3d83c3a1d8c43fa1e36048",
+        "bytes": 74360
+      },
+      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/items.npy": {
+        "sha256": "80e13cadd8ebdb946caaebb06e9762a109ed80fb0810543e6bf129988b54f2b9",
+        "bytes": 3128104
+      },
+      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/swing.npz": {
+        "sha256": "a4dc574750071a2a83dd6671726180f64d429b02ffd4297c8cf34113d162cec4",
+        "bytes": 1246675
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/selected.parquet": {
+        "sha256": "01693c72e4e37c4d2cc8bfae0431374b90ca03a451fae79447305e256cedf355",
+        "bytes": 42573948
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank/balanced_top10/manifest.json": {
+        "sha256": "1a1fadb6c1fa4e9caf28a8a4526affc1ab75575fcfb5cc3b35d92318d150508f",
+        "bytes": 19297
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank/balanced_top10/test_manifest.json": {
+        "sha256": "a6e70d927c50f4845f3542076fcc9346c3da40f2e765ea6b750a21f8bd2aac6a",
+        "bytes": 479
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank/balanced_top10/test_metrics.json": {
+        "sha256": "33b5a9b3f50f3d34413de32f23bef96098b62a4ab7431f3721a150a759d35c44",
+        "bytes": 2655
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank/balanced_top10/independent_ranking_verification.json": {
+        "sha256": "e8f36a04dc40b447ea718527a0bf7882bc4b8253876dc750b723d56de1392381",
+        "bytes": 2557
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank/balanced_top10/gbdt.txt": {
+        "sha256": "46bdc6fdb04a2788e6ae4c489c7823d7bbedee91d2210171ab65e94ec6d852bc",
+        "bytes": 717947
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/rank/gbdt.txt": {
+        "sha256": "46bdc6fdb04a2788e6ae4c489c7823d7bbedee91d2210171ab65e94ec6d852bc",
+        "bytes": 717947
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_rank/balanced_top10/dien.pt": {
+        "sha256": "6b3560323cf5a46ce59680beffdfa91811eb9fde9874f954e8502770a08c5d0f",
+        "bytes": 7113253
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/rank/dien.pt": {
+        "sha256": "6b3560323cf5a46ce59680beffdfa91811eb9fde9874f954e8502770a08c5d0f",
+        "bytes": 7113253
+      },
+      ".qilin/final_metrics_acceptance_20261031.json": {
+        "sha256": "217e424c0b0d9f480b176f24f90682c45fefc7bdc6e6cef3b95f036968045fdb",
+        "bytes": 33588
+      },
+      "outputs/evaluation/northstar_fix_20261031/search_rank_prior_gate/test/metrics.json": {
+        "sha256": "103232c162ef15724b7b8e2f6d518af221ca65d40d047ab3059b2006db0dddbc",
+        "bytes": 16934
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_iteration_20261031/diagnostic_test/metrics.json": {
+        "sha256": "f1b4a8705349ace6062fd56793fa5f916493265b1dd588569914188f3cbe9a8d",
+        "bytes": 6009
+      },
+      "outputs/evaluation/northstar_fix_20261031/rec_iteration_20261031/fusion_gate/test_replay_v2/metrics.json": {
+        "sha256": "999d2063ba8cd0c8401875b98367b7b386a429ca5eac24db6151e567c9584f99",
+        "bytes": 7343
+      },
+      "scripts/evaluation_comparisons.py": {
+        "sha256": "90bd0f1e95f971a11f172bf2ef76d43326ab9c32e0fad2c51e4f0d40e3f8f95c",
+        "bytes": 9640
+      },
+      "scripts/sync_evaluation_metrics.py": {
+        "sha256": "679c703980f7dca1975737e4259a7485a14918bd8b4d891cf6b43c08cf82e36e",
+        "bytes": 36771
+      }
+    },
+    "producer": "scripts/sync_evaluation_metrics.py",
+    "selection": "Frozen original-train validation choices; no test-based model or weight selection"
   }
 }

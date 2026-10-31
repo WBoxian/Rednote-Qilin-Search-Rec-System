@@ -43,13 +43,13 @@ Qilin 围绕小红书场景下的 **数据预处理 → 特征工程 → 召回 
 ### 0.2 项目成果
 
 - 在线服务
-  - 单机串行实测（每场景固定请求、20次缓存命中）：Search P95约 `26ms`、首次加载约 `10.1s`；Rec P95约 `21ms`、首次加载约 `11.4s`。不代表并发吞吐，可用 `scripts/benchmark_serving.py --scene search|rec` 分别复测
+  - 接口返回总延迟与分阶段延迟
 - Search 离线指标
-  - 召回（测试集）：`HitRate@500 = 0.8995`，`Recall@500 = 0.7467`，`MRR@100 = 0.2524`，`MedianFirstHitRank = 8`
-  - 排序（DIEN，测试曝光）：`NDCG@10 = 0.6433`，`AUC = 0.6479`，`GAUC = 0.6404`
+  - 召回（测试集）：`HitRate@10 = 0.5392`，`Recall@100 = 0.6115`，`MRR@100 = 0.2812`
+  - 排序（DIEN，测试曝光）：`NDCG@10 = 0.5468`，`AUC = 0.5813`，`GAUC = 0.5671`
 - Recommendation 离线指标
-  - 召回（测试集）：`HitRate@500 = 0.0919`，`Recall@500 = 0.0274`，`MRR@100 = 0.0025`，`MedianFirstHitRank = 262`
-  - 排序（DIEN，测试曝光）：`NDCG@10 = 0.5791`，`AUC = 0.4976`，`GAUC = 0.5034`
+  - 召回（测试集）：`HitRate@50 = 0.0456`，`Recall@100 = 0.0268`
+  - 排序（DIEN，测试曝光）：`NDCG@10 = 0.6195`，`AUC = 0.6143`，`GAUC = 0.6211`
 
 ### 0.3 核心流程
 

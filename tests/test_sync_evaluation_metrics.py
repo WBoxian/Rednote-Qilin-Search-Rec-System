@@ -135,6 +135,94 @@ class TestSyncEvaluationMetrics(unittest.TestCase):
         self.assertIn("HitRate@10 = 0.5500", result)
         self.assertIn("HitRate@50 = 0.0200", result)
         self.assertIn("接口返回总延迟与分阶段延迟", result)
+        self.assertEqual(sync.update_readme_text(result, {"scenes": {"search": scene, "rec": scene}}), result)
+
+
+class TestNumericalReplayPublication(unittest.TestCase):
+    def prepare(self, root, wrong_truth_count=False):
+        def write(name, payload):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload))
+            return path
+        plan = write('plan.json', {'scene': 'search', 'inference_contract': 'request_fp32_v1',
+            'frozen_before_official_test': True, 'input_cap': 160, 'coarse_cap': 160,
+            'input_contract': 'LiveContextBuilder_bound_user_profile_v2',
+            'profile_categories': ['gender_enc', 'platform_enc', 'age_enc', 'location_enc']})
+        candidates = write('raw.json', {'fixture': 'raw candidate bytes'})
+        final = write('final.json', {'fixture': 'final candidate bytes'})
+        test = write('metrics.json', {'accepted_for_release': True, 'all_test_requests': 6192,
+            'parameter_choice_after_test': False, 'selection_sha256': sync.sha256(plan)})
+        proof = write('proof.json', {'status': 'PASS', 'selection_sha256': sync.sha256(plan),
+            'raw_candidate_sha256': sync.sha256(candidates), 'final_candidate_sha256': sync.sha256(final),
+            'original_requests': 6192, 'original_positive_pairs': 1 if wrong_truth_count else 27597})
+        context = write('context.json', {'fixture': 'current request features'})
+        raw_test = write('raw_test.json', {'fixture': 'original test request source'})
+        profile = write('profile.json', {'status': 'PASS', 'original_requests': 6192,
+            'profile_mismatches': 0, 'raw_context_mismatches': 0, 'nonzero_profile_requests': 100,
+            'selection_sha256': sync.sha256(plan), 'input_contract': 'LiveContextBuilder_bound_user_profile_v2',
+            'profile_fields': ['gender_enc', 'platform_enc', 'age_enc', 'location_enc'],
+            'user_profile_contract': 'shared_live_context_v1',
+            'inputs_sha256': {str(path.resolve()): sync.sha256(path) for path in (plan, test, context, raw_test)}})
+        sources = {name: {'path': path.name, 'sha256': sync.sha256(path)} for name, path in {
+            'plan': plan, 'test_metrics': test, 'candidates': candidates,
+            'final_candidates': final, 'independent_verification': proof, 'profile_input_verification': profile,
+            'request_context': context, 'raw_test': raw_test}.items()}
+        release = write('release.json', {'sources': sources})
+        write('rank/manifest.json', {'dien': {'inference_contract': 'request_fp32_v1'}})
+        digest = sync.sha256(release)
+        return {'rank_dir': 'rank', 'evaluation': {'numerical_replay': {'path': release.name, 'sha256': digest}},
+                'assets': {release.name: digest}}, candidates
+
+    def test_current_proof_passes_but_changed_candidates_are_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-replay-publication-') as directory:
+            root = Path(directory)
+            bundle, candidate = self.prepare(root)
+            self.assertIsNotNone(sync.load_search_numerical_replay(root, bundle, sync.Sources(root)))
+            candidate.write_text('changed bytes')
+            with self.assertRaisesRegex(ValueError, 'source changed'):
+                sync.load_search_numerical_replay(root, bundle, sync.Sources(root))
+
+    def test_pass_badge_cannot_override_wrong_truth_denominator(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-replay-publication-') as directory:
+            root = Path(directory)
+            bundle, _ = self.prepare(root, wrong_truth_count=True)
+            with self.assertRaisesRegex(ValueError, 'independent full-test proof'):
+                sync.load_search_numerical_replay(root, bundle, sync.Sources(root))
+
+    def test_neutral_only_reference_cannot_pass_publication(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-replay-publication-') as directory:
+            root = Path(directory)
+            bundle, _ = self.prepare(root)
+            profile = root / 'profile.json'
+            data = json.loads(profile.read_text());data['nonzero_profile_requests'] = 0
+            profile.write_text(json.dumps(data))
+            release = root / 'release.json'
+            evidence = json.loads(release.read_text())
+            evidence['sources']['profile_input_verification']['sha256'] = sync.sha256(profile)
+            release.write_text(json.dumps(evidence))
+            bundle['evaluation']['numerical_replay']['sha256'] = sync.sha256(release)
+            bundle['assets']['release.json'] = sync.sha256(release)
+            with self.assertRaisesRegex(ValueError, 'neutral-only profile reference'):
+                sync.load_search_numerical_replay(root, bundle, sync.Sources(root))
+
+
+    def test_profile_proof_from_another_request_context_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-replay-publication-') as directory:
+            root = Path(directory)
+            bundle, _ = self.prepare(root)
+            profile = root / 'profile.json'
+            data = json.loads(profile.read_text())
+            data['inputs_sha256'][str((root / 'context.json').resolve())] = '0' * 64
+            profile.write_text(json.dumps(data))
+            release = root / 'release.json'
+            evidence = json.loads(release.read_text())
+            evidence['sources']['profile_input_verification']['sha256'] = sync.sha256(profile)
+            release.write_text(json.dumps(evidence))
+            bundle['evaluation']['numerical_replay']['sha256'] = sync.sha256(release)
+            bundle['assets']['release.json'] = sync.sha256(release)
+            with self.assertRaisesRegex(ValueError, 'current test phase and request context'):
+                sync.load_search_numerical_replay(root, bundle, sync.Sources(root))
 
 
 if __name__ == "__main__":

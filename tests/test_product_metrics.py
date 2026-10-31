@@ -38,8 +38,9 @@ class ProductMetricsTests(unittest.TestCase):
 
     def test_response_mutation_does_not_change_later_requests(self):
         first = load_metrics_snapshot("rec", "hard")
-        first["recall"]["test"]["Recall@500"] = .99
-        self.assertLess(load_metrics_snapshot("rec", "hard")["recall"]["test"]["Recall@500"], .03)
+        expected = first["recall"]["test"]["Recall@500"]
+        first["recall"]["test"]["Recall@500"] = -1.0
+        self.assertEqual(load_metrics_snapshot("rec", "hard")["recall"]["test"]["Recall@500"], expected)
 
     def test_readme_values_match_shared_snapshot(self):
         for filename in ("README.md", "README_EN.md"):
@@ -47,7 +48,7 @@ class ProductMetricsTests(unittest.TestCase):
             for scene in ("search", "rec"):
                 snapshot = load_metrics_snapshot(scene, "hard")
                 for area in (snapshot["recall"]["test"], snapshot["ranking"]["ranking"]["test"]):
-                    keys = ("HitRate@500", "Recall@500", "MRR@100") if "HitRate@500" in area else ("NDCG@10", "AUC", "GAUC")
+                    keys = (("HitRate@10", "Recall@100", "MRR@100") if scene == "search" else ("HitRate@50", "Recall@100")) if "HitRate@500" in area else ("NDCG@10", "AUC", "GAUC")
                     for key in keys:
                         self.assertIn(f"{key} = {area[key]:.4f}", text)
 
