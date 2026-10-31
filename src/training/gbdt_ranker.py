@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 import joblib
+import json
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -266,6 +267,12 @@ def _prepare_training_frame(df: pd.DataFrame, scene: str) -> pd.DataFrame:
             df["first_route"].astype(str).str.lower().map(route_id_map).fillna(0).astype(np.int16)
         )
 
+    df = df.copy()
+    labels = pd.to_numeric(df["y_multi"], errors="coerce").to_numpy(dtype=float)
+    invalid = ~np.isfinite(labels)
+    if invalid.any():
+        labels[invalid] = df.loc[invalid, "click"].to_numpy(dtype=float)
+        df["y_multi"] = labels
     before_groups = int(df[group_key].nunique())
     # 向量化过滤：避免 groupby().filter(lambda) 的逐组 Python 调用
     g = df.groupby(group_key, sort=False)
@@ -274,10 +281,10 @@ def _prepare_training_frame(df: pd.DataFrame, scene: str) -> pd.DataFrame:
     after_groups = int(df[group_key].nunique())
 
     # 降精度降低训练峰值内存
-    float_cols = df.select_dtypes(include=["float64"]).columns.tolist()
+    float_cols = [c for c in df.select_dtypes(include=["float64"]).columns if c != "event_timestamp"]
     if float_cols:
         df[float_cols] = df[float_cols].astype(np.float32)
-    int_cols = [c for c in df.select_dtypes(include=["int64"]).columns.tolist() if c not in {group_key, "note_idx", "user_idx"}]
+    int_cols = [c for c in df.select_dtypes(include=["int64"]).columns.tolist() if c not in {group_key, "note_idx", "user_idx", "event_timestamp"}]
     if int_cols:
         df[int_cols] = df[int_cols].astype(np.int32)
 
@@ -337,6 +344,128 @@ def _build_preranking_scored_frame(
     return out
 
 
+STACK_CONTRACT = "forward_coarse_v1"
+
+
+def _filter_before_official_test(frame, scene):
+    """Use complete original request intervals, not candidate-filtered timestamps."""
+    key = _group_key(scene)
+    folder = "search" if scene == "search" else "recommendation"
+    details = "search_result_details_with_idx" if scene == "search" else "rec_result_details_with_idx"
+    time_key = "search_timestamp" if scene == "search" else "request_timestamp"
+    source = BASE_DIR / "datasets" / f"{folder}_test" / "train-00000-of-00001.parquet"
+    raw = pd.read_parquet(source, columns=[details])
+    cutoff = min(float(item[time_key]) for items in raw[details] for item in items)
+    timeline = pd.read_parquet(FEATURE_DIR / f"{scene}_train_features.parquet", columns=[key, "event_timestamp"])
+    times = pd.to_numeric(timeline.event_timestamp, errors="coerce")
+    if not np.isfinite(times.to_numpy(dtype=float)).all():
+        raise ValueError("Complete original event timestamps required for the official test cutoff")
+    maxima = timeline.assign(event_timestamp=times).groupby(key).event_timestamp.max()
+    ids = maxima.index[maxima < cutoff]
+    safe = frame[frame[key].isin(ids)].copy().reset_index(drop=True)
+    print(f"[Official cutoff] {cutoff}: retained {len(safe)}/{len(frame)} candidate exposures")
+    return safe
+
+
+def _fit_predict_coarse_fold(past, future, features, group_key):
+    """Inner early stopping sees only history before the OOF prediction block."""
+    if past[group_key].nunique() < 2:
+        train = past
+        validation = None
+    else:
+        tr, va = _group_val_split(past, group_key)
+        train, validation = past.iloc[tr], past.iloc[va]
+    continuous = train.y_multi.to_numpy(dtype=float)
+    positive = continuous[continuous > 0]
+    thresholds = np.unique(np.quantile(positive, np.linspace(0, 1, 6))) if len(positive) else np.array([])
+    def relevance(data):
+        values = data.y_multi.to_numpy(dtype=float)
+        labels = np.zeros(len(values), dtype=np.int32)
+        labels[values > 0] = np.digitize(values[values > 0], thresholds[1:-1]) + 1
+        return labels
+    x, y, groups, _ = sort_by_group(train[features], relevance(train), train[group_key].to_numpy())
+    dataset = lgb.Dataset(x, y, group=build_group_sizes(groups))
+    parameters = {**lgb_params, "num_threads": 2}
+    callbacks = []
+    datasets = None
+    val_x = val_y = val_groups = None
+    if validation is not None:
+        val_x, val_y, val_groups, _ = sort_by_group(validation[features], relevance(validation), validation[group_key].to_numpy())
+        datasets = [lgb.Dataset(val_x, val_y, group=build_group_sizes(val_groups), reference=dataset)]
+        callbacks = [lgb.early_stopping(EARLY_STOP, verbose=False)]
+    tree = lgb.train(parameters, dataset, num_boost_round=min(200, NUM_BOOST_ROUND), valid_sets=datasets, callbacks=callbacks)
+    first = np.asarray(tree.predict(future[features]), dtype=np.float32)
+    train_matrix = xgb.DMatrix(x.to_numpy(), label=y)
+    train_matrix.set_group(build_group_sizes(groups))
+    xgb_options = {}
+    if validation is not None:
+        matrix = xgb.DMatrix(val_x.to_numpy(), label=val_y)
+        matrix.set_group(build_group_sizes(val_groups))
+        xgb_options = {"evals": [(matrix, "inner_validation")], "early_stopping_rounds": EARLY_STOP}
+    booster = xgb.train({**xgb_params, "nthread": 2}, train_matrix, num_boost_round=min(200, NUM_BOOST_ROUND), verbose_eval=False, **xgb_options)
+    best = getattr(booster, "best_iteration", None)
+    options = {"iteration_range": (0, int(best)+1)} if best is not None else {}
+    second = np.asarray(booster.predict(xgb.DMatrix(future[features].to_numpy()), **options), dtype=np.float32)
+    return first, second
+
+
+def build_forward_stacking_frame(frame, group_key, features, fit_indices, validation_indices,
+                                 validation_lgb, validation_xgb, *, fit_predict=None, n_blocks=4):
+    """Every fine-training score is predicted by a strictly earlier coarse model."""
+    from training.rank_stack import forward_blocks
+    fit_predict = fit_predict or _fit_predict_coarse_fold
+    work = frame.copy()
+    fit_indices = np.asarray(fit_indices, dtype=np.int64)
+    validation_indices = np.asarray(validation_indices, dtype=np.int64)
+    if np.intersect1d(fit_indices, validation_indices).size:
+        raise ValueError("Coarse fit and validation rows overlap")
+    fit = work.iloc[fit_indices].reset_index(drop=True)
+    validation = work.iloc[validation_indices]
+    if set(fit[group_key]) & set(validation[group_key]):
+        raise ValueError("Coarse fit and validation request IDs overlap")
+    if fit.event_timestamp.max() >= validation.event_timestamp.min():
+        raise ValueError("Coarse fit must be strictly before validation")
+    lgb_scores = np.full(len(work), np.nan, dtype=np.float32)
+    xgb_scores = np.full(len(work), np.nan, dtype=np.float32)
+    fit_end = np.full(len(work), np.nan, dtype=float)
+    partition = np.full(len(work), "warmup", dtype=object)
+    audits = []
+    for past_indices, future_indices in forward_blocks(fit, group_key, n_blocks):
+        past = fit.iloc[past_indices]
+        future = fit.iloc[future_indices]
+        first, second = fit_predict(past, future, features, group_key)
+        if len(first) != len(future) or len(second) != len(future):
+            raise ValueError("OOF model prediction rows changed")
+        if not np.isfinite(first).all() or not np.isfinite(second).all():
+            raise ValueError("Nonfinite OOF predictions cannot become partial training requests")
+        source_rows = fit_indices[future_indices]
+        lgb_scores[source_rows] = first
+        xgb_scores[source_rows] = second
+        fit_end[source_rows] = float(past.event_timestamp.max())
+        partition[source_rows] = "fit"
+        audits.append({"fit_requests": int(past[group_key].nunique()), "prediction_requests": int(future[group_key].nunique()),
+                       "fit_end": float(past.event_timestamp.max()), "prediction_start": float(future.event_timestamp.min())})
+    if len(validation_lgb) != len(validation) or len(validation_xgb) != len(validation):
+        raise ValueError("Coarse validation prediction rows changed")
+    if not np.isfinite(validation_lgb).all() or not np.isfinite(validation_xgb).all():
+        raise ValueError("Nonfinite coarse validation predictions")
+    lgb_scores[validation_indices] = validation_lgb
+    xgb_scores[validation_indices] = validation_xgb
+    fit_end[validation_indices] = float(fit.event_timestamp.max())
+    partition[validation_indices] = "validation"
+    keep = np.isfinite(lgb_scores) & np.isfinite(xgb_scores) & np.isfinite(fit_end)
+    if not np.any(partition[keep] == "fit") or not np.any(partition[keep] == "validation"):
+        raise ValueError("No forward-OOF fine training/validation rows remain")
+    work["stack_partition"] = partition
+    work["stack_contract"] = STACK_CONTRACT
+    work["coarse_fit_end"] = fit_end
+    selected = work.iloc[np.flatnonzero(keep)].copy()
+    if not (selected.coarse_fit_end.to_numpy() < selected.event_timestamp.to_numpy()).all():
+        raise ValueError("A coarse prediction used future or in-sample events")
+    scored = _build_preranking_scored_frame(selected, group_key, lgb_scores[keep], xgb_scores[keep])
+    return scored, audits, lgb_scores, xgb_scores
+
+
 def _group_val_split(df: pd.DataFrame, group_key: str, valid_ratio: float = VALID_RATIO) -> tuple[np.ndarray, np.ndarray]:
     return split_groups_temporally(df, group_key, valid_ratio)
 
@@ -350,6 +479,14 @@ def _export_dien_dataset(
     keep_positive: bool,
 ) -> tuple[Path, Path]:
     out = preranking_scored.copy()
+    required = {"stack_partition", "stack_contract", "coarse_fit_end", "event_timestamp"}
+    if not required.issubset(out) or not (out.stack_contract == STACK_CONTRACT).all():
+        raise ValueError("DIEN export requires causal forward stack lineage")
+    if (not out.stack_partition.isin(["fit", "validation"]).all()
+            or not np.isfinite(out[["coarse_fit_end", "event_timestamp"]].to_numpy()).all()
+            or not (out.coarse_fit_end < out.event_timestamp).all()
+            or (out.groupby(group_key).stack_partition.nunique() > 1).any()):
+        raise ValueError("DIEN export contains invalid coarse training chronology")
 
     # 导出粗排全量打分结果，供 hard neg 挖掘（preranking 淘汰集合）
     full_cols = [
@@ -360,7 +497,7 @@ def _export_dien_dataset(
         "preranking_score",
         "preranking_rank",
         "lgb_score",
-        "xgb_score",
+        "xgb_score", "stack_partition", "stack_contract", "coarse_fit_end", "event_timestamp",
     ]
     full_cols = [c for c in full_cols if c in out.columns]
     tag_suffix = f"_{output_tag}" if output_tag else ""
@@ -371,10 +508,17 @@ def _export_dien_dataset(
     if topn > 0:
         mask = out["preranking_rank"] <= topn
         if keep_positive and "click" in out.columns:
-            mask = mask | (out["click"] > 0)
+            # Positive preservation is training-only; validation candidates are never label-injected.
+            if "stack_partition" not in out:
+                raise ValueError("DIEN export requires explicit forward stack partitions")
+            mask = mask | ((out["click"] > 0) & (out["stack_partition"] == "fit"))
         out = out[mask].copy()
 
-    out = out.groupby(group_key).filter(lambda x: len(x) > 1 and float(x["y_multi"].max()) > 0.0).reset_index(drop=True)
+    if "stack_partition" not in out:
+        raise ValueError("DIEN export requires explicit forward stack partitions")
+    eligible = out.groupby(group_key)["y_multi"].transform("max") > 0
+    eligible &= out.groupby(group_key)[group_key].transform("size") > 1
+    out = out[eligible | (out["stack_partition"] == "validation")].reset_index(drop=True)
     out_path = OUT_DATA_DIR / f"dien_{scene}{tag_suffix}_train_from_gbdt_top{topn}.parquet"
     out.to_parquet(out_path, index=False)
     print(f"[Export] DIEN train set: {out_path}, shape={out.shape}")
@@ -411,6 +555,13 @@ def _export_easy_preranking_complement_hard_neg(
         return None
 
     cand = cand.drop_duplicates(subset=[group_key, "note_idx"]).copy()
+    if "stack_partition" not in preranking_scored:
+        raise ValueError("Hard-negative export requires forward stack partitions")
+    fitting = preranking_scored[preranking_scored.stack_partition == "fit"]
+    cand = cand[cand[group_key].isin(fitting[group_key])]
+    positives = fitting.loc[fitting.click > 0, [group_key, "note_idx"]].drop_duplicates()
+    cand = cand.merge(positives.assign(_known_positive=True), on=[group_key, "note_idx"], how="left")
+    cand = cand[cand._known_positive.isna()].drop(columns=["_known_positive"])
     if "rank" in cand.columns and hard_neg_input_topn > 0:
         cand = cand[cand["rank"] <= hard_neg_input_topn].copy()
     if len(cand) == 0:
@@ -479,6 +630,7 @@ def main(
         train_candidate_topn=train_candidate_topn,
     )
 
+    df = _filter_before_official_test(df, scene)
     df = _prepare_training_frame(df, scene)
     if train_max_neg_per_req > 0:
         before_rows = len(df)
@@ -522,7 +674,6 @@ def main(
     # LightGBM
     # =============================
     print(f"\n[Train] LightGBM LambdaRank ({scene})")
-    oof_lgb = np.zeros(len(df), dtype=np.float32)
 
     X_tr, y_tr, g_tr = X.iloc[tr_idx], y_disc[tr_idx], group[tr_idx]
     X_val, y_val, g_val = X.iloc[val_idx], y_disc[val_idx], group[val_idx]
@@ -555,7 +706,6 @@ def main(
 
     lgb_val_pred = lgb_model.predict(X_val, num_iteration=lgb_model.best_iteration)
     lgb_val_pred = unsort(lgb_val_pred, order_val)
-    oof_lgb[val_idx] = lgb_val_pred
 
     g_val_raw = unsort(g_val, order_val)
     lgb_nd10 = eval_ndcg_by_group(y_disc[val_idx], lgb_val_pred, g_val_raw, 10)
@@ -564,13 +714,12 @@ def main(
     joblib.dump(lgb_model, OUT_DIR / f"models/lgb_{scene}{tag_suffix}.pkl")
     print(f"[LGB Val] NDCG@10={lgb_nd10:.4f} NDCG@100={lgb_nd100:.4f}")
 
-    np.save(OUT_DIR / f"results/lgb_{scene}{tag_suffix}.npy", oof_lgb)
+    # Complete forward OOF predictions are saved after both coarse models finish.
 
     # =============================
     # XGBoost
     # =============================
     print(f"\n[Train] XGBoost Rank ({scene})")
-    oof_xgb = np.zeros(len(df), dtype=np.float32)
 
     dtr = xgb.DMatrix(X_tr.to_numpy(), label=y_tr)
     dva = xgb.DMatrix(X_val.to_numpy(), label=y_val)
@@ -616,7 +765,6 @@ def main(
     else:
         xgb_val_pred = xgb_model.predict(dva, iteration_range=(0, int(best_iter) + 1))
     xgb_val_pred = unsort(xgb_val_pred, order_val)
-    oof_xgb[val_idx] = xgb_val_pred
 
     xgb_nd10 = eval_ndcg_by_group(y_disc[val_idx], xgb_val_pred, g_val_raw, 10)
     xgb_nd100 = eval_ndcg_by_group(y_disc[val_idx], xgb_val_pred, g_val_raw, 100)
@@ -624,7 +772,7 @@ def main(
     joblib.dump(xgb_model, OUT_DIR / f"models/xgb_{scene}{tag_suffix}.pkl")
     print(f"[XGB Val] NDCG@10={xgb_nd10:.4f} NDCG@100={xgb_nd100:.4f}")
 
-    np.save(OUT_DIR / f"results/xgb_{scene}{tag_suffix}.npy", oof_xgb)
+    # Do not export validation-only zero-filled arrays as OOF training scores.
 
     # =============================
     # Summary & Export
@@ -639,27 +787,19 @@ def main(
 
     writer.close()
 
-    lgb_iter_for_pred = getattr(lgb_model, "best_iteration", None)
-    if lgb_iter_for_pred is None or int(lgb_iter_for_pred) <= 0:
-        full_lgb_pred = np.asarray(lgb_model.predict(X), dtype=np.float32)
-    else:
-        full_lgb_pred = np.asarray(lgb_model.predict(X, num_iteration=int(lgb_iter_for_pred)), dtype=np.float32)
-
-    xgb_dall = xgb.DMatrix(X.to_numpy())
-    if best_iter is None or int(best_iter) < 0:
-        full_xgb_pred = np.asarray(xgb_model.predict(xgb_dall), dtype=np.float32)
-    else:
-        full_xgb_pred = np.asarray(xgb_model.predict(xgb_dall, iteration_range=(0, int(best_iter) + 1)), dtype=np.float32)
-
-    del dtr, dva, xgb_dall, X_tr, X_val, y_tr, y_val, g_tr, g_val
-    gc.collect()
-
-    preranking_scored = _build_preranking_scored_frame(
-        df=df,
-        group_key=group_key,
-        oof_lgb=full_lgb_pred,
-        oof_xgb=full_xgb_pred,
+    preranking_scored, folds, forward_lgb, forward_xgb = build_forward_stacking_frame(
+        df, group_key, feature_cols, tr_idx, val_idx, lgb_val_pred, xgb_val_pred,
     )
+    np.save(OUT_DIR / f"results/lgb_{scene}{tag_suffix}.npy", forward_lgb)
+    np.save(OUT_DIR / f"results/xgb_{scene}{tag_suffix}.npy", forward_xgb)
+    (OUT_DIR / f"results/stack_{scene}{tag_suffix}.json").write_text(json.dumps({
+        "contract": STACK_CONTRACT, "forward_folds": folds, "warmup_rows_excluded": int(np.isnan(forward_lgb).sum()),
+        "fit_rows": int((preranking_scored.stack_partition == "fit").sum()),
+        "validation_rows": int((preranking_scored.stack_partition == "validation").sum()),
+        "legacy_full_fit_predictions_exported": False,
+    }, indent=2)+"\n")
+    del dtr, dva, X_tr, X_val, y_tr, y_val, g_tr, g_val
+    gc.collect()
 
     if not skip_export_dien:
         _export_dien_dataset(

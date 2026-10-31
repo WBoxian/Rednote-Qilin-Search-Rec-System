@@ -28,7 +28,7 @@ from pathlib import Path
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, ndcg_score
 try:
     from .utils import *
 except ImportError:
@@ -232,6 +232,55 @@ def _fit_apply_zscore_by_train(
 
 def _group_val_split(df: pd.DataFrame, group_key: str, valid_ratio: float = VALID_RATIO) -> tuple[np.ndarray, np.ndarray]:
     return split_groups_temporally(df, group_key, valid_ratio)
+
+
+def _stack_train_validation_split(frame, group_key, *, require_partition=True):
+    """Reuse upstream held-out requests; never independently re-split an OOF stack."""
+    if "stack_partition" not in frame:
+        if require_partition:
+            raise ValueError("Missing forward stack partitions; rebuild the GBDT export before DIEN training")
+        print("[Legacy export] Coarse-score lineage UNKNOWN; temporal groups used only for checkpoint export")
+        return _group_val_split(frame, group_key)
+    required = {"stack_contract", "coarse_fit_end", "event_timestamp"}
+    if not required.issubset(frame):
+        raise ValueError(f"Missing stack lineage fields: {sorted(required-set(frame))}")
+    if not frame.stack_partition.isin(["fit", "validation"]).all() or not (frame.stack_contract == "forward_coarse_v1").all():
+        raise ValueError("Unsupported forward stack contract or partition")
+    if (frame.groupby(group_key).stack_partition.nunique() > 1).any():
+        raise ValueError("A request crosses coarse stack partitions")
+    prediction_time = pd.to_numeric(frame.event_timestamp, errors="coerce").to_numpy(dtype=float)
+    fit_end = pd.to_numeric(frame.coarse_fit_end, errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(prediction_time).all() or not np.isfinite(fit_end).all() or not (fit_end < prediction_time).all():
+        raise ValueError("Coarse scores contain in-sample or future-trained predictions")
+    fit = np.flatnonzero((frame.stack_partition == "fit").to_numpy())
+    validation = np.flatnonzero((frame.stack_partition == "validation").to_numpy())
+    if not len(fit) or not len(validation):
+        raise ValueError("Forward stack requires nonempty fit and validation partitions")
+    if frame.iloc[fit].event_timestamp.max() >= frame.iloc[validation].event_timestamp.min():
+        raise ValueError("Forward fine fit must precede its inherited validation partition")
+    return fit, validation
+
+
+def _eligible_stack_groups(frame, group_key):
+    eligible = frame.groupby(group_key)[group_key].transform("size") > 1
+    eligible &= frame.groupby(group_key).y_multi.transform("max") > 0
+    if "stack_partition" in frame:
+        # No-positive and single-candidate validation requests still count as requests.
+        eligible |= frame.stack_partition == "validation"
+    return frame.loc[eligible].reset_index(drop=True)
+
+
+def _all_request_ndcg(labels, scores, groups, k):
+    values = []
+    labels = np.asarray(labels, dtype=float)
+    scores = np.asarray(scores, dtype=float)
+    for group in np.unique(groups):
+        indices = np.flatnonzero(groups == group)
+        if len(indices) == 1:
+            values.append(float(labels[indices[0]] > 0))
+        else:
+            values.append(float(ndcg_score(labels[indices][None, :], scores[indices][None, :], k=k)))
+    return float(np.mean(values)) if values else 0.0
 
 
 # =============================
@@ -678,7 +727,7 @@ def train_fold(
             cur_val_p = np.concatenate(all_val_p)
             val_y = np.concatenate(all_val_y)
             val_g = np.concatenate(all_val_g)
-            val_ndcg = eval_ndcg_by_group(val_y, cur_val_p, val_g, TOPK)
+            val_ndcg = _all_request_ndcg((val_y > 0).astype(float), cur_val_p, val_g, TOPK)
             sch.step(val_ndcg)
         current_lr = opt.param_groups[0]['lr']
         
@@ -795,7 +844,7 @@ def _choose_fused_scores(
         return np.asarray(raw_dien_scores, dtype=np.float32), 1.0, 0.0
     groups = val_df[group_key].to_numpy()
     y = pd.to_numeric(val_df["y_multi"], errors="coerce").fillna(0.0).to_numpy(np.float32)
-    y_disc = discretize_relevance(y)
+    y_disc = (y > 0).astype(float)
     pre = pd.to_numeric(val_df["preranking_score"], errors="coerce").fillna(0.0).to_numpy(np.float32)
     pre_norm = _groupwise_minmax_score(pre, groups)
     dien_norm = _groupwise_minmax_score(np.asarray(raw_dien_scores, dtype=np.float32), groups)
@@ -806,7 +855,7 @@ def _choose_fused_scores(
     best_fused = dien_norm.copy()
     for w in np.linspace(0.0, 1.0, 21, dtype=np.float32):
         fused = (1.0 - float(w)) * pre_norm + float(w) * dien_norm
-        ndcg = float(eval_ndcg_by_group(y_disc, fused, groups, TOPK))
+        ndcg = _all_request_ndcg(y_disc, fused, groups, TOPK)
         auc = float(_binary_auc_local((y > 0).astype(np.int8), fused)) if len(np.unique((y > 0).astype(np.int8))) > 1 else 0.5
         if (ndcg > best_score + 1e-9) or (abs(ndcg - best_score) <= 1e-9 and auc > best_auc):
             best_w = float(w)
@@ -882,6 +931,7 @@ def main(
             output_tag = "hard"
 
     raw_df = pd.read_parquet(train_path)
+    _stack_train_validation_split(raw_df, group_key, require_partition=not export_only)
     df = raw_df.copy()
     num_feats = select_ranking_features(raw_df, stage="dien")
     raw_df[num_feats] = raw_df[num_feats].fillna(0.0).replace([np.inf, -np.inf], 0.0)
@@ -890,13 +940,13 @@ def main(
     train_mode = output_tag if output_tag in {"easy", "hard"} else "easy"
     if train_max_neg_per_req > 0:
         before_rows = len(df)
-        df = _downsample_negatives_for_dien(
-            df=df,
-            group_key=group_key,
-            max_neg_per_req=train_max_neg_per_req,
-            head_neg_keep=train_head_neg_keep,
-            mode=train_mode,
+        training_rows = df[df.stack_partition == "fit"] if "stack_partition" in df else df
+        sampled = _downsample_negatives_for_dien(
+            df=training_rows, group_key=group_key, max_neg_per_req=train_max_neg_per_req,
+            head_neg_keep=train_head_neg_keep, mode=train_mode,
         )
+        df = (pd.concat([sampled, df[df.stack_partition == "validation"]], ignore_index=True)
+              if "stack_partition" in df else sampled)
         print(
             f"[Train Sampling] max_neg_per_req={train_max_neg_per_req}, "
             f"head_neg_keep={train_head_neg_keep}, mode={train_mode}, rows: {before_rows} -> {len(df)}"
@@ -908,12 +958,12 @@ def main(
 
     before_groups = int(df[group_key].nunique())
     # 仅保留有效训练组：组内至少2条样本且存在正反馈
-    df = df.groupby(group_key).filter(lambda x: len(x) > 1 and float(x["y_multi"].max()) > 0.0).reset_index(drop=True)
+    df = _eligible_stack_groups(df, group_key)
     after_groups = int(df[group_key].nunique())
     print(f"[Group Filter] groups: {before_groups} -> {after_groups}, rows={len(df)}")
     if len(df) == 0:
         raise ValueError("No training rows left after group filtering.")
-    eval_df = raw_df.groupby(group_key).filter(lambda x: len(x) > 1 and float(x["y_multi"].max()) > 0.0).reset_index(drop=True)
+    eval_df = _eligible_stack_groups(raw_df, group_key)
     if len(eval_df) == 0:
         raise ValueError("No evaluation rows left after group filtering.")
     oof_dien = np.zeros(len(df), dtype=np.float32)
@@ -946,7 +996,7 @@ def main(
         _tmp_model = DIENRanker(scene=scene, num_feats=num_feats).to(DEVICE)
         _tmp_model.load_state_dict(_state)
         full_raw_scores = _score_frame(_tmp_model, eval_df, stores, num_feats, scene, group_key)
-        val_groups = set(df.iloc[_group_val_split(df=df, group_key=group_key, valid_ratio=VALID_RATIO)[1]][group_key].astype(int).tolist())
+        val_groups = set(df.iloc[_stack_train_validation_split(df, group_key, require_partition=False)[1]][group_key].astype(int).tolist())
         val_eval = eval_df[eval_df[group_key].isin(val_groups)].copy()
         val_raw = full_raw_scores[eval_df[group_key].isin(val_groups).to_numpy()]
         _fused_val, best_w, best_ndcg = _choose_fused_scores(val_eval, val_raw, group_key)
@@ -966,8 +1016,8 @@ def main(
     log_dir = LOG_DIR / f"dien_{scene}{tag_suffix}_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     writer = SummaryWriter(log_dir=str(log_dir))
 
-    tr_idx, val_idx = _group_val_split(df=df, group_key=group_key, valid_ratio=VALID_RATIO)
-    print(f"[Split] val by group: train={len(tr_idx)}, valid={len(val_idx)}, valid_ratio={VALID_RATIO}")
+    tr_idx, val_idx = _stack_train_validation_split(df, group_key)
+    print(f"[Split] inherited coarse heldout groups: train={len(tr_idx)}, valid={len(val_idx)}, valid_ratio={VALID_RATIO}")
 
     tr_fold_df = df.iloc[tr_idx].copy()
     val_fold_df = df.iloc[val_idx].copy()
