@@ -256,7 +256,10 @@ class AppContext:
 			for scene in ["search", "rec"]:
 				try:
 					use_tag = self.resolve_scene_tag(scene=scene)
-					row = self.get_runtime(use_tag).get_pipeline(scene).state.build_user_validation_example(uid)
+					state = self.get_runtime(use_tag).get_pipeline(scene).state
+					if getattr(state, "bundle_active", False):
+						continue
+					row = state.build_user_validation_example(uid)
 					self.set_cached_user_validation_example(scene=scene, tag=use_tag, user_idx=uid, example=row)
 				except Exception:
 					continue
@@ -348,6 +351,29 @@ class AppContext:
 		example_limit: int,
 		user_idx: int | None,
 	) -> tuple[dict[str, Any], bool]:
+		state = self.get_runtime(tag).get_pipeline(scene).state
+		if getattr(state, "bundle_active", False):
+			from backend.online.bundle import resolve_asset, verify_asset
+			bundle = state.bundle
+			diagnostic = bundle.manifest.get("evaluation", {}).get("validation_snapshot")
+			if not diagnostic:
+				raise FileNotFoundError("Versioned examples unavailable for the active model bundle")
+			path = resolve_asset(bundle.root, diagnostic["path"])
+			if not path.is_file():
+				raise FileNotFoundError("Versioned example snapshot is unavailable")
+			verify_asset(path, diagnostic["sha256"])
+			key = (str(tag), str(scene), bundle.bundle_id)
+			with self._cache_lock:
+				cached = self._validation_cache.get(key)
+				if cached is not None:
+					return deepcopy(cached[1]), True
+			payload = self._load_json_snapshot(path)
+			if not payload or payload.get("scene") != scene or payload.get("tag") != tag or payload.get("split") != "test" or payload.get("scope") != "frozen_full_test_examples":
+				raise ValueError("Versioned example snapshot has an incompatible scene/split/scope")
+			payload.update(model_bundle_id=bundle.bundle_id, bound_to_active_bundle=True)
+			with self._cache_lock:
+				self._validation_cache[key] = (time.time(), deepcopy(payload))
+			return payload, False
 		key = (str(tag), str(scene), int(max_groups), int(example_limit))
 		now = time.time()
 		with self._cache_lock:
@@ -401,6 +427,8 @@ def _json_safe(value: Any) -> Any:
 
 
 def _personalize_validation(validation: dict[str, Any], context_user_idx: int | None) -> dict[str, Any]:
+	if validation.get("bound_to_active_bundle"):
+		return validation
 	if context_user_idx is None:
 		return validation
 	try:
@@ -440,6 +468,8 @@ def _ensure_current_user_example(
 	max_groups: int,
 	example_limit: int,
 ) -> dict[str, Any]:
+	if validation.get("bound_to_active_bundle"):
+		return validation
 	if context_user_idx is None:
 		return validation
 	uid = int(context_user_idx)
@@ -919,6 +949,7 @@ def create_app(
 		max_groups: int = Query(800),
 		example_limit: int = Query(5),
 		user_idx: int | None = Query(None),
+		bundle_id: str = "",
 	):
 		try:
 			t0 = time.perf_counter()
@@ -930,6 +961,8 @@ def create_app(
 				example_limit=max(0, _safe_int(example_limit, 5)),
 				user_idx=(_safe_int(user_idx) if user_idx is not None else None),
 			)
+			if bundle_id and bundle_id != obj.get("model_bundle_id"):
+				raise HTTPException(status_code=409, detail="The requested diagnostic model bundle is no longer active")
 			obj = _personalize_validation(
 				obj,
 				context_user_idx=(_safe_int(user_idx) if user_idx is not None else None),
@@ -956,10 +989,55 @@ def create_app(
 				"cache_hit": bool(hit),
 				"latency_ms": float((time.perf_counter() - t0) * 1000.0),
 			}
+		except HTTPException:
+			raise
+		except FileNotFoundError as e:
+			raise HTTPException(status_code=503, detail=str(e)) from e
 		except ValueError as e:
 			raise HTTPException(status_code=400, detail=str(e)) from e
 		except Exception as e:
 			raise HTTPException(status_code=500, detail=str(e)) from e
+
+	@app.get("/api/validation/note")
+	def validation_note(scene: str = Query("search"), tag: str = Query(""),
+		request_id: int = Query(...), note_idx: int = Query(...), bundle_id: str = ""):
+		try:
+			use_tag = _resolve_tag(scene=scene, explicit_tag=tag)
+			payload, _ = app.state.ctx.get_validation_cached(scene, use_tag, 800, 5, None)
+			if bundle_id and bundle_id != payload.get("model_bundle_id"):
+				raise HTTPException(status_code=409, detail="The requested diagnostic model bundle is no longer active")
+			if not payload.get("bound_to_active_bundle"):
+				raise FileNotFoundError("Versioned diagnostic note unavailable")
+			example = next((row for row in payload.get("examples", []) if _safe_int(row.get("request_id"), -1) == int(request_id)), None)
+			if example is None:
+				raise KeyError("Request is absent from this model's frozen examples")
+			allowed = set()
+			for stage in ("true", "dssm", "preranking", "ranking"):
+				allowed.update(_safe_int(value, -1) for value in example.get(f"{stage}_top10_ids", []))
+				allowed.update(_safe_int(row.get("note_idx"), -1) for row in example.get(f"{stage}_top10", []))
+			allowed.update(_safe_int(row.get("note_idx"), -1) for row in example.get("source_recent_behaviors", []))
+			if int(note_idx) < 0 or int(note_idx) not in allowed:
+				raise KeyError("Note is absent from this request's frozen examples/history")
+			notes = payload.get("notes", [])
+			note = notes.get(str(note_idx)) if isinstance(notes, dict) else next((row for row in notes if _safe_int(row.get("note_idx"), -1) == int(note_idx)), None)
+			if note is None:
+				raise KeyError("Note metadata is unavailable in this frozen snapshot")
+			images = note.get("images", note.get("image_path", []))
+			images = images if isinstance(images, list) else []
+			detail = {"scene": scene, "request_id": int(request_id), "note_idx": int(note_idx),
+				"model_bundle_id": payload["model_bundle_id"], "scope": payload["scope"],
+				"score_scope": "frozen_snapshot_metadata_only", "labels": {"click": None, "y_multi": None},
+				"title": note.get("title", note.get("note_title", "")),
+				"content": note.get("content", note.get("note_content", "")),
+				"images": images, "cover_image": note.get("cover_image", images[0] if images else ""),
+				**{name: _safe_int(note.get(name), 0) for name in ("accum_like_num", "accum_collect_num", "accum_comment_num")}}
+			return {"ok": True, "scene": scene, "tag": use_tag, "detail": detail}
+		except FileNotFoundError as error:
+			raise HTTPException(status_code=503, detail=str(error)) from error
+		except KeyError as error:
+			raise HTTPException(status_code=404, detail=str(error)) from error
+		except ValueError as error:
+			raise HTTPException(status_code=400, detail=str(error)) from error
 
 	@app.get("/image/{image_path:path}")
 	def image(image_path: str):

@@ -38,6 +38,15 @@ class BundleRecallTests(unittest.TestCase):
         bundle.bm25_candidates.assert_called_once_with("current query", 1000)
         bundle.cf_candidates.assert_not_called()
 
+    def test_zero_weight_ann_route_cannot_append_ann_only_items(self):
+        context = pd.DataFrame({"search_idx": [123], "user_idx": [7], "query": ["q"], "recent_clicked_note_idxs": [[]]})
+        tower = SimpleNamespace(fetch_candidates=Mock(return_value=pd.DataFrame({"note_idx": [999], "score_ann": [.9]})))
+        bundle = SimpleNamespace(bundle_id="frozen", manifest={"recall_policy": {
+            "strategy": "weighted_rrf", "weights": {"ann": 0., "bm25": 1.}}},
+            bm25_candidates=Mock(return_value=pd.DataFrame({"note_idx": [11], "score": [1.]})))
+        result = fetch_bundle_recall_candidates(bundle, tower, context, scene="search", max_rank=160)
+        self.assertEqual(result.note_idx.tolist(), [11])
+
     def test_pure_request_ann_does_not_invoke_legacy_auxiliary_fusion(self):
         tower = DSSMRecaller.__new__(DSSMRecaller)
         tower.scene = "search"

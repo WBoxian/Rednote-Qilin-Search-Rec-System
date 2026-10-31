@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import RLock
 
 from backend.online.item_features import STATIC_ITEM_FEATURES
-from backend.online.ranking.stack import RankStackPredictor
+from backend.online.ranking.stack import RankStackPredictor, validate_rank_prior
 from training.history import HISTORY_ORDER
 from training.rank_stack import SEMANTIC_FEATURES
 
@@ -98,6 +98,11 @@ def required_asset_names(manifest: dict, root: Path) -> set[str]:
         graph = resolve_asset(root, manifest["recall_policy"]["cf_graph_dir"])
         for name in ("graph.npz", "users.npy", "items.npy", "swing.npz", "meta.json"):
             require(graph / name)
+    diagnostic = manifest.get("evaluation", {}).get("validation_snapshot")
+    if diagnostic is not None:
+        if not isinstance(diagnostic, dict) or set(diagnostic) != {"path", "sha256"}:
+            raise ValueError("Invalid bound diagnostic snapshot")
+        require(diagnostic["path"])
     return required
 
 
@@ -128,6 +133,11 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     final_topk, route_topk = int(policy.get("topk", 500)), int(policy.get("route_topk", 1000))
     if not (1 <= int(manifest["coarse_cap"]) <= int(manifest["input_cap"]) <= final_topk <= 1000 and 1 <= route_topk <= 1000):
         raise ValueError("Invalid serving candidate budgets")
+    ranking_strategy = manifest.get("ranking_strategy", "learned")
+    if ranking_strategy not in {"learned", "recall_only"}:
+        raise ValueError("Unsupported ranking strategy")
+    if ranking_strategy == "recall_only" and (int(manifest["input_cap"]) != final_topk or int(manifest["coarse_cap"]) != final_topk or manifest.get("schema_enabled") is not False):
+        raise ValueError("Recall-only serving must retain the full recall pool and explicitly disable learned schema")
     if int(policy.get("rrf_k", 60)) < 1:
         raise ValueError("Invalid reciprocal-rank smoothing")
     if strategy == "protected_headfill" and not 0 <= int(policy.get("head_cap", 100)) <= final_topk:
@@ -149,6 +159,9 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     assets = manifest.get("assets", {})
     if not required.issubset(assets):
         raise ValueError(f"Serving bundle omits required asset bindings: {sorted(required-set(assets))}")
+    diagnostic = manifest.get("evaluation", {}).get("validation_snapshot")
+    if diagnostic is not None and assets.get(resolve_asset(root, diagnostic["path"]).relative_to(root.resolve()).as_posix()) != diagnostic["sha256"]:
+        raise ValueError("Diagnostic snapshot hash differs from the required asset binding")
     # Check the small schema manifest before hashing gigabytes or constructing models.
     rank = resolve_asset(root, manifest["rank_dir"])
     metadata = json.loads((rank / "manifest.json").read_text())
@@ -159,6 +172,12 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     dien = metadata.get("dien", {})
     if dien.get("numeric_features") != [*features, "coarse_score"] or dien.get("architecture", {}).get("inference_precision") != "fp32":
         raise ValueError("Fine ranking input/precision contract mismatch")
+    score_contract = dien.get("score_contract", "request_minmax_v1")
+    if score_contract not in {"request_minmax_v1", "probability_v2"}:
+        raise ValueError("Unsupported ranking score contract")
+    if score_contract == "probability_v2" and metadata.get("trees", {}).get("chosen", {}).get("config", {}).get("kind") != "classifier":
+        raise ValueError("Probability fusion requires a binary-classifier teacher")
+    validate_rank_prior(dien.get("rank_prior"))
     for name, expected in assets.items():
         path = resolve_asset(root, name)
         verify_asset(path, expected)
@@ -198,13 +217,24 @@ class ServingBundle:
             return recaller.score(user_idx, history, topk)
 
     def bm25_candidates(self, query, topk):
+        return self._get_bm25_index().search(query, topk)
+
+    def _get_bm25_index(self):
         from recall.lexical import BM25Index
         with self._lock:
+            path = resolve_asset(self.root, self.manifest["bm25_index"])
+            sidecar = path.with_suffix(path.suffix + ".manifest.json")
+            bound_hash = self.manifest["assets"][path.relative_to(self.root.resolve()).as_posix()]
+            verify_asset(path, bound_hash)
+            verify_asset(sidecar, self.manifest["assets"][sidecar.relative_to(self.root.resolve()).as_posix()])
+            if json.loads(sidecar.read_text()).get("index_sha256") != bound_hash:
+                raise ValueError("BM25 sidecar differs from the bundle's bound index hash")
             index = getattr(self, "_lexical", None)
             if index is None:
-                index = BM25Index(resolve_asset(self.root, self.manifest["bm25_index"]))
+                # Bound-byte validation above precedes reader schema/size/SQLite metadata checks.
+                index = BM25Index(path, verify_hash=False)
                 self._lexical = index
-            return index.search(query, topk)
+            return index
 
 
 def get_active_bundle(scene: str, tag: str, root: Path) -> ServingBundle | None:
@@ -214,7 +244,15 @@ def get_active_bundle(scene: str, tag: str, root: Path) -> ServingBundle | None:
         return None
     manifest = json.loads(path.read_text())
     validate_manifest(manifest, scene, root, tag=tag)
+    if scene == "search":
+        from backend.online.shared_query_encoder import get_shared_query_encoder
+        tokenizer, model = get_shared_query_encoder(resolve_asset(root, manifest["query_encoder_dir"]), manifest["query_encoder_revision"])
+        if tokenizer is None or model is None:
+            raise RuntimeError("Pinned query encoder failed before serving readiness")
     ranker = RankStackPredictor(scene, resolve_asset(root, manifest["rank_dir"]), root=root,
         query_encoder_dir=resolve_asset(root, manifest["query_encoder_dir"]) if scene == "search" else None,
         query_encoder_revision=manifest.get("query_encoder_revision"))
-    return ServingBundle(manifest, ranker, root)
+    bundle = ServingBundle(manifest, ranker, root)
+    if scene == "search":
+        bundle._get_bm25_index()
+    return bundle

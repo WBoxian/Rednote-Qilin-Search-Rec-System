@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import OrderedDict
 from threading import RLock
 from functools import wraps, lru_cache
@@ -13,11 +14,24 @@ import pandas as pd
 import torch
 
 from backend.online.item_features import STATIC_ITEM_FEATURES, get_item_feature_store
-from backend.online.shared_query_encoder import get_shared_query_encoder
+from backend.online.shared_query_encoder import get_shared_query_encoder, encode_current_query
 from training.dien_ranker import DIENRanker
 from training.rank_stack import MappedVectors, RequestContext, SEMANTIC_FEATURES, group_minmax
 
 ROOT = Path(__file__).resolve().parents[4]
+
+
+def validate_rank_prior(prior):
+    if prior is None:
+        return
+    try:
+        valid = (isinstance(prior, dict) and set(prior) == {'alpha', 'k'} and
+                 not isinstance(prior['alpha'], bool) and math.isfinite(float(prior['alpha'])) and
+                 float(prior['alpha']) >= 0 and prior['k'] == 60)
+    except (ValueError, TypeError):
+        valid = False
+    if not valid:
+        raise ValueError('Unsupported frozen recall-rank prior')
 
 
 def synchronized(method):
@@ -74,7 +88,12 @@ class RankStackPredictor:
         if architecture.get('inference_precision') != 'fp32':
             raise ValueError('Serving rank bundles require explicit FP32 inference')
         self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+        contract = self.manifest['dien'].get('score_contract', 'request_minmax_v1')
+        if contract not in {'request_minmax_v1', 'probability_v2'}:
+            raise ValueError('Unsupported ranking score contract')
         self.coarse = lgb.Booster(model_file=str(self.run_dir / 'gbdt.txt'))
+        if contract == 'probability_v2' and self.coarse.params.get('objective') != 'binary':
+            raise ValueError('Probability fusion requires a binary-classifier teacher')
         if self.coarse.feature_name() != self.feature_cols:
             raise ValueError('Tree feature order differs from manifest')
         self.lgb_model, self.xgb_model = self.coarse, None
@@ -82,6 +101,9 @@ class RankStackPredictor:
         self.model.load_state_dict(torch.load(self.run_dir / 'dien.pt', map_location=self.device, weights_only=True))
         self.model.eval()
         self.weight = float(self.manifest['dien']['chosen']['weight'])
+        self.score_contract = self.manifest['dien'].get('score_contract', 'request_minmax_v1')
+        self.rank_prior = self.manifest['dien'].get('rank_prior')
+        validate_rank_prior(self.rank_prior)
         if not 0 <= self.weight <= 1:
             raise ValueError('Invalid frozen blend weight')
         self.text = shared_mapped_vectors(self.root / 'embeddings/note_text_emb', 'note_text')
@@ -94,6 +116,8 @@ class RankStackPredictor:
         text = str(query or '').strip()
         if not text:
             return np.zeros(768, dtype=np.float32)
+        if self.query_encoder_dir is not None:
+            return encode_current_query(text, self.query_encoder_dir, self.query_encoder_revision)
         if text in self._query_cache:
             self._query_cache.move_to_end(text)
             return self._query_cache[text]
@@ -168,7 +192,10 @@ class RankStackPredictor:
         frame, context = self._frame(candidates, history_note_ids)
         frame['coarse_score'] = self.coarse.predict(frame[self.feature_cols]).astype(np.float32)
         if not self.weight:
-            return group_minmax(frame.coarse_score, frame[self.group_key])
+            from training.scoring import blend_rank_scores
+            score = blend_rank_scores(frame.coarse_score.to_numpy(), np.zeros(len(frame), dtype=np.float32),
+                frame[self.group_key].to_numpy(), 0., getattr(self, "score_contract", "request_minmax_v1"))
+            return self._apply_rank_prior(frame, score)
         chunks = []
         with torch.no_grad():
             for start in range(0, len(frame), 1024):
@@ -176,7 +203,22 @@ class RankStackPredictor:
                 raw, _ = self.model(context.batch(batch, self.num_feats, self.device))
                 chunks.append(raw.detach().float().cpu().numpy().reshape(-1))
         raw = np.concatenate(chunks)
-        score = (1 - self.weight) * group_minmax(frame.coarse_score, frame[self.group_key]) + self.weight * group_minmax(raw, frame[self.group_key])
+        from training.scoring import blend_rank_scores
+        score = blend_rank_scores(frame.coarse_score.to_numpy(), raw, frame[self.group_key].to_numpy(),
+            self.weight, self.score_contract)
         if not np.isfinite(score).all():
             raise ValueError('Nonfinite fine prediction')
-        return score.astype(np.float32)
+        return self._apply_rank_prior(frame, score)
+
+    def _apply_rank_prior(self, frame, score):
+        prior = getattr(self, 'rank_prior', None)
+        if prior is None:
+            return np.asarray(score, dtype=np.float32)
+        if 'rank' not in frame or (pd.to_numeric(frame['rank'], errors='coerce') <= 0).any():
+            raise ValueError('Recall-rank prior requires original positive ranks')
+        from training.recall_prior import blend_recall_prior
+        result = np.empty(len(frame), dtype=np.float64)
+        for indices in frame.groupby(self.group_key, sort=False).indices.values():
+            result[indices] = blend_recall_prior(frame['rank'].to_numpy()[indices], np.asarray(score)[indices],
+                prior['alpha'], prior['k'])
+        return result

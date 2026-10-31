@@ -22,7 +22,7 @@ try:
 except Exception:
     faiss = None
 
-from backend.online.shared_query_encoder import get_shared_query_encoder
+from backend.online.shared_query_encoder import get_shared_query_encoder, encode_current_query
 
 BASE_DIR = Path(__file__).resolve().parents[4]
 
@@ -158,6 +158,12 @@ class DSSMRecaller:
         q = str(text or "").strip()
         if not q:
             return None
+        directory = getattr(self, "query_encoder_dir", None)
+        if directory is not None:
+            try:
+                return encode_current_query(q, directory, getattr(self, "query_encoder_revision", None)).reshape(1, -1)
+            except (OSError, ValueError, RuntimeError):
+                return None
         if self.query_tokenizer is None or self.query_model is None:
             self._load_query_encoder()
         if self.query_tokenizer is None or self.query_model is None:

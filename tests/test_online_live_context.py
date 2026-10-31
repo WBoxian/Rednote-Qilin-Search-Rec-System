@@ -83,6 +83,41 @@ def serving_fixture(scene="search"):
 
 
 class LiveServingTests(unittest.TestCase):
+    def test_direct_bundle_coarse_wrapper_does_not_accidentally_call_fine_blend(self):
+        pipe, _ = serving_fixture()
+        expected = np.asarray([.2, .8], dtype=np.float32)
+        pipe.state.gbdt_predictor = Mock()
+        pipe.state.gbdt_predictor.predict_with_components.return_value = {"gbdt_score": expected}
+        frame = pd.DataFrame({"note_idx": [1, 2]})
+        np.testing.assert_array_equal(pipe.state.predict_gbdt(frame), expected)
+        pipe.state.gbdt_predictor.predict.assert_not_called()
+
+    def test_recall_only_actual_feed_keeps_entire_pool_and_bypasses_learned_stages(self):
+        for scene in ["search", "rec"]:
+            with self.subTest(scene=scene):
+                pipe, _ = serving_fixture(scene)
+                pipe.state.bundle = SimpleNamespace(manifest={"ranking_strategy": "recall_only"})
+                pipe.state.bundle_input_cap = pipe.state.bundle_coarse_cap = 500
+                caps = []
+                def recall(context, max_rank):
+                    caps.append(max_rank)
+                    return pd.DataFrame({pipe.state.group_key: [int(context.iloc[0][pipe.state.group_key])]*500,
+                        "user_idx": [7]*500, "note_idx": list(range(500, 0, -1)), "rank": list(range(1, 501)),
+                        "recall_score": np.linspace(1., .01, 500)})
+                pipe.state.fetch_live_recall_candidates = recall
+                pipe.state.gbdt_predictor = Mock()
+                pipe.state.predict_dien = Mock()
+                pipe.state.fetch_item_features = Mock(side_effect=AssertionError("No model features in recall-only serving"))
+                response = pipe.build_feed(7, "q", 1, 500, record_exposure=False)
+                self.assertEqual(caps, [500])
+                self.assertEqual(response["total"], 500)
+                self.assertEqual([item["note_idx"] for item in response["items"]], list(range(500, 0, -1)))
+                pipe.state.gbdt_predictor.predict_with_components.assert_not_called()
+                pipe.state.predict_dien.assert_not_called()
+                self.assertFalse(response["stages"]["ranking"]["enabled"])
+                self.assertFalse(response["stages"]["ranking"]["schema_enabled"])
+                self.assertTrue(all(item["labels"]["click"] is None for item in response["items"]))
+
     def test_train_cutoff_excludes_future_and_entire_spanning_requests(self):
         for scene in ["search", "rec"]:
             with self.subTest(scene=scene), tempfile.TemporaryDirectory() as directory:

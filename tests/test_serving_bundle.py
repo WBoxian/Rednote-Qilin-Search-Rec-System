@@ -11,8 +11,10 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pandas as pd
 
-from backend.online.bundle import bundle_identity, file_sha256, get_active_bundle, required_asset_names, resolve_asset, validate_manifest
+from backend.online.bundle import ServingBundle, bundle_identity, file_sha256, get_active_bundle, required_asset_names, resolve_asset, validate_manifest, verify_asset
 from backend.online.ranking.stack import RankStackPredictor, shared_mapped_vectors
+from backend.online.ranking.service import run_ranking
+from training.recall_prior import blend_recall_prior
 import backend.online.bundle as bundle_module
 from training.history import HISTORY_ORDER
 
@@ -56,6 +58,103 @@ def resign(manifest):
 
 
 class ServingBundleTests(unittest.TestCase):
+    def test_diagnostic_snapshot_requires_consistent_content_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = fixture(root)
+            snapshot = root/"artifacts/examples.json"
+            snapshot.write_text('{}')
+            manifest["evaluation"] = {"validation_snapshot": {"path": "artifacts/examples.json", "sha256": file_sha256(snapshot)}}
+            with self.assertRaisesRegex(ValueError, "omits required"):
+                validate_manifest(resign(manifest), "search", root)
+            manifest["assets"]["artifacts/examples.json"] = file_sha256(snapshot)
+            validate_manifest(resign(manifest), "search", root)
+            manifest["evaluation"]["validation_snapshot"]["sha256"] = "0"*64
+            with self.assertRaisesRegex(ValueError, "Diagnostic snapshot hash"):
+                validate_manifest(resign(manifest), "search", root)
+
+    def test_verified_bm25_bytes_are_hashed_once_and_tampering_still_rejects(self):
+        from recall.lexical import build_index
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            notes = root/"notes"
+            notes.mkdir()
+            pd.DataFrame({"note_idx": [0, 1], "note_title": ["可爱猫", "城市旅行"], "note_content": ["小猫", "旅行"]}).to_parquet(notes/"notes.parquet", index=False)
+            path = root/"bm25.sqlite"
+            build_index(notes, path, cache_mib=16, memory_limit_mib=256)
+            sidecar = path.with_suffix('.sqlite.manifest.json')
+            assets = {item.name: file_sha256(item) for item in [path, sidecar]}
+            serving = ServingBundle({"bm25_index": path.name, "assets": assets}, None, root)
+            bundle_module._VERIFIED_ASSETS.clear()
+            with patch.object(bundle_module, "file_sha256", wraps=file_sha256) as digest, patch("recall.lexical._sha256", side_effect=AssertionError("Reader must not hash already-verified DB bytes")):
+                verify_asset(path, assets[path.name])
+                verify_asset(sidecar, assets[sidecar.name])
+                self.assertEqual(serving.bm25_candidates("可爱猫", 2).note_idx.tolist(), [0])
+                serving.bm25_candidates("城市旅行", 2)
+                self.assertEqual(sum(call.args[0] == path for call in digest.call_args_list), 1)
+                with path.open('ab') as stream:
+                    stream.write(b'tamper')
+                with self.assertRaisesRegex(ValueError, "asset mismatch"):
+                    serving.bm25_candidates("可爱猫", 2)
+            serving._lexical.close()
+
+    def test_optional_recall_prior_manifest_rejects_invalid_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = fixture(root)
+            path = root/manifest["rank_dir"]/"manifest.json"
+            metadata = json.loads(path.read_text())
+            for prior in [{"alpha": -.1, "k": 60}, {"alpha": None, "k": 60}, {"alpha": .1, "k": 10}, {"alpha": True, "k": 60}]:
+                metadata["dien"]["rank_prior"] = prior
+                path.write_text(json.dumps(metadata))
+                manifest["assets"][path.relative_to(root).as_posix()] = file_sha256(path)
+                with self.assertRaisesRegex(ValueError, "recall-rank prior"):
+                    validate_manifest(resign(manifest), "search", root)
+
+    def test_actual_rank_predictor_applies_prior_per_request_and_service_retains_float64(self):
+        predictor = RankStackPredictor.__new__(RankStackPredictor)
+        predictor._lock = threading.RLock()
+        predictor.group_key, predictor.weight, predictor.feature_cols = "request_idx", 0., []
+        predictor.score_contract = "probability_v2"
+        predictor.rank_prior = {"alpha": .1, "k": 60}
+        predictor.coarse = SimpleNamespace(predict=lambda frame: np.linspace(.1, .9, len(frame), dtype=np.float32))
+        predictor._frame = lambda frame, history: (frame.copy().reset_index(drop=True), None)
+        predictor.model = Mock()
+        frame = pd.DataFrame({"request_idx": [1, 1, 2, 2], "note_idx": [1, 2, 3, 4], "rank": [1, 2, 2, 1]})
+        result = predictor.predict(frame)
+        raw = np.linspace(.1, .9, 4, dtype=np.float32)
+        expected = np.concatenate([blend_recall_prior([1, 2], raw[:2], .1), blend_recall_prior([2, 1], raw[2:], .1)])
+        np.testing.assert_array_equal(result, expected)
+        self.assertEqual(result.dtype, np.dtype("float64"))
+        ranked, _ = run_ranking(frame.iloc[:2], 1, 2, predictor.predict, ranking_policy="learned")
+        self.assertEqual(ranked.final_score.dtype, np.dtype("float64"))
+        expected_service = blend_recall_prior([1, 2], [.1, .9], .1)
+        self.assertEqual(ranked.note_idx.tolist(), np.asarray([1, 2])[np.argsort(-expected_service)].tolist())
+        predictor.model.assert_not_called()
+
+    def test_search_encoder_load_failure_prevents_model_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = fixture(root)
+            active = root/"outputs/deploy/search/hard/active_bundle.json"
+            active.parent.mkdir(parents=True)
+            active.write_text(json.dumps(manifest))
+            with patch("backend.online.shared_query_encoder.get_shared_query_encoder", return_value=(None, None)), patch.object(bundle_module, "RankStackPredictor") as ranker:
+                with self.assertRaisesRegex(RuntimeError, "before serving readiness"):
+                    get_active_bundle("search", "hard", root)
+                ranker.assert_not_called()
+
+    def test_recall_only_requires_full_pool_and_explicit_schema_bypass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = fixture(root)
+            manifest.update(ranking_strategy="recall_only", input_cap=500, coarse_cap=500, schema_enabled=False)
+            validate_manifest(resign(manifest), "search", root)
+            for mutation in [{"input_cap": 160, "coarse_cap": 80}, {"schema_enabled": True}, {"ranking_strategy": "arbitrary"}]:
+                changed = {**manifest, **mutation}
+                with self.assertRaisesRegex(ValueError, "Recall-only|Unsupported ranking"):
+                    validate_manifest(resign(changed), "search", root)
+
     def test_valid_fully_bound_search_and_rec_bundles(self):
         for scene in ["search", "rec"]:
             with self.subTest(scene=scene), tempfile.TemporaryDirectory() as directory:
@@ -163,6 +262,22 @@ class ServingBundleTests(unittest.TestCase):
             manifest["assets"][path.relative_to(root).as_posix()] = file_sha256(path)
             with self.assertRaisesRegex(ValueError, "precision"):
                 validate_manifest(resign(manifest), "search", root)
+
+    def test_unsupported_score_contract_and_nonclassifier_probability_teacher_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = fixture(root)
+            path = root/original["rank_dir"]/"manifest.json"
+            metadata = json.loads(path.read_text())
+            for contract in ["unsupported", "probability_v2"]:
+                with self.subTest(contract=contract):
+                    manifest = copy.deepcopy(original)
+                    changed = copy.deepcopy(metadata)
+                    changed["dien"]["score_contract"] = contract
+                    path.write_text(json.dumps(changed))
+                    manifest["assets"][path.relative_to(root).as_posix()] = file_sha256(path)
+                    with self.assertRaises(ValueError):
+                        validate_manifest(resign(manifest), "search", root)
 
     def test_no_active_manifest_returns_none_without_model_load(self):
         with tempfile.TemporaryDirectory() as directory, patch("backend.online.bundle.RankStackPredictor") as model:

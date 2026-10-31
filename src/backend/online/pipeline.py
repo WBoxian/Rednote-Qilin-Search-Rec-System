@@ -1149,6 +1149,8 @@ class SceneServingState:
         return get_item_feature_store(BASE_DIR).get(note_ids)
 
     def predict_gbdt(self, cand: pd.DataFrame) -> np.ndarray:
+        if self.bundle_active:
+            return self.gbdt_predictor.predict_with_components(cand)["gbdt_score"]
         return self.gbdt_predictor.predict(cand)
 
     def predict_dien(
@@ -2930,7 +2932,8 @@ class OnlineScenePipeline:
         # Fresh live identity and stable inference-cache identity are separate concepts.
         cache_context = context.iloc[0].drop(labels=[self.state.group_key, "note_idx"]).to_dict()
         cache_context["bundle_id"] = bundle_id
-        cache_context["policy"] = "learned" if bundle_active else "safe_cold"
+        ranking_strategy = getattr(getattr(self.state, "bundle", None), "manifest", {}).get("ranking_strategy", "learned") if bundle_active else "safe_cold"
+        cache_context["policy"] = ranking_strategy
         digest = hashlib.sha256(json.dumps(cache_context, sort_keys=True, default=str).encode()).hexdigest()
         cache_id = int(digest[:15], 16)
         cached = self._get_cached_feed(uid, cache_id, raw_query, refresh_key)
@@ -2954,7 +2957,7 @@ class OnlineScenePipeline:
                 fetch_recall_candidates=lambda _request, max_rank: self.state.fetch_live_recall_candidates(context, max_rank),
             )
             coarse_started = time.perf_counter()
-            if bundle_active and not recall.empty:
+            if bundle_active and ranking_strategy == "learned" and not recall.empty:
                 coarse = run_preranking(
                     user_idx=uid, query=raw_query, query_phrase=raw_query,
                     scene=self.state.scene, group_key=self.state.group_key,
@@ -2972,6 +2975,11 @@ class OnlineScenePipeline:
                 coarse = recall.head(coarse_cap).copy()
                 fine_started = time.perf_counter()
                 base = coarse.copy()
+                if ranking_strategy == "recall_only" and not base.empty:
+                    # Metadata enriches delivered cards; no exposure features or labels enter inference.
+                    notes = self.state._fetch_notes(base.note_idx.astype(int).tolist())
+                    columns = [name for name in ("note_idx", "note_title", "note_content", "image_path") if name in notes]
+                    base = base.merge(notes[columns].drop_duplicates("note_idx"), on="note_idx", how="left", sort=False, validate="one_to_one")
                 if not base.empty:
                     base["final_score"] = base["recall_score"]
             finished = time.perf_counter()
@@ -2985,8 +2993,10 @@ class OnlineScenePipeline:
             degraded = "validated_model_bundle_unavailable" if not bundle_active else (
                 "recall_route_failure" if route_status.get("errors") else None)
             meta = {"stages": {"coldstart": {"enabled": cold}, "recall": {"candidates": len(recall)},
-                    "preranking": {"candidates": len(coarse), "topn": coarse_cap},
-                    "ranking": {"candidates": len(base)}}, "linkage": {}, "stage_ms": stage_ms,
+                    "preranking": {"candidates": len(coarse), "topn": coarse_cap,
+                        "enabled": bundle_active and ranking_strategy == "learned"},
+                    "ranking": {"candidates": len(base), "enabled": bundle_active and ranking_strategy == "learned",
+                        "strategy": ranking_strategy, "schema_enabled": bundle_active and ranking_strategy == "learned"}}, "linkage": {}, "stage_ms": stage_ms,
                     "pipeline_ms": sum(stage_ms.values()), "route_status": route_status,
                     "degraded_reason": degraded}
             self._set_cached_stage(uid, cache_id, raw_query, base, meta)
