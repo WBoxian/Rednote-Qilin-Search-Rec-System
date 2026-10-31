@@ -161,7 +161,7 @@ function formatPlain(v: any) {
         <h3>用户登录</h3>
         <div class="meta">输入 user_idx 进入系统</div>
         <form style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:12px;" @submit.prevent="login">
-          <input v-model="userIdx" placeholder="例如 15128" @keydown.enter.prevent="login" />
+          <input v-model="userIdx" aria-label="用户 ID" placeholder="例如 15128" @keydown.enter.prevent="login" />
           <button type="submit" class="btn-primary" :disabled="loggingIn">{{ loggingIn ? '加载中...' : '登录' }}</button>
         </form>
         <div class="meta" style="margin-top:10px;">{{ msg }}</div>

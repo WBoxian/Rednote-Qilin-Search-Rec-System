@@ -383,6 +383,7 @@ watch(
           <input
             v-model="query"
             class="search-input"
+            aria-label="搜索内容"
             :placeholder="copy.searchPlaceholder"
             @focus="suggestOpen = suggestItems.length > 0"
             @blur="closeSuggest"

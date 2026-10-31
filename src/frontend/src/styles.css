@@ -58,3 +58,33 @@ h3 { font-size: 18px; font-weight: 650; }
 @media(max-width:800px) { .container { padding:20px 16px 36px; } .grid,.metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .panel { padding:18px; } }
 @media(max-width:480px) { .grid,.metric-grid { grid-template-columns:1fr; } .search-input { min-width:0; } }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; } }
+
+/* Evaluation tables share the workspace's typography and spacing. */
+.data-table-scroll { width: 100%; overflow-x: auto; }
+.results-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.results-heading h3 { margin: 4px 0 0; }
+.intro-eyebrow { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
+.evaluation-table { font-variant-numeric: tabular-nums; font-size: 13px; }
+.evaluation-table th { font-weight: 600; white-space: nowrap; }
+.evaluation-table thead { background: var(--bg); color: var(--muted); font-size: 11px; }
+.evaluation-table tbody tr:first-child { background: transparent; color: var(--text); font-size: 13px; }
+.evaluation-table tbody tr:hover { background: #f8faff; }
+.evaluation-table .current-result { color: var(--accent); font-weight: 650; }
+.delta-positive { color: #13795b; }
+.delta-negative { color: #b83a48; }
+.results-note { margin: 14px 0 0; max-width: 100ch; line-height: 1.8; }
+.reference-facts { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 16px; font-size: 12px; color: var(--muted); }
+.reference-facts strong { color: var(--text); margin-left: 6px; font-variant-numeric: tabular-nums; }
+.ablation-panel summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none; }
+.ablation-panel summary > span:first-child { display: grid; gap: 5px; }
+.ablation-panel summary strong { font-size: 17px; font-weight: 650; }
+.ablation-panel summary::after { content: '+'; color: var(--accent); font-size: 22px; }
+.ablation-panel details[open] summary::after { content: '−'; }
+.ablation-panel details[open] summary { margin-bottom: 18px; }
+.ablation-table td { white-space: nowrap; }
+.ablation-table td small { display: block; font-size: 10px; margin-top: 3px; }
+.ablation-table .ablation-description { white-space: normal; min-width: 220px; max-width: 380px; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.experiment-status { display: inline-block; padding: 3px 7px; border-radius: 4px; background: var(--bg-deep); color: var(--muted); font-size: 10px; font-weight: 600; }
+.experiment-status.accepted { color: #13795b; background: #eaf6f0; }
+.experiment-status.diagnostic_rejected { color: #9a5d21; background: #fff4e8; }
+@media(max-width:640px) { .results-heading { align-items: flex-start; flex-direction: column; } .evaluation-table { min-width: 560px; } .ablation-panel summary { gap: 10px; } }

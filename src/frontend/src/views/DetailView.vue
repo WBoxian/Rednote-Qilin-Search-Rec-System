@@ -320,22 +320,22 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
       </table>
       <div class="meta" style="margin-top:8px;">{{ detail.stage_rank_note }}</div>
       <div class="action-row">
-        <button class="action-btn action-like" :class="{ active: actionState.like }" @click="engage('like')">
+        <button class="action-btn action-like" :class="{ active: actionState.like }" :aria-pressed="actionState.like" @click="engage('like')">
           <span class="action-icon">&#x2665;</span>
           <span class="action-text">&#x70B9;&#x8D5E;</span>
           <span class="action-count">{{ actionCount('like') }}</span>
         </button>
-        <button class="action-btn action-collect" :class="{ active: actionState.collect }" @click="engage('collect')">
+        <button class="action-btn action-collect" :class="{ active: actionState.collect }" :aria-pressed="actionState.collect" @click="engage('collect')">
           <span class="action-icon">&#x2605;</span>
           <span class="action-text">&#x6536;&#x85CF;</span>
           <span class="action-count">{{ actionCount('collect') }}</span>
         </button>
-        <button class="action-btn action-comment" :class="{ active: actionState.comment }" @click="engage('comment')">
+        <button class="action-btn action-comment" :class="{ active: actionState.comment }" :aria-pressed="actionState.comment" @click="engage('comment')">
           <span class="action-icon">&#x1F4AC;</span>
           <span class="action-text">&#x8BC4;&#x8BBA;</span>
           <span class="action-count">{{ actionCount('comment') }}</span>
         </button>
-        <button class="action-btn action-share" :class="{ active: actionState.share }" @click="engage('share')">
+        <button class="action-btn action-share" :class="{ active: actionState.share }" :aria-pressed="actionState.share" @click="engage('share')">
           <span class="action-icon">&#x27A6;</span>
           <span class="action-text">&#x5206;&#x4EAB;</span>
           <span class="action-count">{{ actionCount('share') }}</span>

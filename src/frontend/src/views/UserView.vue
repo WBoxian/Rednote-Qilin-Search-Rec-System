@@ -349,6 +349,7 @@ onUnmounted(() => {
               <td @click.stop>
                 <input
                   class="behavior-checkbox"
+                  :aria-label="`选择行为 ${row.note_idx}`"
                   type="checkbox"
                   :checked="isSelected(row)"
                   @change="toggleSelect(row)"

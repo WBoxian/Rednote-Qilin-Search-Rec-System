@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import TopBar from '../components/TopBar.vue';
+import { deltaClass, metricLabel, signed, statusLabel, type AblationRow, type ComparisonGroup } from '../services/evaluation';
 import { api, getScene, getUserId, setScene } from '../services/api';
 
 const metricsByScene = ref<Record<string, any>>({});
@@ -29,6 +30,10 @@ const isFullTestSnapshot = computed(() => activeSnapshot.value?.protocol?.full_t
 const isHeldOut = computed(() => activeSnapshot.value?.protocol?.held_out === true);
 const splitLabel = computed(() => isFullTestSnapshot.value ? '全量测试集' : isHeldOut.value ? (activeSplit.value === 'test' ? '测试集' : '验证集') : (activeSnapshot.value?.protocol ? '训练诊断' : '离线快照'));
 const partition = computed(() => activeSnapshot.value?.partition);
+const endToEnd = computed<ComparisonGroup | undefined>(() => activeSnapshot.value?.comparisons?.end_to_end);
+const exposureComparison = computed<ComparisonGroup | undefined>(() => activeSnapshot.value?.comparisons?.logged_exposure);
+const ablationRows = computed<AblationRow[]>(() => activeSnapshot.value?.ablations?.rows || []);
+const ablationMetricKeys = computed(() => Array.from(new Set(ablationRows.value.flatMap(row => Object.keys(row.metrics)))).slice(0, 5));
 const splitTime = (value: any) => value == null ? '—' : new Date(Number(value) * 1000).toLocaleString('zh-CN', { hour12: false });
 
 const copy = {
@@ -85,25 +90,25 @@ const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
     lines: [
       'Recall@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>100</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
     ],
-    desc: ['衡量前 100 个召回候选覆盖了多少真实相关结果。'],
+    desc: ['衡量前 100 个候选覆盖了多少已知点击物品；按全部原始测试请求取平均。'],
   },
   'HitRate@100': {
     lines: [
       'HitRate@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> 𝟙(Top<sub>100</sub>(q) ∩ Rel(q) ≠ ∅)',
     ],
-    desc: ['衡量一个请求在前 100 个召回候选里是否至少命中 1 个真实相关结果。'],
+    desc: ['衡量一个请求在前 100 个召回候选里是否至少命中 1 个已知点击物品。'],
   },
   'HitRate@500': {
     lines: [
       'HitRate@500 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> 𝟙(Top<sub>500</sub>(q) ∩ Rel(q) ≠ ∅)',
     ],
-    desc: ['衡量粗排入口的 500 个候选里，是否至少命中 1 个真实相关结果。'],
+    desc: ['衡量粗排入口的 500 个候选里，是否至少命中 1 个已知点击物品。'],
   },
   'Recall@500': {
     lines: [
       'Recall@500 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>500</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
     ],
-    desc: ['衡量进入粗排的 500 个候选对真实相关结果的覆盖程度。'],
+    desc: ['衡量进入粗排的 500 个候选对已知点击物品的覆盖程度。'],
   },
   'Recall@300': {
     lines: [
@@ -121,7 +126,7 @@ const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
     lines: [
       'MRR@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>1</span><span>rank<sub>first-hit</sub>(q)</span></span>',
     ],
-    desc: ['衡量第一个真实相关结果进入前 100 候选后的位置，越靠前越好。'],
+    desc: ['衡量第一个已知点击物品进入前 100 候选后的位置，越靠前越好。'],
   },
   MedianFirstHitRank: {
     lines: [
@@ -133,7 +138,7 @@ const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
     lines: [
       'TailHitRate101_500@Pre100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> 𝟙(∃ i, 101 ≤ rank<sub>recall</sub>(i) ≤ 500, rank<sub>pre</sub>(i) ≤ 100, i ∈ Rel(q))',
     ],
-    desc: ['衡量召回尾部 101-500 的候选是否真的被粗排救回到了前 100，并命中了真实相关结果。'],
+    desc: ['衡量召回尾部 101-500 的候选是否真的被粗排救回到了前 100，并命中了已知点击物品。'],
   },
   'Precision@100': {
     lines: [
@@ -153,7 +158,7 @@ const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
       'NDCG@10 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>DCG@10(q)</span><span>IDCG@10(q)</span></span>',
       'DCG@10(q) = Σ<sub>k=1..10</sub> <span class="formula-frac"><span>2<sup>rel(q,k)</sup> - 1</span><span>log<sub>2</sub>(k + 1)</span></span>',
     ],
-    desc: ['同时考虑相关性强弱和排序位置，越靠前命中高相关结果越好。'],
+    desc: ['当前使用二值点击标签，越早排出已知点击物品得分越高。日志曝光与全目录已知点击 NDCG 使用不同的理想排序范围。'],
   },
   AUC: {
     lines: ['AUC = P(score(正样本) > score(负样本)) + 0.5 · P(同分)'],
@@ -620,6 +625,28 @@ onUnmounted(stopValidationProgress);
         <p v-if="partition" class="meta protocol-note">训练截止 {{ splitTime(partition.fit_end_exclusive) }} · 测试开始 {{ splitTime(partition.test_start) }}</p>
         <p v-if="currentScene === 'search' && isHeldOut" class="protocol-caveat">搜索召回为已有候选核验，模型训练血缘尚未完成时间隔离；排序为新训练的时间隔离基线。</p>
       </section>
+
+      <section v-if="endToEnd?.metrics?.length" class="panel results-panel" aria-labelledby="results-title">
+        <div class="results-heading">
+          <div><span class="intro-eyebrow">FINAL RESULTS</span><h3 id="results-title">最终结果与基线提升</h3></div>
+          <span class="scope-tag">全目录 · 已知点击</span>
+        </div>
+        <p class="meta">{{ endToEnd.baseline_name }} → {{ endToEnd.current_name || '当前版本' }}。使用相同测试请求、标签与候选预算；下表为服务最终输出。</p>
+        <p v-if="activeSnapshot.pipeline?.serving_strategy === 'recall_only'" class="meta">当前服务：仅召回；粗排和精排未启用。下方曝光池排序结果保留为离线诊断。</p>
+        <div class="data-table-scroll">
+          <table class="table evaluation-table">
+            <thead><tr><th scope="col">指标</th><th scope="col">基线</th><th scope="col">当前</th><th scope="col">绝对提升</th><th scope="col">相对提升</th></tr></thead>
+            <tbody><tr v-for="row in endToEnd.metrics" :key="row.name">
+              <th scope="row">{{ metricLabel(row.name) }}</th>
+              <td>{{ fmtNum(row.baseline) }}</td><td class="current-result">{{ fmtNum(row.current) }}</td>
+              <td :class="deltaClass(row.absolute_delta)">{{ signed(row.absolute_delta_pp, 3, ' pp') }}</td>
+              <td :class="deltaClass(row.absolute_delta)">{{ signed(row.relative_delta_pct, 2, '%') }}</td>
+            </tr></tbody>
+          </table>
+        </div>
+        <p class="meta results-note">pp 为百分点。已知点击 NDCG 使用全部测试正例计算理想排序；未曝光内容缺少点击标签，因此此值衡量已知正例保留，不能解释为线上点击率。</p>
+      </section>
+
       <section class="metrics-grid">
         <div class="panel shell-panel">
           <div class="section-title">召回指标</div>
@@ -685,6 +712,40 @@ onUnmounted(stopValidationProgress);
       </section>
 
       <p v-if="isHeldOut || isFullTestSnapshot" class="meta evaluation-footnote">首命中中位排名仅统计 Top500 内命中的请求。排序以日志曝光候选为范围，使用二值点击标签；无法直接与旧多级相关性指标比较。样例绑定当前模型与评测版本；✓ 表示已知点击，其余候选不据此标为负例。</p>
+
+      <section v-if="exposureComparison?.metrics?.length" class="panel exposure-reference" aria-labelledby="exposure-reference-title">
+        <div class="results-heading"><h3 id="exposure-reference-title">排序指标如何理解</h3><span class="scope-tag">日志曝光条件评估</span></div>
+        <p class="meta">曝光候选池大小与点击密度影响 NDCG 的绝对值。请结合随机排序基线判断，跨项目比较须统一候选范围、标签和分母。</p>
+        <div class="data-table-scroll"><table class="table evaluation-table">
+          <thead><tr><th scope="col">指标</th><th scope="col">{{ exposureComparison.baseline_name }}</th><th scope="col">当前模型</th><th scope="col">绝对提升</th></tr></thead>
+          <tbody><tr v-for="row in exposureComparison.metrics" :key="row.name">
+            <th scope="row">{{ metricLabel(row.name) }}</th><td>{{ fmtNum(row.baseline) }}</td><td>{{ fmtNum(row.current) }}</td>
+            <td :class="deltaClass(row.absolute_delta)">{{ signed(row.absolute_delta_pp, 3, ' pp') }}</td>
+          </tr></tbody>
+        </table></div>
+        <div v-if="exposureComparison.diagnostics" class="reference-facts">
+          <span v-if="exposureComparison.diagnostics.median_candidates != null">候选中位数 <strong>{{ exposureComparison.diagnostics.median_candidates }}</strong></span>
+          <span v-if="exposureComparison.diagnostics.requests_at_most_10_fraction != null">候选 ≤ 10 的请求 <strong>{{ (exposureComparison.diagnostics.requests_at_most_10_fraction * 100).toFixed(2) }}%</strong></span>
+          <span v-if="exposureComparison.diagnostics.original_position_NDCG_at10 != null">原曝光顺序 NDCG@10 <strong>{{ fmtNum(exposureComparison.diagnostics.original_position_NDCG_at10) }}</strong></span>
+        </div>
+        <p class="meta results-note">原曝光顺序受到位置偏差影响，仅作诊断，不能视作因果基线。AUC 衡量曝光样本的正负区分；GAUC 在有效用户内计算并按曝光数加权。三者均不等同于端到端推荐效果。</p>
+      </section>
+      <section v-if="ablationRows.length" class="panel ablation-panel">
+        <details>
+          <summary><span><span class="intro-eyebrow">ABLATION STUDY</span><strong>阶段消融与实验结果</strong></span><span class="meta">{{ ablationRows.length }} 组 · 展开查看</span></summary>
+          <p class="meta">{{ activeSnapshot.ablations.warning || '固定数据划分与评测口径，验证集选择方案，测试集报告效果；未采用的实验保留真实结果。' }}</p>
+          <div class="data-table-scroll"><table class="table evaluation-table ablation-table">
+            <thead><tr><th scope="col">实验</th><th scope="col">状态</th><th v-for="key in ablationMetricKeys" :key="key" scope="col">{{ metricLabel(key) }}</th><th scope="col">改动与解释</th></tr></thead>
+            <tbody><tr v-for="row in ablationRows" :key="row.id">
+              <th scope="row">{{ row.label }}</th><td><span class="experiment-status" :class="row.status">{{ statusLabel(row.status) }}</span></td>
+              <td v-for="key in ablationMetricKeys" :key="key">{{ fmtNum(row.metrics[key]) }}<small v-if="row.comparison?.[key]" :class="deltaClass(row.comparison[key].absolute_delta_pp)">{{ signed(row.comparison[key].absolute_delta_pp, 3, ' pp') }}</small></td>
+              <td class="ablation-description">{{ row.changed || '—' }}</td>
+            </tr></tbody>
+          </table></div>
+          <p class="meta results-note">表内提升以注明的同口径基线计算；诊断实验不代表线上已启用。曝光池排序结果与全目录已知点击结果分开展示。</p>
+        </details>
+      </section>
+
       <section class="panel example-panel shell-panel">
         <div class="example-head">
           <div>
@@ -756,7 +817,7 @@ onUnmounted(stopValidationProgress);
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.true_top10" :key="`truth-${idx}`" class="compare-row" @click="openExampleDetail(item)">
-                    <td class="rank-col"><strong>{{ formatTrueRank(item.rank_in_true, String(idx + 1)) }}</strong></td>
+                    <td class="rank-col"><strong>{{ formatTrueRank(item.rank_in_true, String(Number(idx) + 1)) }}</strong></td>
                     <td>{{ item.note_idx }}</td>
                     <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>
@@ -769,7 +830,7 @@ onUnmounted(stopValidationProgress);
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.dssm_top10" :key="`dssm-${idx}`" class="compare-row" @click="openExampleDetail(item)">
-                    <td class="rank-col"><strong>{{ idx + 1 }}</strong></td>
+                    <td class="rank-col"><strong>{{ Number(idx) + 1 }}</strong></td>
                     <td>{{ item.note_idx }}</td>
                     <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>
@@ -782,7 +843,7 @@ onUnmounted(stopValidationProgress);
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.preranking_top10" :key="`pre-${idx}`" class="compare-row" @click="openExampleDetail(item)">
-                    <td class="rank-col"><strong>{{ idx + 1 }}</strong></td>
+                    <td class="rank-col"><strong>{{ Number(idx) + 1 }}</strong></td>
                     <td>{{ item.note_idx }}</td>
                     <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>
@@ -795,7 +856,7 @@ onUnmounted(stopValidationProgress);
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.ranking_top10" :key="`rank-${idx}`" class="compare-row" @click="openExampleDetail(item)">
-                    <td class="rank-col"><strong>{{ idx + 1 }}</strong></td>
+                    <td class="rank-col"><strong>{{ Number(idx) + 1 }}</strong></td>
                     <td>{{ item.note_idx }}</td>
                     <td>{{ item.rank_in_true ? '✓ ' : '' }}{{ item.title }}</td>
                   </tr>

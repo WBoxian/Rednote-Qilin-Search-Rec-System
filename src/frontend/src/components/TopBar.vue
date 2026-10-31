@@ -36,9 +36,9 @@ const serviceLatency = computed(() => {
 const stageEntries = computed(() => {
   const src = props.stageMs && typeof props.stageMs === 'object' ? props.stageMs : {};
   const pairs = [
-    ['\u53ec\u56de', Number(src?.recall ?? 0)],
-    ['\u7c97\u6392', Number(src?.preranking ?? 0)],
-    ['\u7cbe\u6392', Number(src?.ranking ?? 0)],
+    ['\u53ec\u56de', src?.recall == null ? NaN : Number(src.recall)],
+    ['\u7c97\u6392', src?.preranking == null ? NaN : Number(src.preranking)],
+    ['\u7cbe\u6392', src?.ranking == null ? NaN : Number(src.ranking)],
   ] as Array<[string, number]>;
   return pairs.map(([label, value]) => ({
     label,
@@ -90,6 +90,7 @@ function goHomeNav() {
               type="button"
               class="nav-tile nav-tile-button"
               :class="{ 'nav-tile-active': route.path === '/' }"
+              :aria-current="route.path === '/' ? 'page' : undefined"
               @click="goHomeNav"
             >
               <span class="nav-tile-title">{{ navItems[0].title }}</span>

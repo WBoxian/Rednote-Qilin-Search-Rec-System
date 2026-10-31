@@ -41,3 +41,6 @@ src/backend/online/deploy/
 *.npy
 *.pth
 *.pt
+
+*storybook.log
+storybook-static
