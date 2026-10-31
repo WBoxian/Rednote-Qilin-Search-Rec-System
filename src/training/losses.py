@@ -33,5 +33,3 @@ def balanced_losses(scores,labels,groups,topk=10):
     eligible=group_weight>0
     rank_loss=(group_loss[eligible]/group_weight[eligible]).mean() if eligible.any() else scores.sum()*0.
     return bce,rank_loss
-
-
