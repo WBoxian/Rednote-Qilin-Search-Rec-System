@@ -8,6 +8,7 @@ import lightgbm as lgb
 from backend.online.item_features import get_item_feature_store
 from backend.offline.evaluate_full_test import sha256
 from training.dien_ranker import DIENRanker
+from training.scoring import blend_rank_scores
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('rank_training',ROOT/'scripts/train_rank_stack.py')
@@ -40,7 +41,7 @@ def main():
     fine.load_state_dict(torch.load(run/'dien.pt',map_location=device,weights_only=True))
     raw=training.score_dien(fine,frame,context,manifest['dien']['numeric_features'],device)
     weight=manifest['dien']['chosen']['weight'];groups=frame[key].to_numpy()
-    combined=(1-weight)*training.group_minmax(base,groups)+weight*training.group_minmax(raw,groups)
+    combined=blend_rank_scores(base,raw,groups,weight,manifest['dien'].get('score_contract','request_minmax_v1'))
     result={'status':'PASS','scene':scene,'rows':len(frame),'requests':int(frame[key].nunique()),
             'data_manifest_sha256':sha256(args.input_manifest),'model_sha256':{'gbdt':sha256(run/'gbdt.txt'),'dien':sha256(run/'dien.pt')},
             'inference_precision':'canonical batch1024; '+str(manifest['dien']['architecture'].get('inference_precision','bf16'))+', FP32 score storage',

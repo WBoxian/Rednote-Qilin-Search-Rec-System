@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 from backend.online.item_features import get_item_feature_store
 from backend.offline.evaluate_full_test import confidence,sha256
 from training.dien_ranker import DIENRanker
+from training.scoring import blend_rank_scores
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('rank_experiment',ROOT/'scripts/train_rank_stack.py')
@@ -63,9 +64,9 @@ def main():
             if weight:
                 rawscore=experiment.score_dien(fine,selected,context,manifest['dien']['numeric_features'],device)
                 selected['dien_raw_score']=rawscore
-                selected['selected_score']=(1-weight)*experiment.group_minmax(selected.coarse_score,selected[key])+weight*experiment.group_minmax(rawscore,selected[key])
+                selected['selected_score']=blend_rank_scores(selected.coarse_score,rawscore,selected[key],weight,manifest['dien'].get('score_contract','request_minmax_v1'))
             else:
-                selected['dien_raw_score']=np.nan;selected['selected_score']=experiment.group_minmax(selected.coarse_score,selected[key])
+                selected['dien_raw_score']=np.nan;selected['selected_score']=blend_rank_scores(selected.coarse_score,None,selected[key],0,manifest['dien'].get('score_contract','request_minmax_v1'))
             ranked=selected.sort_values(['selected_score','rank'],ascending=[False,True],kind='stable')
             stages.update(fine_budget=ranked.note_idx.tolist(),fine10=ranked.note_idx.head(10).tolist(),fine20=ranked.note_idx.head(20).tolist())
             parts.append(ranked[[key,'note_idx','rank','coarse_score','dien_raw_score','selected_score']])

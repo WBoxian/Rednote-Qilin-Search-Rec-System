@@ -10,6 +10,7 @@ from backend.online.item_features import get_item_feature_store, STATIC_ITEM_FEA
 from backend.offline.evaluate_full_test import ranking_metrics, confidence
 from training.rank_stack import RequestContext, MappedVectors, SEMANTIC_FEATURES, forward_blocks, group_minmax
 from training.selection import choose_rank_model
+from training.scoring import blend_rank_scores
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -287,14 +288,14 @@ def train_dien(args):
     base_norm=group_minmax(base,groups);fine_norm=group_minmax(raw,groups)
     choices=[]
     for weight in (0.,.1,.25,.5,1.):
-        score=(1-weight)*base_norm+weight*fine_norm
+        score=blend_rank_scores(base,raw,groups,weight,'probability_v2')
         result,_,_=metrics(val,score,key)
         choices.append({'weight':weight,'validation':result})
     # Include bypass: a negative increment is never forced into the pipeline.
     chosen=choose_rank_blend(choices)
     val['dien_raw_score']=raw
     val.to_parquet(out/'validation.parquet',index=False)
-    manifest['dien']={'objective':getattr(args,'objective','balanced_top10'),'selection_guards':['NDCG@10','AUC','GAUC'],'numeric_features':numeric,'normalization_fit':'forward OOF rows only','aux_negative_contract':'same-request unclicked; missing negatives masked (v2)' if not args.legacy_aux_negatives else 'legacy batch-zero fallback (v1)',
+    manifest['dien']={'score_contract':'probability_v2','objective':getattr(args,'objective','balanced_top10'),'selection_guards':['NDCG@10','AUC','GAUC'],'numeric_features':numeric,'normalization_fit':'forward OOF rows only','aux_negative_contract':'same-request unclicked; missing negatives masked (v2)' if not args.legacy_aux_negatives else 'legacy batch-zero fallback (v1)',
                       'architecture':{'hidden_dim':64,'mlp_dims':[128,64],'dropout':.15,'mask_padded_history':True,'auxiliary_gradients':True,'mask_missing_aux_negatives':not args.legacy_aux_negatives,'inference_precision':args.inference_precision},
                       'training_history':history,'blend_candidates':choices,'chosen':chosen,
                       'seconds':time.monotonic()-start,'model_sha256':digest(out/'dien.pt')}
@@ -334,7 +335,7 @@ def evaluate(args):
     dien.load_state_dict(torch.load(out/'dien.pt',map_location=device,weights_only=True))
     fine=score_dien(dien,test,context,numeric,device)
     weight=manifest['dien']['chosen']['weight'];groups=test[key].to_numpy()
-    combined=(1-weight)*group_minmax(base,groups)+weight*group_minmax(fine,groups)
+    combined=blend_rank_scores(base,fine,groups,weight,manifest['dien'].get('score_contract','request_minmax_v1'))
     results={};requests={}
     for name,score in [('gbdt',base),('dien_raw',fine),('selected',combined)]:
         result,req,pred=metrics(test,score,key,split="official test")
