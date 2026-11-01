@@ -57,6 +57,20 @@ class FeaturePreprocessingTests(unittest.TestCase):
     def _features(self, scene="search"):
         return build_features(scene, "train", sample_dir=self.samples, output_dir=self.features, vocab_dir=self.vocab)
 
+    def test_note_embedding_text_handles_parquet_nulls_without_loading_encoder(self):
+        with patch("transformers.AutoTokenizer.from_pretrained") as tokenizer, patch("transformers.AutoModel.from_pretrained") as model:
+            module = importlib.import_module("preprocess.build_note_text_emb")
+            module = importlib.reload(module)
+            tokenizer.assert_not_called()
+            model.assert_not_called()
+        for missing in (None, np.nan, pd.NA, pd.NaT):
+            with self.subTest(missing=repr(missing)):
+                self.assertEqual(module.build_text(missing, " body "), "content：body")
+                self.assertEqual(module.build_text(" title ", missing), "title：title")
+                self.assertEqual(module.build_text(missing, missing), "content：")
+        self.assertEqual(module.build_text(" title ", " body "), "title：title\ncontent：body")
+        self.assertEqual(module.build_text("0", None), "title：0")
+
     def test_fractional_raw_click_is_not_rounded_into_a_positive(self):
         path = self.dataset / "recommendation_train/train-00000-of-00001.parquet"
         frame = pd.read_parquet(path)

@@ -16,6 +16,7 @@ import torch
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from functools import lru_cache
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 
@@ -35,14 +36,16 @@ MAX_LEN = 512
 SHARD_SIZE = 10000
 
 # ======================
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
-model.eval()
+@lru_cache(maxsize=1)
+def _load_encoder():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE).eval()
+    return tokenizer, model
 
 # ======================
 def build_text(title, content):
-    title = (title or "").strip()
-    content = (content or "").strip()
+    title = "" if title is None or pd.isna(title) else str(title).strip()
+    content = "" if content is None or pd.isna(content) else str(content).strip()
     if title and content:
         return f"title：{title}\ncontent：{content}"
     elif title:
@@ -51,6 +54,7 @@ def build_text(title, content):
         return f"content：{content}"
 
 def encode(texts):
+    tokenizer, model = _load_encoder()
     inputs = tokenizer(
         texts,
         padding=True,
