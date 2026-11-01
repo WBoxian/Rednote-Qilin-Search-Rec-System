@@ -269,7 +269,7 @@ def package_bundle(args,root:Path=ROOT):
     runtime_files=[
         'backend/online/'+name for name in ['bundle.py','pipeline.py','live_context.py','shared_query_encoder.py','item_features.py',
             'recall/service.py','recall/dssm.py','preranking/service.py','preranking/gbdt.py','ranking/service.py','ranking/stack.py']]
-    runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py','context_fusion.py','residual_dssm.py','weighted_context_fusion.py','learned_context_fusion.py']]
+    runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py','context_fusion.py','residual_dssm.py','weighted_context_fusion.py','learned_context_fusion.py','head_guard.py','multi_interest.py','exact_ip_filter.py']]
     runtime_files += ['training/'+name for name in ['rank_stack.py','history.py','dien_ranker.py','scoring.py','recall_prior.py']]
     names.update('src/'+name for name in runtime_files if (root/'src'/name).is_file())
     names.update(path.relative_to(root).as_posix() for path in (root/'src/backend/online').rglob('*.py'))

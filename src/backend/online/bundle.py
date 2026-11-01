@@ -76,6 +76,14 @@ def _validate_learned_policy(policy: dict, scene: str) -> dict:
         value = config.get(key)
         if not isinstance(value, str) or not value or Path(value).is_absolute():
             raise ValueError("Learned fusion asset paths must be relative to ROOT")
+    for key, expected in (("ann_query", {"version": 1, "strategy": "adapted_k3_v1"}),
+                          ("head_guard", {"version": 1, "strategy": "coarse100_prior10_v1"}),
+                          ("ann_engine", {"version": 1, "strategy": "cuda_cpu_refine_v1"})):
+        if key in policy and (not isinstance(policy[key], dict) or policy[key] != expected
+                              or type(policy[key].get("version")) is not int):
+            raise ValueError("Unsupported frozen " + key + " contract")
+    if "ann_engine" in policy and "ann_query" not in policy:
+        raise ValueError("Optional GPU refinement requires the validated multi-interest policy")
     return config
 
 
@@ -137,6 +145,12 @@ def required_asset_names(manifest: dict, root: Path) -> set[str]:
         for key in LEARNED_FUSION_PATHS:
             require(config[key])
         require("src/recall/learned_context_fusion.py")
+        if "ann_query" in manifest["recall_policy"]:
+            require("src/recall/multi_interest.py")
+        if "head_guard" in manifest["recall_policy"]:
+            require("src/recall/head_guard.py")
+        if "ann_engine" in manifest["recall_policy"]:
+            require("src/recall/exact_ip_filter.py")
     diagnostic = manifest.get("evaluation", {}).get("validation_snapshot")
     if diagnostic is not None:
         if not isinstance(diagnostic, dict) or set(diagnostic) != {"path", "sha256"}:
@@ -183,6 +197,8 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
         raise ValueError("Recall-only serving must retain the full recall pool and explicitly disable learned schema")
     if int(policy.get("rrf_k", 60)) < 1:
         raise ValueError("Invalid reciprocal-rank smoothing")
+    if any(key in policy for key in ("ann_query", "head_guard", "ann_engine")) and (scene != "rec" or strategy != "learned_rrf"):
+        raise ValueError("Multi-interest/head refinement require the learned Rec policy")
     context_policy = policy.get("context_policy")
     if strategy == "learned_rrf" or context_policy == "learned_filter_history":
         _validate_learned_policy(policy, scene)
@@ -303,10 +319,22 @@ class ServingBundle:
         with self._lock:
             config = _validate_learned_policy(self.manifest["recall_policy"], self.manifest["scene"])
             paths = {key: resolve_asset(self.root, config[key]) for key in LEARNED_FUSION_PATHS}
-            paths["runtime"] = resolve_asset(self.root, "src/recall/learned_context_fusion.py")
+            from recall import learned_context_fusion as fusion_runtime
+            runtime_paths = {"src/recall/learned_context_fusion.py": Path(fusion_runtime.__file__)}
+            if "ann_query" in self.manifest["recall_policy"]:
+                from recall import multi_interest
+                runtime_paths["src/recall/multi_interest.py"] = Path(multi_interest.__file__)
+            if "head_guard" in self.manifest["recall_policy"]:
+                from recall import head_guard
+                runtime_paths["src/recall/head_guard.py"] = Path(head_guard.__file__)
+            if "ann_engine" in self.manifest["recall_policy"]:
+                from recall import exact_ip_filter
+                runtime_paths["src/recall/exact_ip_filter.py"] = Path(exact_ip_filter.__file__)
             bound = self.manifest["assets"]
             for path in paths.values():
                 verify_asset(path, bound.get(path.relative_to(self.root.resolve()).as_posix()))
+            for name, path in runtime_paths.items():
+                verify_asset(path, bound.get(name))
             cached = getattr(self, "_learned", None)
             if cached is not None:
                 return cached
@@ -380,7 +408,8 @@ class ServingBundle:
                     raise ValueError("Learned fusion item is outside the bound PCA catalog")
                 return np.asarray(state.vectors[positions], np.float32)
             ranked = state.predictor.fuse(routes, history=history, user_idx=user_idx,
-                q0_pca=q0, item_pca_lookup=lookup, support=state.support)
+                q0_pca=q0, item_pca_lookup=lookup, support=state.support,
+                head_guard="head_guard" in self.manifest["recall_policy"])
             check_request_inference(REQUEST_FP32)
             return ranked.to_frame()
 

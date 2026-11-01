@@ -950,7 +950,9 @@ class SceneServingState:
             query_dir = BASE_DIR / bundle.manifest["query_encoder_dir"] if self.scene == "search" else None
             self.dssm_recaller = DSSMRecaller(self.scene, self.tag, bundle.recall_dir, self.group_key,
                 query_encoder_dir=query_dir, query_encoder_revision=bundle.manifest.get("query_encoder_revision"),
-                use_shared_note_vectors=True, inference_contract=getattr(bundle.ranker, "inference_contract", None))
+                use_shared_note_vectors=True, inference_contract=getattr(bundle.ranker, "inference_contract", None),
+                query_strategy=bundle.manifest["recall_policy"].get("ann_query", {}).get("strategy", "single"),
+                ann_engine=bundle.manifest["recall_policy"].get("ann_engine", {}).get("strategy", "cpu"))
             self.dssm_model = self.dssm_recaller.model
             self.realtime_ann_enabled = bool(self.dssm_recaller.enabled)
             if not self.realtime_ann_enabled:
@@ -971,6 +973,7 @@ class SceneServingState:
     def readiness(self) -> dict[str, Any]:
         return {
             "ready": bool(self.bundle_active and self.realtime_ann_enabled),
+            "retrieval": self.dssm_recaller.retrieval_status() if getattr(self, "dssm_recaller", None) else None,
             "model_bundle_id": self.bundle_id,
             "bundle_errors": getattr(self, "bundle_errors", []),
             "scene": self.scene,
@@ -2691,6 +2694,9 @@ class ServingAppState:
     def get(self, scene: str) -> SceneServingState:
         if scene not in {"search", "rec"}:
             raise KeyError(f"invalid scene: {scene}")
+        st = self._states.get(scene)
+        if st is not None:
+            return st
         with self._lock:
             st = self._states.get(scene)
             if st is None:
@@ -3065,16 +3071,21 @@ class OnlineRuntimeRegistry:
         self.gbdt_topn = int(gbdt_topn)
         self.recall_rank_cap = int(recall_rank_cap)
         self._states: dict[str, OnlineRuntime] = {}
+        self._lock = threading.Lock()
 
     def get_runtime(self, tag: str | None) -> OnlineRuntime:
         use_tag = str(tag or self.default_tag).lower()
         if use_tag not in {"easy", "hard"}:
             raise ValueError(f"invalid tag: {tag}")
         rt = self._states.get(use_tag)
-        if rt is None:
-            rt = OnlineRuntime(tag=use_tag, gbdt_topn=self.gbdt_topn, recall_rank_cap=self.recall_rank_cap)
-            self._states[use_tag] = rt
-        return rt
+        if rt is not None:
+            return rt
+        with self._lock:
+            rt = self._states.get(use_tag)
+            if rt is None:
+                rt = OnlineRuntime(tag=use_tag, gbdt_topn=self.gbdt_topn, recall_rank_cap=self.recall_rank_cap)
+                self._states[use_tag] = rt
+            return rt
 
 
 def main() -> None:

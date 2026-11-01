@@ -97,7 +97,16 @@ class _SharedNoteStore:
 
 
 class DSSMRecaller:
-    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str, *, query_encoder_dir=None, query_encoder_revision=None, use_shared_note_vectors=False, inference_contract=None):
+    def __init__(self, scene: str, tag: str, deploy_tag_dir: Path, group_key: str, *, query_encoder_dir=None, query_encoder_revision=None, use_shared_note_vectors=False, inference_contract=None, query_strategy="single", ann_engine="cpu"):
+        if not isinstance(query_strategy, str) or query_strategy not in {"single", "adapted_k3_v1"} or (query_strategy != "single" and scene != "rec"):
+            raise ValueError("Unsupported current-request ANN query strategy")
+        if not isinstance(ann_engine, str) or ann_engine not in {"cpu", "cuda_cpu_refine_v1"}:
+            raise ValueError("Unsupported current-request ANN engine")
+        if ann_engine != "cpu" and query_strategy != "adapted_k3_v1":
+            raise ValueError("GPU refinement requires the validated multi-interest policy")
+        self.ann_engine = ann_engine
+        self._ann_engine = None
+        self.query_strategy = query_strategy
         self.scene = scene
         self.use_shared_note_vectors = bool(use_shared_note_vectors)
         self.query_encoder_dir = query_encoder_dir
@@ -121,6 +130,19 @@ class DSSMRecaller:
         self._query_cache_max = 2048
         self.enabled = False
         self._load_assets()
+        if query_strategy == "adapted_k3_v1" and (not self.enabled or self.model_family != "adapted_residual_dssm_v1"
+                or self.retrieval_dim != 256 or self.model.content_input_dim != 128):
+            raise ValueError("Multi-interest retrieval requires the trained 128-input adapted Rec tower")
+        if ann_engine == "cuda_cpu_refine_v1":
+            from recall.exact_ip_filter import ExactIPFilter
+            self._ann_engine = ExactIPFilter(self.ann_index, enable_cuda=True)
+
+    def retrieval_status(self):
+        from dataclasses import asdict
+        engine = getattr(self, "_ann_engine", None)
+        return {"query_strategy": getattr(self, "query_strategy", "single"),
+                "requested_engine": getattr(self, "ann_engine", "cpu"),
+                "last_head_execution": asdict(engine.diagnostics) if engine is not None else {"path": "cpu"}}
 
     def _artifact_path(self, rel_path: str) -> Path:
         return self.deploy_tag_dir / rel_path
@@ -532,12 +554,50 @@ class DSSMRecaller:
         return self.train_mod.build_history_summary_from_ids(hist_ids, self.user_store,
             history_contract=getattr(self, "history_contract", "legacy_raw_order_v0")).reshape(1, -1).float()
 
+    def _build_interest_queries(self, history, global_query: np.ndarray) -> np.ndarray:
+        from recall.multi_interest import k3_history_means
+        from training.history import recent_history_ids
+
+        query = np.asarray(global_query, dtype=np.float32)
+        if query.shape != (1, 256) or not np.isfinite(query).all():
+            raise ValueError("Multi-interest requires a finite canonical [1,256] query")
+        ids = recent_history_ids(history, 20)
+        raw = self.user_store["note_text"].get_batch_vecs(ids).detach().cpu().numpy().astype(np.float32)
+        mean = self.model.residual_pca_mean.detach().cpu().numpy()
+        components = self.model.residual_pca_components.detach().cpu().numpy()
+        def cluster_transform(values):
+            unit = values / np.maximum(np.linalg.norm(values, axis=-1, keepdims=True), 1e-12)
+            projected = (unit - mean) @ components.T
+            return projected / np.maximum(np.linalg.norm(projected, axis=-1, keepdims=True), 1e-12)
+        means, metadata = k3_history_means(raw, cluster_transform=cluster_transform)
+        if metadata["fallback"]:
+            return query.copy()
+        heads = []
+        with torch.no_grad(), torch.autocast("cpu", enabled=False):
+            for value in means:
+                content = self.model.project_user_content(torch.from_numpy(value.reshape(1, 768)))
+                head = query[0].copy()
+                head[128:] = ((1. - self.model.residual_weight).sqrt() * content).numpy()[0]
+                heads.append(head)
+        return np.asarray(heads, np.float32)
+
+    def _search_interest_queries(self, queries: np.ndarray, max_rank: int):
+        scores = {}
+        for query in queries:
+            ids, values = self._search_ann(query[None], max_rank)
+            for item, value in zip(ids, values):
+                if item not in scores or value > scores[item]:
+                    scores[item] = value
+        ids = sorted(scores, key=lambda item: (-scores[item], item))[:int(max_rank)]
+        return ids, [scores[item] for item in ids]
+
     def _search_ann(self, user_vec: np.ndarray, max_rank: int) -> tuple[list[int], list[float]]:
         values = np.asarray(user_vec, dtype=np.float32)
         if values.shape != (1, int(self.ann_index.d)) or not np.isfinite(values).all():
             raise ValueError("DSSM query vector differs from its bound ANN dimensions")
         # Residual towers deliberately retain sqrt(weight) norm for empty content; never renormalize.
-        dists, idxs = self.ann_index.search(np.ascontiguousarray(values), int(max_rank))
+        engine = getattr(self, "_ann_engine", None) or self.ann_index
+        dists, idxs = engine.search(np.ascontiguousarray(values), int(max_rank))
         note_ids: list[int] = []
         scores: list[float] = []
         for row_idx, score in zip(idxs[0].tolist(), dists[0].tolist()):
@@ -718,7 +778,12 @@ class DSSMRecaller:
                 raise RuntimeError("Current request tower input could not be encoded")
             return pd.DataFrame()
 
-        ann_note_ids, ann_scores = self._search_ann(user_vec=user_vec, max_rank=int(max_rank))
+        if getattr(self, "query_strategy", "single") == "adapted_k3_v1":
+            history = feat_req.iloc[0].get("recent_clicked_note_idxs", [])
+            queries = self._build_interest_queries(history, user_vec)
+            ann_note_ids, ann_scores = self._search_interest_queries(queries, int(max_rank))
+        else:
+            ann_note_ids, ann_scores = self._search_ann(user_vec=user_vec, max_rank=int(max_rank))
         if not ann_note_ids:
             return pd.DataFrame()
         if pure_request_ann:

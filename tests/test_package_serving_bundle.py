@@ -190,7 +190,7 @@ def adapted_fixture(root, dim=128, learned=False):
         rank_path.write_text(json.dumps(rank))
         runtime = root / 'src/recall/learned_context_fusion.py'
         runtime.parent.mkdir(parents=True)
-        runtime.write_text('# bound learned fusion runtime fixture\n')
+        runtime.write_bytes((Path(__file__).resolve().parents[1] / 'src/recall/learned_context_fusion.py').read_bytes())
     return args, experiment, release
 
 
@@ -235,6 +235,25 @@ class AdaptedServingPackageTests(unittest.TestCase):
                 self.assertEqual(recaller._adapted_index_contract(faiss.read_index(str(ann_path)),
                     ann_meta, item_meta, 3), 'FlatIP')
                 self.assertFalse(list(root.rglob('active_bundle.json')))
+
+    def test_selected_interest_and_head_policies_bind_actual_runtime_sources(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-package-test-') as tmp:
+            root = Path(tmp)
+            args, _, _ = adapted_fixture(root, learned=True)
+            policy = json.loads(args.policy_file.read_text())
+            policy['ann_query'] = dict(version=1, strategy='adapted_k3_v1')
+            policy['head_guard'] = dict(version=1, strategy='coarse100_prior10_v1')
+            args.policy_file.write_text(json.dumps(policy))
+            for filename in ('multi_interest.py', 'head_guard.py'):
+                target = root/'src/recall'/filename
+                target.write_bytes((Path(__file__).resolve().parents[1]/'src/recall'/filename).read_bytes())
+            _, bundle = package_bundle(args, root)
+            for filename in ('multi_interest.py', 'head_guard.py'):
+                name = 'src/recall/' + filename
+                self.assertEqual(bundle['assets'][name], file_sha256(root/name))
+            self.assertEqual(bundle['recall_policy']['ann_query'], policy['ann_query'])
+            self.assertEqual(bundle['recall_policy']['head_guard'], policy['head_guard'])
+            self.assertFalse(list(root.rglob('active_bundle.json')))
 
     def test_corrupt_active_heads_roles_or_full_binding_are_rejected(self):
         for mutation in ('missing_head', 'shape', 'role', 'full_sha', 'nonfinite', 'dtype'):

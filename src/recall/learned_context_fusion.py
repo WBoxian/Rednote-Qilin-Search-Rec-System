@@ -247,8 +247,10 @@ class RankedCandidates:
         return pd.DataFrame({"note_idx": self.note_idx, "score": self.score, "rank": self.rank})
 
 
-def rank_candidates(features: CandidateFeatures, predictions) -> RankedCandidates:
+def rank_candidates(features: CandidateFeatures, predictions, *, head_guard=False) -> RankedCandidates:
     """Fixed alpha=.5/RRF60/top500; float32 prior ties are intentional."""
+    if type(head_guard) is not bool:
+        raise ValueError("head_guard must be an explicit boolean")
     if not isinstance(features, CandidateFeatures):
         raise ValueError("Validated CandidateFeatures are required")
     _schema(features.feature_names)
@@ -265,6 +267,18 @@ def rank_candidates(features: CandidateFeatures, predictions) -> RankedCandidate
     prior_ranks[prior_order] = np.arange(1, len(ids) + 1)
     blend = .5 / (60 + learned_ranks) + .5 / (60 + prior_ranks)
     take = np.lexsort((ids, -blend))[:500]
+    if head_guard:
+        from recall.head_guard import guarded_head_order, ordinal_rank_scores
+        # The head control is the existing FP64 weighted-RRF Top500, whereas
+        # the learned blend above intentionally retains its trained FP32 prior.
+        head_prior = np.zeros(len(ids), np.float64)
+        for channel, weight in enumerate((2., 1., 1.)):
+            present = features.route_ranks[:, channel] < 1001
+            head_prior[present] += weight / (60 + features.route_ranks[present, channel])
+        head_order = np.lexsort((ids, -head_prior))[:500]
+        ordered = guarded_head_order(ids[take], ids[head_order], coarse_pool=100, head_size=10)
+        return RankedCandidates(ordered, ordinal_rank_scores(len(ordered)),
+                                np.arange(1, len(ordered) + 1))
     return RankedCandidates(ids[take], blend[take], np.arange(1, len(take) + 1))
 
 
@@ -307,8 +321,8 @@ class LearnedContextFusion:
             raise ValueError("Predictor returned an invalid shape")
         return predictions
 
-    def fuse(self, routes, *, history, user_idx, q0_pca, item_pca_lookup, support):
+    def fuse(self, routes, *, history, user_idx, q0_pca, item_pca_lookup, support, head_guard=False):
         features = build_candidate_features(routes, history=history, user_idx=user_idx,
             q0_pca=q0_pca, item_pca_lookup=item_pca_lookup, support=support)
-        return rank_candidates(features, self.predict(features))
+        return rank_candidates(features, self.predict(features), head_guard=head_guard)
 
