@@ -63,3 +63,15 @@ export const CurrentUserTrainingReplay: Story = {
     await userEvent.click(canvas.getByRole('button', { name: '关闭' }));
   },
 };
+
+export const UserWithoutRequests: Story = {
+  beforeEach: async context => {
+    const example = { scope: 'frozen_full_test_examples', scene: 'search', request_id: 1, source_user_idx: 8, result_count: 2, true_top10: [], dssm_top10: [], preranking_top10: [], ranking_top10: [], source_recent_behaviors: [] };
+    (context as any).msw.use(http.get('/api/validation', () => HttpResponse.json({ validation: { examples: [example], current_user_example_status: '当前用户没有可回放的原始请求，以下展示其他用户的固定测试样例' } })));
+  },
+  play: async ({ canvas }) => {
+    await expect(await canvas.findByText('当前用户没有可回放的原始请求，以下展示其他用户的固定测试样例')).toBeVisible();
+    await expect(canvas.getByText('其他用户')).toBeVisible();
+    await expect(canvas.queryByText('当前用户', { exact: true })).not.toBeInTheDocument();
+  },
+};

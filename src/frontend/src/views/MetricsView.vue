@@ -83,8 +83,8 @@ const rankingMetricDefs = [
 ] as const;
 
 const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
-  'HitRate@10': { lines: ['HitRate@10 = mean(Top10 中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
-  'HitRate@50': { lines: ['HitRate@50 = mean(Top50 中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
+  'HitRate@10': { lines: ['HitRate@10 = 均值(前10条中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
+  'HitRate@50': { lines: ['HitRate@50 = 均值(前50条中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
   'MRR@10': { lines: ['MRR@10 = mean(首个命中排名 ≤ 10 时取排名倒数，否则取 0)'], desc: ['分母保留全部原始测试请求。'] },
   'Recall@100': {
     lines: [
@@ -347,7 +347,7 @@ const activeUserProfile = computed(() => {
       const title = String(row?.title || '').trim();
       if (title) return title.slice(0, 18);
       const noteId = Number(row?.note_idx);
-      return Number.isFinite(noteId) ? `note ${noteId}` : '';
+      return Number.isFinite(noteId) ? `笔记 ${noteId}` : '';
     })
     .filter(Boolean);
   const recentSignals = [
@@ -387,14 +387,14 @@ function behaviorScene(row: any) {
 }
 
 function behaviorPrimary(row: any) {
-  return row?.title || row?.query || `note=${row?.note_idx ?? '-'}`;
+  return row?.title || row?.query || `笔记编号=${row?.note_idx ?? '-'}`;
 }
 
 function behaviorSecondary(row: any) {
   const parts = [
-    `note ${row?.note_idx ?? '-'}`,
+    `笔记 ${row?.note_idx ?? '-'}`,
     behaviorScene(row),
-    row?.query ? `query: ${row.query}` : '',
+    row?.query ? `查询词：${row.query}` : '',
   ].filter(Boolean);
   return parts.join(' · ');
 }
@@ -771,6 +771,7 @@ onUnmounted(stopValidationProgress);
           </div>
         </div>
 
+        <p v-if="/没有|暂不可用/.test(validationByScene[currentScene]?.current_user_example_status || '')" class="meta">{{ validationByScene[currentScene].current_user_example_status }}</p>
         <div v-if="validationLoading" class="validation-progress-shell">
           <div class="validation-progress-head">
             <div class="validation-progress-title">
@@ -800,7 +801,7 @@ onUnmounted(stopValidationProgress);
 
           <div class="source-head">
             <div class="section-title section-title-small">最近行为</div>
-            <div class="meta">请求提供的历史，按 note 去重；未提供的事件时间和来源不作推断</div>
+            <div class="meta">请求提供的历史，按笔记编号去重；未提供的事件时间和来源不作推断</div>
           </div>
           <div class="source-behavior-grid">
             <button
@@ -833,7 +834,7 @@ onUnmounted(stopValidationProgress);
             </div>
 
             <div class="compare-cell">
-              <h4>召回 Top10</h4>
+              <h4>召回前10条</h4>
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.dssm_top10" :key="`dssm-${idx}`" class="compare-row" @click="openExampleDetail(item)">
@@ -846,7 +847,7 @@ onUnmounted(stopValidationProgress);
             </div>
 
             <div class="compare-cell">
-              <h4>粗排 Top10</h4>
+              <h4>粗排前10条</h4>
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.preranking_top10" :key="`pre-${idx}`" class="compare-row" @click="openExampleDetail(item)">
@@ -859,7 +860,7 @@ onUnmounted(stopValidationProgress);
             </div>
 
             <div class="compare-cell">
-              <h4>精排 Top10</h4>
+              <h4>精排前10条</h4>
               <table class="table compact-table">
                 <tbody>
                   <tr v-for="(item, idx) in activeExample.ranking_top10" :key="`rank-${idx}`" class="compare-row" @click="openExampleDetail(item)">

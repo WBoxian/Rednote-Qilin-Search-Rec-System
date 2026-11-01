@@ -29,6 +29,7 @@ export interface AblationRow {
 }
 export function metricLabel(name: string): string {
   const labels: Record<string, string> = { HitRate: '命中率', Recall: '召回率', MRR: '平均倒数排名', NDCG: '归一化折损累计增益', AUC: '总体区分能力', GAUC: '用户加权区分能力', MedianFirstHitRank: '首命中中位排名' };
+  if (name === 'MedianFirstHitRank') return '首命中中位排名（仅前500条内命中的请求）';
   if (name === 'known_positive_NDCG@10') return '已知点击排序质量（NDCG@10）';
   const [key] = name.split('@');
   return labels[key] ? `${labels[key]}（${name}）` : name;

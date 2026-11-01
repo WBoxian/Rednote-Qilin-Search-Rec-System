@@ -58,6 +58,9 @@ class VersionedValidationTests(unittest.TestCase):
             self.assertEqual(set(kwargs["request_context"].columns),{"request_idx","user_idx","query","recent_clicked_note_idxs"})
             self.assertEqual(kwargs["request_context"].recent_clicked_note_idxs.iloc[0],[0])
             self.assertEqual(row["ranking_top10"],[])
+            pipeline.build_feed.reset_mock()
+            self.assertIsNone(build_current_user_example(pipeline,99,{}))
+            pipeline.build_feed.assert_not_called()
 
     def fixture(self, root):
         with patch.dict(os.environ, {"QILIN_ASYNC_PREWARM": "0"}):
