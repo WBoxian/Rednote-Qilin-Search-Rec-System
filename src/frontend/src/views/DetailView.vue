@@ -9,6 +9,7 @@ const route = useRoute();
 const router = useRouter();
 const detail = ref<any>(null);
 const detailError = ref('');
+const stageEnabled = ref<Partial<Record<'preranking' | 'ranking', boolean>>>({});
 const currentUser = ref<any>(null);
 const latencyMs = ref<number | null>(null);
 const sceneRef = ref('search');
@@ -32,6 +33,12 @@ const copy = {
   close: '\u5173\u95ED',
   rankNote: '\u6700\u7EC8 Rank \u7EE7\u627F\u9996\u9875\u6362\u4E00\u6279\u4E4B\u540E\u7684\u5C55\u793A\u987A\u5E8F',
 };
+
+function stageRank(stage: 'preranking' | 'ranking') {
+  if (stageEnabled.value[stage] === false) return '未启用';
+  const rank = detail.value?.stage_top500_ranks?.[stage] ?? '-';
+  return stageEnabled.value[stage] === true ? rank : String(rank) + '（状态未确认）';
+}
 
 function fmt(v: any) {
   if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(4);
@@ -154,6 +161,10 @@ onMounted(async () => {
         && Date.now() - Number(seed?.savedAt || 0) <= 10 * 60 * 1000
       ) {
         detail.value = seed.detail || null;
+        for (const stage of ['preranking', 'ranking'] as const) {
+          const enabled = seed.detail?.stage_enabled?.[stage];
+          if (typeof enabled === 'boolean') stageEnabled.value[stage] = enabled;
+        }
       }
     }
   } catch {
@@ -313,8 +324,8 @@ function actionCount(kind: 'like' | 'collect' | 'comment' | 'share') {
       <table class="table">
         <tbody>
           <tr><td>&#x53EC;&#x56DE; Rank</td><td>{{ detail.stage_top500_ranks?.recall ?? '-' }}</td></tr>
-          <tr><td>&#x7C97;&#x6392; Rank</td><td>{{ detail.stage_top500_ranks?.preranking ?? '-' }}</td></tr>
-          <tr><td>&#x7CBE;&#x6392; Rank</td><td>{{ detail.stage_top500_ranks?.ranking ?? '-' }}</td></tr>
+          <tr><td>&#x7C97;&#x6392; Rank</td><td>{{ stageRank('preranking') }}</td></tr>
+          <tr><td>&#x7CBE;&#x6392; Rank</td><td>{{ stageRank('ranking') }}</td></tr>
           <tr><td>&#x6700;&#x7EC8; Rank(&#x9996;&#x9875;&#x5C55;&#x793A;)</td><td>{{ detail.stage_top500_ranks?.rerank ?? '-' }}</td></tr>
         </tbody>
       </table>

@@ -67,6 +67,15 @@ function markImageBroken(it: any) {
   brokenImages.value = { ...brokenImages.value, [cardKey(it)]: true };
 }
 
+function feedItems(feed: any): any[] {
+  if (!Array.isArray(feed?.items)) return [];
+  const stageEnabled = {
+    preranking: typeof feed?.stages?.preranking?.enabled === 'boolean' ? feed.stages.preranking.enabled : undefined,
+    ranking: typeof feed?.stages?.ranking?.enabled === 'boolean' ? feed.stages.ranking.enabled : undefined,
+  };
+  return feed.items.map((item: any) => ({ ...item, stage_enabled: stageEnabled }));
+}
+
 function saveHomeCache() {
   try {
     sessionStorage.setItem(
@@ -153,7 +162,7 @@ async function load(reset = false, forceRefresh = false, excludeNoteIds: number[
     const f = r.feed;
     latencyMs.value = Number(f?.latency_ms ?? r?.latency_ms ?? 0);
     stageMs.value = (f?.stage_ms && typeof f.stage_ms === 'object') ? f.stage_ms : null;
-    const batch = Array.isArray(f.items) ? f.items : [];
+    const batch = feedItems(f);
     const seen = new Set(items.value.map((x) => Number(x.note_idx)));
     const unique = batch.filter((x: any) => {
       const nid = Number(x?.note_idx);
@@ -188,7 +197,7 @@ async function refreshRec() {
     const f = r.feed || {};
     latencyMs.value = Number(f?.latency_ms ?? r?.latency_ms ?? 0);
     stageMs.value = (f?.stage_ms && typeof f.stage_ms === 'object') ? f.stage_ms : null;
-    const batch = Array.isArray(f.items) ? f.items : [];
+    const batch = feedItems(f);
     items.value = batch.slice(0, 15);
     preloadBuffer.value = batch.slice(15);
     feedSessionKey.value = String(f.feed_session_key || nextRefreshKey);
@@ -315,6 +324,7 @@ async function openDetail(it: any) {
           accum_collect_num: Number(it.accum_collect_num || 0),
           accum_comment_num: Number(it.accum_comment_num || 0),
           accum_share_num: Number(it.accum_share_num || 0),
+          stage_enabled: it.stage_enabled,
           stage_top500_ranks: {
             recall: Number(it?.stage_ranks?.recall || 0) || '-',
             preranking: Number(it?.stage_ranks?.preranking || 0) || '-',
