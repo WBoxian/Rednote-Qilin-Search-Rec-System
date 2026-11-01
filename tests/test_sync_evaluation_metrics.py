@@ -103,6 +103,10 @@ class TestSyncEvaluationMetrics(unittest.TestCase):
         self.assertIn("known_positive_NDCG@10 = 0.0200", got)
         self.assertIn("排序（历史曝光内诊断）", got)
         self.assertEqual(got, sync.update_readme_text(got, snapshot))
+        snapshot["scenes"]["rec"] = dict(scene, recall={"test": raw,
+            "lineage": {"model_family": "adapted_residual_dssm_v1"}})
+        self.assertIn("较上一版（残差DSSM/PQ/211融合）", sync.update_readme_text(text, snapshot))
+        self.assertIn("previous residual DSSM/PQ/211 fusion", sync.update_readme_text(text, snapshot, english=True))
 
     def test_missing_active_bundle_fails_before_snapshot_or_write(self):
         with tempfile.TemporaryDirectory(prefix="qilin-metrics-test-") as temporary:
@@ -307,7 +311,7 @@ class TestAdaptedReleasePublication(unittest.TestCase):
         write("recall/index/dssm_rec_hard_ivfpq_meta.json", index)
         for name in ("graph.npz", "users.npy", "items.npy", "swing.npz"):
             entries["cf_" + name] = write("cf/" + name, {"fixture": name})
-        release = dict(release_schema="adapted_content_v1", scene="rec", ranking_strategy="recall_only",
+        release = dict(release_schema="adapted_content_v1", scene="rec", evaluated_at="2026-11-01", ranking_strategy="recall_only",
                        accepted_for_release=True, sources=entries)
         entry = write("release.json", release)
         bundle = dict(recall_dir="recall", recall_policy=policy, training_cutoff_exclusive=100,
@@ -325,6 +329,7 @@ class TestAdaptedReleasePublication(unittest.TestCase):
             self.assertEqual(release["lineage"]["packaging_gradient_updates"], 0)
             self.assertEqual(release["lineage"]["index_type"], "FlatIP")
             self.assertIsNone(release["lineage"]["nprobe"])
+            self.assertEqual(release["lineage"]["evaluated_at"], "2026-11-01")
 
     def test_self_consistent_pass_badge_cannot_override_wrong_truth_or_policy(self):
         cases = (("proof.json", "original_positive_pairs", 1),

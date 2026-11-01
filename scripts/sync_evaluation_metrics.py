@@ -322,7 +322,8 @@ def load_adapted_rec_release(root, bundle, release, sources):
         gradient_update_scope=metadata["gradient_update_scope"], packaging_gradient_updates=0,
         content_training_plan_sha256=metadata["content_training_plan_sha256"],
         content_training_data_contract_sha256=metadata["content_training_data_contract_sha256"],
-        pca_fit_split="original_train_fit", fusion_strategy="learned_rrf")
+        pca_fit_split="original_train_fit", fusion_strategy="learned_rrf",
+        evaluated_at=release.get("evaluated_at", "2026-10-31"))
     return release
 
 
@@ -579,7 +580,8 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
         "tag": "hard",
         "protocol": {"name": "official_full_test_bundle_bound_v2", "full_test": True,
                      "held_out": False, "strict_acceptance": "blocked", "sampling": "none",
-                     "label": "binary_click", "evaluated_at": "2026-10-31",
+                     "label": "binary_click", "evaluated_at": max(
+                         value["recall"]["lineage"].get("evaluated_at", "2026-10-31") for value in scenes.values()),
                      "publication_status": "preview_unpromoted" if preview else "active_bundle_bound",
                      "strict_acceptance_reasons": ["feature_point_in_time_lineage_unknown", "official_test_previously_observed"],
                      "warning": "全量测试集，测试集已被观察；特征时间隔离未完成核验。排序为完整日志曝光条件评估，端到端为已知正例保留评估。"},
@@ -617,6 +619,9 @@ def update_readme_text(text: str, snapshot: dict, *, english=False) -> str:
                 if not math.isclose(comparison["current"], values["Recall@100"], abs_tol=1e-12, rel_tol=0):
                     raise ValueError("README comparison does not match current pipeline")
                 suffix = "Recall@100 relative lift vs frozen baseline" if english else "Recall@100 较冻结基线相对提升"
+                if current["recall"].get("lineage", {}).get("model_family") == "adapted_residual_dssm_v1":
+                    suffix = ("Recall@100 relative lift vs previous residual DSSM/PQ/211 fusion" if english
+                              else "Recall@100 较上一版（残差DSSM/PQ/211融合）相对提升")
                 body += f"; {suffix} {comparison['relative_delta_pct']:+.2f}%"
             counts["recall"] += 1
         elif scene and body.startswith("  - ") and (body.startswith("  - Ranking (") or body.startswith("  - 排序（")):
