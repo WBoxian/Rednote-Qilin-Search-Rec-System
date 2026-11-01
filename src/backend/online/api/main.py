@@ -64,7 +64,10 @@ class AppContext:
 		self._prewarm_feed_enabled = str(os.getenv("QILIN_PREWARM_FEED", "1")).strip().lower() not in {"0", "false", "no"}
 		self._prewarm_feed_page_size = max(12, min(60, int(os.getenv("QILIN_PREWARM_FEED_PAGE_SIZE", "30"))))
 		self._blocking_feed_scenes = self._parse_scene_list(os.getenv("QILIN_BLOCKING_PREWARM_FEED_SCENES", "rec"))
-		self._async_feed_scenes = self._parse_scene_list(os.getenv("QILIN_ASYNC_PREWARM_FEED_SCENES", "search"))
+		self._async_feed_scenes = self._parse_scene_list(os.getenv("QILIN_ASYNC_PREWARM_FEED_SCENES", "rec,search"))
+		self._prewarm_lock = threading.Lock()
+		self._prewarm_status = {scene: {"stage": "pending" if self._prewarm_enabled and self._prewarm_feed_enabled else "disabled"}
+			for scene in (self._blocking_feed_scenes if self._blocking_prewarm else self._async_feed_scenes)}
 		self._snapshot_root = BASE_DIR / "outputs" / "serving_cache"
 		if self._prewarm_enabled:
 			if self._blocking_prewarm:
@@ -116,21 +119,39 @@ class AppContext:
 				continue
 		return pipelines
 
+	def prewarm_readiness(self) -> dict[str, Any]:
+		with self._prewarm_lock:
+			return deepcopy(self._prewarm_status)
+
 	def _prewarm_homepage_runtime(self, blocking: bool = True) -> None:
-		try:
-			if self._prewarm_feed_enabled:
-				target_scenes = self._blocking_feed_scenes if blocking else self._async_feed_scenes
-				pipelines = self._load_default_pipelines(target_scenes or None)
-				for scene in (target_scenes or list(pipelines.keys())):
-					pipe = pipelines.get(scene)
-					if pipe is None:
-						continue
-					try:
-						pipe.prewarm_homepage_feed(page_size=self._prewarm_feed_page_size)
-					except Exception:
-						continue
-		except Exception:
+		if not self._prewarm_feed_enabled:
 			return
+		targets = self._blocking_feed_scenes if blocking else self._async_feed_scenes
+		for scene in (targets or ["search", "rec"]):
+			started = time.perf_counter()
+			with self._prewarm_lock:
+				self._prewarm_status[scene] = {"stage": "loading_pipeline"}
+			try:
+				tag = self.resolve_scene_tag(scene)
+				pipe = self.registry.get_runtime(tag).get_pipeline(scene)
+				loaded = time.perf_counter()
+				with self._prewarm_lock:
+					self._prewarm_status[scene] = {"stage": "warming_feed", "pipeline_load_ms": (loaded-started)*1000}
+				feed = pipe.prewarm_homepage_feed(page_size=self._prewarm_feed_page_size)
+				if not isinstance(feed, dict):
+					raise ValueError("Feed prewarm returned an invalid response")
+				errors = feed.get("route_status", {}).get("errors", [])
+				degraded = feed.get("degraded_reason")
+				finished = time.perf_counter()
+				status = {"stage": "degraded" if degraded or errors else "ready",
+					"pipeline_load_ms": (loaded-started)*1000, "feed_warm_ms": (finished-loaded)*1000,
+					"total_ms": (finished-started)*1000, "degraded_reason": degraded,
+					"route_errors": errors, "model_bundle_id": feed.get("model_bundle_id")}
+			except Exception as error:
+				status = {"stage": "failed", "error": type(error).__name__ + ": " + str(error),
+					"total_ms": (time.perf_counter()-started)*1000}
+			with self._prewarm_lock:
+				self._prewarm_status[scene] = status
 
 	def _async_prewarm_runtime_artifacts(self) -> None:
 		return
@@ -572,6 +593,7 @@ def create_app(
 			return {
 				"ok": True,
 				"status": "alive",
+				"prewarm": app.state.ctx.prewarm_readiness(),
 				"loaded_tags": loaded_tags,
 				"note": "append ?verbose=1 to run full model readiness",
 			}
@@ -588,7 +610,7 @@ def create_app(
 			isinstance(state, dict) and state.get("ready") is True
 			for tag_state in out.values() for state in tag_state.values()
 		)
-		payload = {"ok": ready, "status": "ready" if ready else "not_ready", "readiness": out}
+		payload = {"ok": ready, "status": "ready" if ready else "not_ready", "readiness": out, "prewarm": app.state.ctx.prewarm_readiness()}
 		return payload if ready else JSONResponse(status_code=503, content=payload)
 
 	@app.get("/")
