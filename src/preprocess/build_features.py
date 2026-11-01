@@ -16,7 +16,7 @@ CAT_DIR = FEATURE_DIR / "vocab_dict"
 USER_CAT = ["gender", "platform", "age", "location"]
 NOTE_CAT = ["taxonomy1_id", "taxonomy2_id", "taxonomy3_id"]
 STATIC_NUMERIC = ["note_type", "video_duration", "video_height", "video_width", "image_num", "content_length", "commercial_flag"]
-FEATURE_CONTRACT = "finite_click_preserving_static_v2"
+FEATURE_CONTRACT = "finite_click_preserving_static_v3"
 
 
 def _resolve_sample_path(scene, split, sample_dir=None):
@@ -42,7 +42,7 @@ def prepare_category_mappings(con, sample_dir=None, vocab_dir=None):
             mapping = {value: i for i, value in enumerate(unique)}
             with path.open("wb") as stream:
                 pickle.dump(mapping, stream)
-        con.register(f"map_{column}", pd.DataFrame(list(mapping.items()), columns=["raw_val", f"{column}_enc"]))
+        con.register(f"map_{column}", pd.DataFrame({"raw_val": pd.Series(list(mapping), dtype="string"), f"{column}_enc": pd.Series(list(mapping.values()), dtype="int64")}))
 
 
 def _resolve_event_time_col(scene, in_file):
@@ -90,17 +90,30 @@ def build_features(scene, split, *, sample_dir=None, output_dir=None, vocab_dir=
             raise ValueError(f"Invalid binary click labels: {invalid}")
         terms = ["1.0 * click"] + [f"{weight}.0 * GREATEST({_finite(name)}, 0.0)" for name, weight in [("like", 2), ("collect", 3), ("comment", 3), ("share", 3)]]
         terms.append(f"0.2 * LN(1.0 + GREATEST({_finite('page_time')}, 0.0))")
+        invalid_time = con.execute(f'SELECT count(*) FROM samples WHERE "{time_column}" IS NULL OR NOT isfinite(TRY_CAST("{time_column}" AS DOUBLE)) OR "{time_column}"<=0').fetchone()[0]
+        if invalid_time:
+            raise ValueError(f"Invalid event timestamp: {invalid_time}")
         projection = [key]
+        if "exposure_index" in columns:
+            projection.append("exposure_index")
+        projection += ["coalesce(len(recent_clicked_note_idxs),0) AS history_length",
+                       "coalesce(len(list_distinct(recent_clicked_note_idxs)),0) AS history_unique_length",
+                       "CASE WHEN len(recent_clicked_note_idxs)>0 THEN 1.0-len(list_distinct(recent_clicked_note_idxs))*1.0/len(recent_clicked_note_idxs) ELSE 0.0 END AS history_repeat_ratio"]
         if scene == "search":
             projection.append("query_from_type")
         projection += [f'"{time_column}" AS event_timestamp', "recent_clicked_note_idxs", "session_idx", "user_idx", "note_idx", "click",
             "CASE WHEN click=0 THEN 0.0 ELSE " + " + ".join(terms) + " END AS y_multi", "position",
             "CASE WHEN position<=4 THEN 1 WHEN position<=8 THEN 2 WHEN position<=12 THEN 3 WHEN position<=20 THEN 4 WHEN position<=50 THEN 5 WHEN position<=200 THEN 6 WHEN position<=300 THEN 7 WHEN position<=400 THEN 8 WHEN position<=500 THEN 9 ELSE 10 END AS pos_bucket"]
         projection += [f"{_finite(name)} AS {name}" for name in STATIC_NUMERIC]
+        projection += [f'CASE WHEN isfinite(TRY_CAST("{name}" AS DOUBLE)) THEN 0 ELSE 1 END AS {name}_is_missing' for name in STATIC_NUMERIC]
         joins = []
         for name in NOTE_CAT + USER_CAT:
             alias = "map_" + name
             projection.append(f"COALESCE({alias}.{name}_enc, 0) AS {name}_enc")
+            projection.append(f"CASE WHEN {alias}.{name}_enc IS NULL THEN 1 ELSE 0 END AS {name}_is_unknown")
+            missing_category = f"l.{name} IS NULL OR CAST(l.{name} AS VARCHAR)=''"
+            projection.append(f"CASE WHEN {missing_category} THEN 1 ELSE 0 END AS {name}_is_missing")
+            projection.append(f"CASE WHEN {alias}.{name}_enc IS NULL AND NOT ({missing_category}) THEN 1 ELSE 0 END AS {name}_is_unseen")
             joins.append(f"LEFT JOIN map_{name} {alias} ON CAST(l.{name} AS VARCHAR)={alias}.raw_val")
         aggregates = ["imp_num", "click_num", "like_num", "collect_num", "comment_num", "share_num",
             f"imp_{scene}_num", f"click_{scene}_num", f"{scene}_like_num", f"{scene}_collect_num",

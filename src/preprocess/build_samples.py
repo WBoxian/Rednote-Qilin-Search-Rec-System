@@ -76,14 +76,21 @@ def build_samples(scene: str, split: str, *, output_dir: Path | None = None,
                 raise ValueError(f"{table} requires unique nonnull {identifier}")
         con.execute(f"""CREATE TABLE stage_flat AS
             SELECT s.user_idx, s.session_idx, s.recent_clicked_note_idxs,
+                CAST(d.ordinality - 1 AS BIGINT) AS exposure_index,
                 {request_columns} u.note_idx, CAST(u.position AS INTEGER) AS position,
-                u.{time_key} AS timestamp, CAST(u.click AS INTEGER) AS click,
+                u.{time_key} AS timestamp, u.click AS click,
                 CAST(u.like AS INTEGER) AS like, CAST(u.collect AS INTEGER) AS collect,
                 CAST(u.comment AS INTEGER) AS comment, CAST(u.share AS INTEGER) AS share, u.page_time
-            FROM raw_logs AS s, UNNEST(s.{nested}) AS d(u)""")
-        invalid = con.execute("SELECT count(*) FROM stage_flat WHERE click IS NULL OR click NOT IN (0,1) OR note_idx IS NULL").fetchone()[0]
+            FROM raw_logs AS s, UNNEST(s.{nested}) WITH ORDINALITY AS d(u, ordinality)""")
+        invalid = con.execute("SELECT count(*) FROM stage_flat WHERE click IS NULL OR click NOT IN (0,1) OR note_idx IS NULL OR note_idx<0 OR note_idx<>floor(note_idx)").fetchone()[0]
         if invalid:
             raise ValueError(f"Invalid click/item identity in {invalid} exposures")
+        invalid_time = con.execute("SELECT count(*) FROM stage_flat WHERE timestamp IS NULL OR NOT isfinite(TRY_CAST(timestamp AS DOUBLE)) OR timestamp<=0").fetchone()[0]
+        if invalid_time:
+            raise ValueError(f"Invalid event timestamp in {invalid_time} exposures")
+        request_count, request_unique = con.execute(f"SELECT count(*),count(DISTINCT {key}) FROM raw_logs").fetchone()
+        if request_count != request_unique:
+            raise ValueError("Raw request IDs must be unique and nonnull")
         missing = con.execute("SELECT count(*) FROM stage_flat f LEFT JOIN notes n USING(note_idx) WHERE n.note_idx IS NULL").fetchone()[0]
         if missing:
             raise ValueError(f"{missing} exposures reference missing catalog items")

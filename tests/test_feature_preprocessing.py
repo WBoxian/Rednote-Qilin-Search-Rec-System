@@ -1,6 +1,7 @@
 """Regression tests at the raw-log -> staged sample -> feature and embedding seams."""
 import importlib
 import json
+import pickle
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ import pandas as pd
 from preprocess.build_samples import build_samples
 from preprocess.build_features import build_features
 from training.history import recent_history_ids, history_ids_oldest_first
+from preprocess.release import partition_requests, fit_vocabularies
 from training.dien_ranker import EmbeddingStore, EMB_DIM, SEQ_LEN
 
 
@@ -54,6 +56,66 @@ class FeaturePreprocessingTests(unittest.TestCase):
 
     def _features(self, scene="search"):
         return build_features(scene, "train", sample_dir=self.samples, output_dir=self.features, vocab_dir=self.vocab)
+
+    def test_fractional_raw_click_is_not_rounded_into_a_positive(self):
+        path = self.dataset / "recommendation_train/train-00000-of-00001.parquet"
+        frame = pd.read_parquet(path)
+        frame.at[0, "rec_result_details_with_idx"][0]["click"] = .5
+        frame.to_parquet(path, index=False)
+        with self.assertRaisesRegex(ValueError, "click"):
+            build_samples("rec", "train", dataset_dir=self.dataset, output_dir=self.root / "bad")
+
+    def test_nonfinite_event_time_is_rejected_before_feature_output(self):
+        path = self.dataset / "search_train/train-00000-of-00001.parquet"
+        frame = pd.read_parquet(path)
+        frame.at[0, "search_result_details_with_idx"][0]["search_timestamp"] = float("nan")
+        frame.to_parquet(path, index=False)
+        with self.assertRaisesRegex(ValueError, "timestamp"):
+            build_samples("search", "train", dataset_dir=self.dataset, output_dir=self.root / "bad")
+
+    def test_source_exposure_identity_survives_repeated_notes(self):
+        frame = pd.read_parquet(self.samples / "rec_train_samples.parquet")
+        self.assertIn("exposure_index", frame)
+        self.assertEqual(frame.sort_values(["request_idx", "exposure_index"]).exposure_index.tolist(), [0, 1, 0])
+        features = pd.read_parquet(self._features("rec"))
+        self.assertEqual(set(zip(frame.request_idx, frame.exposure_index)),
+                         set(zip(features.request_idx, features.exposure_index)))
+
+    def test_fit_only_vocabulary_distinguishes_holdout_unknown_and_serving_matches(self):
+        from preprocess.release import fit_vocabularies
+        from backend.online.item_features import encode_static_items
+        import pickle
+        path = self.samples / "search_train_samples.parquet"
+        frame = pd.read_parquet(path)
+        frame.loc[frame.search_idx == 101, "location"] = "holdout_city"
+        frame.to_parquet(path,index=False)
+        fit_vocabularies(path,"search_idx",[100],self.vocab)
+        output = pd.read_parquet(self._features())
+        self.assertTrue((output.loc[output.search_idx==100,"location_enc"]>0).all())
+        self.assertEqual(output.loc[output.search_idx==101,"location_enc"].tolist(),[0])
+        self.assertEqual(output.loc[output.search_idx==101,"location_is_unknown"].tolist(),[1])
+        self.assertEqual(output.loc[output.search_idx==101,"location_is_missing"].tolist(),[0])
+        self.assertEqual(output.loc[output.search_idx==101,"location_is_unseen"].tolist(),[1])
+        mappings = {name:pickle.loads((self.vocab/f"{name}.pkl").read_bytes()) for name in ["taxonomy1_id","taxonomy2_id","taxonomy3_id"]}
+        served = encode_static_items(self.notes,mappings).set_index("note_idx")
+        for name in mappings:
+            np.testing.assert_array_equal(output[name+"_enc"],output.note_idx.map(served[name+"_enc"]))
+
+    def test_missing_static_value_is_distinct_from_real_zero_and_history_repeats_survive(self):
+        path = self.samples / "search_train_samples.parquet"
+        frame = pd.read_parquet(path)
+        frame.loc[frame.note_idx==0,"image_num"] = np.nan
+        frame.loc[frame.note_idx==1,"image_num"] = 0.
+        for idx in frame.index:
+            frame.at[idx,"recent_clicked_note_idxs"] = [0,0,1]
+        frame.to_parquet(path,index=False)
+        output = pd.read_parquet(self._features())
+        self.assertTrue((output.image_num==0).all())
+        self.assertEqual(output.loc[output.note_idx==0,"image_num_is_missing"].tolist(),[1])
+        self.assertTrue((output.loc[output.note_idx==1,"image_num_is_missing"]==0).all())
+        self.assertTrue((output.history_length==3).all())
+        self.assertTrue((output.history_unique_length==2).all())
+        np.testing.assert_allclose(output.history_repeat_ratio,1/3)
 
     def test_catalog_static_fields_survive_actual_join_and_feature_build(self):
         for scene in ["search", "rec"]:
@@ -190,6 +252,51 @@ class FeatureEmbeddingFallbackTests(unittest.TestCase):
             pd.DataFrame({"request_idx": [1], "seq_embs": [[[1., 2.]]]}).to_parquet(path/"rec-part.parquet", index=False)
             with self.assertRaisesRegex(ValueError, "dimensions"):
                 EmbeddingStore(path, "request_idx", "seq_embs", name="rec_seq", is_sequence=True, prefix="rec")
+
+
+class PreprocessReleaseTests(unittest.TestCase):
+    def test_spanning_requests_are_excluded_not_split_or_moved(self):
+        frame = pd.DataFrame({"gid":[1,2,3,4,5],"first":[1,2,4,5,9],"last":[1,4,4,5,10]})
+        got = partition_requests(frame, 10, .5)
+        self.assertEqual(got["fit_ids"], [1])
+        self.assertEqual(got["validation_ids"], [3,4])
+        self.assertEqual(got["excluded_at_test_boundary"], 1)
+        self.assertEqual(got["excluded_at_validation_boundary"], 1)
+        self.assertEqual(got["validation_start"], 4)
+
+    def test_empty_or_tied_intervals_fail_instead_of_random_split(self):
+        frame = pd.DataFrame({"gid":[1,2],"first":[1,1],"last":[1,1]})
+        with self.assertRaisesRegex(ValueError,"strict forward"):
+            partition_requests(frame, 2)
+        with self.assertRaises(ValueError):
+            partition_requests(frame, float("nan"))
+
+    def test_vocab_fit_excludes_validation_and_reserves_unknown_without_renumbering_old(self):
+        from preprocess.build_features import USER_CAT, NOTE_CAT, prepare_category_mappings
+        import duckdb
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            sample = root/"train.parquet"
+            data = {"request_idx":[1,2,3]}
+            for name in USER_CAT+NOTE_CAT:
+                data[name] = ["fit_only","validation_only",None]
+            pd.DataFrame(data).to_parquet(sample,index=False)
+            old = root/"old.pkl"
+            old.write_bytes(pickle.dumps({"fit_only":0}))
+            before = old.read_bytes()
+            meta = fit_vocabularies(sample,"request_idx",[1],root/"new")
+            for name in USER_CAT+NOTE_CAT:
+                with (root/"new"/f"{name}.pkl").open("rb") as stream:
+                    mapping = pickle.load(stream)
+                self.assertEqual(mapping,{"fit_only":1})
+                self.assertEqual(meta["categories"][name]["embedding_size"],2)
+            self.assertEqual(old.read_bytes(),before)
+            with duckdb.connect() as con:
+                prepare_category_mappings(con,vocab_dir=root/"new")
+                known = con.execute("SELECT platform_enc FROM map_platform WHERE raw_val='fit_only'").fetchone()[0]
+                self.assertEqual(known,1)
+            with self.assertRaises(FileExistsError):
+                fit_vocabularies(sample,"request_idx",[1],root/"new")
 
 
 if __name__ == "__main__":
