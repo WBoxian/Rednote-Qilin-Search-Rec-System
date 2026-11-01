@@ -18,8 +18,10 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 from backend.online.bundle import bundle_identity
 from scripts.evaluation_comparisons import attach_comparisons
+from scripts.evaluation_coverage import label_coverage
 
 DEFAULT_BASE = ROOT / "outputs/evaluation/northstar_fix_20261031"
 DEFAULT_OUTPUT = ROOT / "src/backend/online/full_test_metrics.json"
@@ -460,13 +462,25 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
         ranking["serving_enabled"] = strategy == "learned"
         ranking["inference_contract"] = "frozen_logged_exposure_fp32"
         ranking["scope_note"] = "Frozen complete logged-exposure diagnostic; not rerun under the request-local serving numerical contract; not end-to-end serving quality."
-        scenes[scene] = {"recall": {"test": recall, "lineage": recall_lineage}, "ranking": ranking,
+        final_path = (sources.add(root / numerical["sources"]["final_candidates"]["path"]) if numerical
+                      else candidate_path if strategy == "recall_only"
+                      else sources.add(prior_dir / "test/final_candidates.parquet"))
+        folder, key, nested = (("search", "search_idx", "search_result_details_with_idx") if scene == "search"
+                               else ("recommendation", "request_idx", "rec_result_details_with_idx"))
+        paths = sorted((root / "datasets" / f"{folder}_test").glob("*.parquet"))
+        with duckdb.connect(config={"threads": 2}) as con:
+            exposure_labels = con.execute(f"""SELECT r.{key} gid,d.note_idx,d.click
+                FROM read_parquet(?) r,unnest(r.{nested}) u(d)""", [list(map(str, paths))]).fetchdf()
+        coverage = label_coverage(raw, exposure_labels, pd.read_parquet(final_path))
+        pipeline["candidate_path"] = final_path.relative_to(root).as_posix()
+        scenes[scene] = {"label_coverage": coverage, "recall": {"test": recall, "lineage": recall_lineage}, "ranking": ranking,
                          "pipeline": pipeline, "model_bundle_id": bundle["bundle_id"]}
     def load_catalog_metrics(scene, path):
         raw, _ = load_raw(root, scene, sources)
         return recall_metrics(raw, pd.read_parquet(path))
     attach_comparisons(root, base, scenes, sources, load_catalog_metrics)
     sources.add(root / "scripts/evaluation_comparisons.py")
+    sources.add(root / "scripts/evaluation_coverage.py")
     sources.add(Path(__file__))
     return {
         "tag": "hard",
@@ -497,15 +511,24 @@ def update_readme_text(text: str, snapshot: dict, *, english=False) -> str:
         if body.startswith(("  - Single-machine serial measurements", "  - 单机串行实测", "  - APIs return total and per-stage latency", "  - 接口返回总延迟与分阶段延迟")) or (body.startswith("  - ") and "~150ms" in body):
             body = "  - APIs return total and per-stage latency" if english else "  - 接口返回总延迟与分阶段延迟"
             counts["latency"] += 1
-        elif scene and body.startswith("  - ") and (body.startswith("  - Recall (") or body.startswith("  - 召回（")):
-            values = snapshot["scenes"][scene]["recall"]["test"]
+        elif scene and body.startswith("  - ") and (body.startswith("  - Recall (") or body.startswith("  - 召回（") or body.startswith("  - End-to-end (") or body.startswith("  - 端到端（")):
+            current = snapshot["scenes"][scene]
+            values = current.get("pipeline", {}).get("test", current["recall"]["test"])
             names = ("HitRate@10", "Recall@100", "MRR@100") if scene == "search" else ("HitRate@50", "Recall@100")
-            prefix = "  - Recall (test set): " if english else "  - 召回（测试集）："
+            names += ("known_positive_NDCG@10",) if "known_positive_NDCG@10" in values else ()
+            prefix = "  - End-to-end (full test, known clicks): " if english else "  - 端到端（全量测试，已知点击）："
             body = prefix + (", " if english else "，").join(f"`{name} = {values[name]:.4f}`" for name in names)
+            comparison = next((item for item in current.get("comparisons", {}).get("end_to_end", {}).get("metrics", [])
+                               if item["name"] == "Recall@100"), None)
+            if comparison and comparison.get("relative_delta_pct") is not None:
+                if not math.isclose(comparison["current"], values["Recall@100"], abs_tol=1e-12, rel_tol=0):
+                    raise ValueError("README comparison does not match current pipeline")
+                suffix = "Recall@100 relative lift vs frozen baseline" if english else "Recall@100 较冻结基线相对提升"
+                body += f"; {suffix} {comparison['relative_delta_pct']:+.2f}%"
             counts["recall"] += 1
         elif scene and body.startswith("  - ") and (body.startswith("  - Ranking (") or body.startswith("  - 排序（")):
             values = snapshot["scenes"][scene]["ranking"]["ranking"]["test"]
-            prefix = body.split(": ", 1)[0] + ": " if english else body.split("：", 1)[0] + "："
+            prefix = "  - Ranking (logged-exposure diagnostic): " if english else "  - 排序（历史曝光内诊断）："
             body = prefix + (", " if english else "，").join(f"`{name} = {values[name]:.4f}`" for name in ("NDCG@10", "AUC", "GAUC"))
             counts["ranking"] += 1
         lines.append(body + ending)

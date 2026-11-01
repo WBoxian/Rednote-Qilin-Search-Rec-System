@@ -86,6 +86,24 @@ class TestSyncEvaluationMetrics(unittest.TestCase):
             with self.subTest(extra=extra), patch("sys.stderr"), self.assertRaises(SystemExit):
                 sync.main(["--bundle-search", "search.json", "--bundle-rec", "rec.json", *extra])
 
+    def test_readme_leads_with_pipeline_and_keeps_exposure_diagnostic_separate(self):
+        text = ("- 在线服务\n  - 接口返回总延迟与分阶段延迟\n- Search 离线指标\n"
+                "  - 召回（测试集）：old\n  - 排序（DIEN，测试曝光）：old\n- Recommendation 离线指标\n"
+                "  - 召回（测试集）：old\n  - 排序（DIEN，测试曝光）：old\n")
+        raw = {"HitRate@10": .1, "HitRate@50": .2, "Recall@100": .1, "MRR@100": .1}
+        final = {**raw, "Recall@100": .3, "known_positive_NDCG@10": .02}
+        rank = {"NDCG@10": .6, "AUC": .61, "GAUC": .62}
+        scene = {"recall": {"test": raw}, "pipeline": {"test": final}, "ranking": {"ranking": {"test": rank}}}
+        scene["comparisons"] = {"end_to_end": {"metrics": [{"name": "Recall@100", "current": .3, "relative_delta_pct": 200.0}]}}
+        snapshot = {"scenes": {"search": scene, "rec": scene}}
+        got = sync.update_readme_text(text, snapshot)
+        self.assertIn("相对提升 +200.00%", got)
+        self.assertIn("端到端（全量测试，已知点击）", got)
+        self.assertIn("Recall@100 = 0.3000", got)
+        self.assertIn("known_positive_NDCG@10 = 0.0200", got)
+        self.assertIn("排序（历史曝光内诊断）", got)
+        self.assertEqual(got, sync.update_readme_text(got, snapshot))
+
     def test_missing_active_bundle_fails_before_snapshot_or_write(self):
         with tempfile.TemporaryDirectory(prefix="qilin-metrics-test-") as temporary:
             root = Path(temporary)

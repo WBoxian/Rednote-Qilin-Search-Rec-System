@@ -47,10 +47,12 @@ class ProductMetricsTests(unittest.TestCase):
             text = (ROOT / filename).read_text()
             for scene in ("search", "rec"):
                 snapshot = load_metrics_snapshot(scene, "hard")
-                for area in (snapshot["recall"]["test"], snapshot["ranking"]["ranking"]["test"]):
-                    keys = (("HitRate@10", "Recall@100", "MRR@100") if scene == "search" else ("HitRate@50", "Recall@100")) if "HitRate@500" in area else ("NDCG@10", "AUC", "GAUC")
+                main_keys = (("HitRate@10", "Recall@100", "MRR@100") if scene == "search" else ("HitRate@50", "Recall@100")) + ("known_positive_NDCG@10",)
+                for area, keys in ((snapshot["pipeline"]["test"], main_keys),
+                                   (snapshot["ranking"]["ranking"]["test"], ("NDCG@10", "AUC", "GAUC"))):
                     for key in keys:
                         self.assertIn(f"{key} = {area[key]:.4f}", text)
+                self.assertEqual(self.endpoint(scene=scene, tag="hard", sample_n=1000, include_val=1)["metrics"]["label_coverage"], snapshot["label_coverage"])
 
 if __name__ == "__main__":
     unittest.main()

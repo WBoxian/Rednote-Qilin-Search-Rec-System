@@ -17,6 +17,29 @@
   },
   "scenes": {
     "search": {
+      "label_coverage": {
+        "scope": "All original test requests; current final candidates joined only to same-request historical exposures",
+        "purpose": "Label-coverage diagnostic only; not an unbiased estimate of new-policy CTR or ranking quality",
+        "all_requests": 6192,
+        "exposure_rows": 128191,
+        "empty_exposure_requests": 0,
+        "zero_click_requests": 0,
+        "mean_exposures": 20.70268087855297,
+        "median_exposures": 12.0,
+        "minimum_exposures": 2,
+        "maximum_exposures": 476,
+        "exposure_requests_with_both_labels": 6171,
+        "final_candidate_pairs": 990720,
+        "labeled_candidate_pairs": 67657,
+        "unlabeled_candidate_pairs": 923063,
+        "labeled_candidate_fraction": 0.0682907380490956,
+        "empty_final_candidate_requests": 0,
+        "requests_without_exposure_overlap": 186,
+        "requests_without_known_click_in_candidates": 928,
+        "requests_with_both_labels_in_overlap": 5047,
+        "unexposed_label": "unknown; never converted to an observed negative",
+        "traffic_scope": "Published test requests only; zero-click traffic coverage must be checked separately"
+      },
       "recall": {
         "test": {
           "all_requests": 6192,
@@ -188,7 +211,8 @@
             "plan_sha256": "ada0545449eee37a9ee5179301525b2e4c6d05da13a178199541d2f14bf0629d"
           },
           "warning": "Accepted on this recorded machine/backend only. CPU/GPU or package-version equivalence is not established."
-        }
+        },
+        "candidate_path": "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/final_candidates.parquet"
       },
       "model_bundle_id": "f322a33d96d31049724c5a8075ba08d2a1f9948e15a1cdc5b473c9a40a264245",
       "comparisons": {
@@ -528,6 +552,29 @@
       }
     },
     "rec": {
+      "label_coverage": {
+        "scope": "All original test requests; current final candidates joined only to same-request historical exposures",
+        "purpose": "Label-coverage diagnostic only; not an unbiased estimate of new-policy CTR or ranking quality",
+        "all_requests": 11115,
+        "exposure_rows": 182567,
+        "empty_exposure_requests": 0,
+        "zero_click_requests": 0,
+        "mean_exposures": 16.42528115159694,
+        "median_exposures": 10.0,
+        "minimum_exposures": 1,
+        "maximum_exposures": 79,
+        "exposure_requests_with_both_labels": 11048,
+        "final_candidate_pairs": 5557500,
+        "labeled_candidate_pairs": 5988,
+        "unlabeled_candidate_pairs": 5551512,
+        "labeled_candidate_fraction": 0.0010774628879892038,
+        "empty_final_candidate_requests": 0,
+        "requests_without_exposure_overlap": 7403,
+        "requests_without_known_click_in_candidates": 9284,
+        "requests_with_both_labels_in_overlap": 647,
+        "unexposed_label": "unknown; never converted to an observed negative",
+        "traffic_scope": "Published test requests only; zero-click traffic coverage must be checked separately"
+      },
       "recall": {
         "test": {
           "all_requests": 11115,
@@ -687,7 +734,8 @@
         "release_evidence": {
           "path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json",
           "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621"
-        }
+        },
+        "candidate_path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/allpast/winner_selected.parquet"
       },
       "model_bundle_id": "3f4bab6f3abc286d9c9891d07cdc8bb6942143caf0675eb32de59ccfdbf4e2f1",
       "comparisons": {
@@ -1623,9 +1671,13 @@
         "sha256": "90bd0f1e95f971a11f172bf2ef76d43326ab9c32e0fad2c51e4f0d40e3f8f95c",
         "bytes": 9640
       },
+      "scripts/evaluation_coverage.py": {
+        "sha256": "3b6b49e913d321a147e6a8ff97f6f2cead60676e3a7f16f485851cf2e4547031",
+        "bytes": 3423
+      },
       "scripts/sync_evaluation_metrics.py": {
-        "sha256": "679c703980f7dca1975737e4259a7485a14918bd8b4d891cf6b43c08cf82e36e",
-        "bytes": 36771
+        "sha256": "7ebe5ee946d8cac36ed05b4c6d7864371ca98057e19f6d964f8533b704bce150",
+        "bytes": 38888
       }
     },
     "producer": "scripts/sync_evaluation_metrics.py",
