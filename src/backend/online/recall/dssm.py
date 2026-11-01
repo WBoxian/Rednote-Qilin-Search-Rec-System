@@ -27,6 +27,30 @@ from backend.online.shared_query_encoder import get_shared_query_encoder, encode
 BASE_DIR = Path(__file__).resolve().parents[4]
 
 
+def _is_residual_family(family: str) -> bool:
+    # Keep importing this online module independent of the heavy trainer.
+    if family == "dssm_v1":
+        return False
+    from recall.residual_dssm import RESIDUAL_FAMILIES
+    return family in RESIDUAL_FAMILIES
+
+
+def _required_metadata(path: Path, label: str) -> dict:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ValueError(f"Missing or invalid {label} metadata") from error
+    if not isinstance(document, dict):
+        raise ValueError(f"Invalid {label} metadata object")
+    return document
+
+
+def _sha256_value(value, label: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise ValueError(f"Invalid {label} SHA256")
+    return value
+
+
 def _load_train_module():
     try:
         from recall import dssm_trainer as train_mod_cls
@@ -101,40 +125,114 @@ class DSSMRecaller:
     def _artifact_path(self, rel_path: str) -> Path:
         return self.deploy_tag_dir / rel_path
 
+    def _adapted_asset_metadata(self, meta, ann_meta_path, item_meta_path, ann_path, vector_path, row_path):
+        from backend.online.bundle import verify_asset
+        from training.history import HISTORY_ORDER
+
+        ann = _required_metadata(ann_meta_path, "adapted ANN")
+        item = _required_metadata(item_meta_path, "adapted item")
+        full_sha = _sha256_value(meta.get("exported_full_checkpoint_sha256"), "exported full checkpoint")
+        for label, document in (("ANN", ann), ("item", item)):
+            if (document.get("model_family") != self.model_family or document.get("dim") != 256
+                    or type(document.get("dim")) is not int or document.get("dtype") != "float32"
+                    or document.get("metric") != "ip" or document.get("history_contract") != HISTORY_ORDER):
+                raise ValueError(f"Adapted {label} metadata differs from the model contract")
+            count = document.get("num_items")
+            if type(count) is not int or count <= 0:
+                raise ValueError(f"Adapted {label} metadata requires positive num_items")
+            if document.get("selected_checkpoint_sha256") != full_sha:
+                raise ValueError(f"Adapted {label} selected checkpoint differs from the exported full model")
+            for key, expected in (("scene", self.scene), ("tag", self.tag)):
+                if key in document and document[key] != expected:
+                    raise ValueError(f"Adapted {label} {key} differs from the serving contract")
+        if ann["num_items"] != item["num_items"] or not row_path.is_file():
+            raise ValueError("Adapted item count/row mapping contract is missing or inconsistent")
+        vectors_sha = _sha256_value(ann.get("selected_item_vectors_sha256"), "selected item vectors")
+        if item.get("selected_item_vectors_sha256") != vectors_sha:
+            raise ValueError("Adapted ANN and item vector hashes differ")
+        index_sha = _sha256_value(ann.get("index_sha256"), "index")
+        expected_bytes = item["num_items"] * 256 * np.dtype("float32").itemsize
+        if not vector_path.is_file() or vector_path.stat().st_size != expected_bytes:
+            raise ValueError("Adapted item vector byte length differs from N*256*4")
+        verify_asset(ann_path, index_sha)
+        verify_asset(vector_path, vectors_sha)
+        return ann, item
+
+    def _adapted_index_contract(self, index, ann, item, row_count):
+        if index.ntotal != row_count or row_count != ann["num_items"] or row_count != item["num_items"]:
+            raise ValueError("Adapted ANN, row mapping and item counts differ")
+        if isinstance(index, faiss.IndexIVFPQ):
+            kind = "IVFPQ"
+        elif isinstance(index, faiss.IndexIVFFlat):
+            kind = "IVFFlat"
+        elif isinstance(index, faiss.IndexFlat) and index.metric_type == faiss.METRIC_INNER_PRODUCT:
+            kind = "FlatIP"
+        else:
+            raise ValueError("Unsupported adapted ANN index type")
+        aliases = {"IVFPQ": "IVFPQ", "IndexIVFPQ": "IVFPQ", "IVFFlat": "IVFFlat",
+                   "IndexIVFFlat": "IVFFlat", "FlatIP": "FlatIP", "IndexFlatIP": "FlatIP", "IndexFlat": "FlatIP"}
+        for document in (ann, item):
+            if "index_type" in document and (not isinstance(document["index_type"], str) or aliases.get(document["index_type"]) != kind):
+                raise ValueError("Adapted ANN metadata index_type differs from the actual index")
+        nprobe = ann.get("nprobe")
+        if kind != "FlatIP" or "nprobe" in ann:
+            if type(nprobe) is not int or nprobe <= 0:
+                raise ValueError("Adapted ANN nprobe must be a positive integer")
+        if kind != "FlatIP":
+            if nprobe > index.nlist or not index.is_trained:
+                raise ValueError("Adapted ANN nprobe/nlist or training state is invalid")
+            if "nlist" in ann and (type(ann["nlist"]) is not int or ann["nlist"] != index.nlist):
+                raise ValueError("Adapted ANN nlist differs from the actual index")
+            index.nprobe = nprobe
+        return kind
+
     def _load_assets(self) -> None:
         if faiss is None:
             return
         train_mod = _load_train_module()
-
         user_tower_path = self._artifact_path(f"models/dssm_{self.scene}_{self.tag}_user_tower.pt")
         item_map_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_item_map.json")
         item_meta_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_item_meta.json")
         item_emb_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_item_emb.bin")
         ann_index_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_ivfpq.faiss")
         ann_meta_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_ivfpq_meta.json")
-        if not (user_tower_path.exists() and item_map_path.exists() and ann_index_path.exists()):
+        row_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_row2note.npy")
+        if not user_tower_path.exists():
             return
 
-        from recall.residual_dssm import model_from_checkpoint
+        from recall.residual_dssm import CONTENT_MODEL_FAMILY, model_from_checkpoint
         model = model_from_checkpoint(user_tower_path, device="cpu", allow_partial=True)
         meta = model.checkpoint_meta
+        role = getattr(model, "checkpoint_loaded_tower", meta.get("tower"))
+        if role not in (None, "user"):
+            raise ValueError("DSSM user tower asset contains an item or invalid partial tower")
         if meta.get("scene", self.scene) != self.scene:
             raise ValueError("DSSM checkpoint scene differs from the serving scene")
         self.checkpoint_meta = meta
         self.model_family = meta.get("model_family", "dssm_v1")
         self.retrieval_dim = int(getattr(model, "retrieval_dim", 128))
-        if self.model_family == "residual_dssm_v1":
+        strict_assets = self.model_family == CONTENT_MODEL_FAMILY
+        if _is_residual_family(self.model_family):
             from training.history import HISTORY_ORDER
             if self.scene != "rec" or meta.get("history_contract") != HISTORY_ORDER or not bool(model.seq_mask_padding) or not bool(model.user_mask_profile):
                 raise ValueError("Residual DSSM requires the canonical history and persistent sequence/profile masks")
             known, unknown = meta.get("known_user_ids"), meta.get("unknown_user_id")
             if not isinstance(known, list) or isinstance(unknown, bool) or not isinstance(unknown, int) or unknown != int(meta["cat_vocabs"]["user_idx"])-1:
                 raise ValueError("Residual DSSM requires an explicit reserved unknown-user contract")
+            if strict_assets and (any(type(value) is not int or value < 0 or value >= unknown for value in known)
+                                  or len(known) != len(set(known)) or meta.get("masked_user_dense") is not True):
+                raise ValueError("Adapted DSSM requires canonical known-user and masked-profile metadata")
             self.known_user_ids = frozenset(map(int, known))
         self.history_contract = meta.get("history_contract", "legacy_raw_order_v0")
         self.masked_user_dense = bool(meta.get("masked_user_dense", False))
-
-        row_path = self._artifact_path(f"index/dssm_{self.scene}_{self.tag}_row2note.npy")
+        if not (item_map_path.exists() and ann_index_path.exists()):
+            if strict_assets:
+                raise ValueError("Missing adapted ANN index or item mapping")
+            return
+        ann_document = item_document = None
+        if strict_assets:
+            ann_document, item_document = self._adapted_asset_metadata(
+                meta, ann_meta_path, item_meta_path, ann_index_path, item_emb_path, row_path)
         if row_path.exists():
             row2note = np.load(row_path, mmap_mode="r")
             note2row_map = _NoteRows(row2note)
@@ -145,33 +243,37 @@ class DSSMRecaller:
             for note_id, row_idx in note2row.items():
                 row2note[int(row_idx)] = int(note_id)
             note2row_map = {int(note): int(row) for note, row in note2row.items()}
-
-        index = faiss.read_index(str(ann_index_path))
+        try:
+            index = faiss.read_index(str(ann_index_path))
+        except (RuntimeError, OSError) as error:
+            if strict_assets:
+                raise ValueError("Invalid bound adapted ANN index") from error
+            raise
         if index.ntotal != len(row2note):
             raise ValueError("ANN index and row mapping sizes differ")
         if index.d != self.retrieval_dim or index.metric_type != faiss.METRIC_INNER_PRODUCT:
             raise ValueError("DSSM model and inner-product ANN dimensions/metric differ")
-        nprobe = 32
-        if ann_meta_path.exists():
-            try:
-                meta_obj = json.loads(ann_meta_path.read_text(encoding="utf-8"))
-                nprobe = int(meta_obj.get("nprobe", nprobe))
-            except Exception:
-                pass
-        if hasattr(index, "nprobe"):
-            index.nprobe = nprobe
-
+        if strict_assets:
+            self._adapted_index_contract(index, ann_document, item_document, len(row2note))
+        else:
+            nprobe = 32
+            if ann_meta_path.exists():
+                try:
+                    meta_obj = json.loads(ann_meta_path.read_text(encoding="utf-8"))
+                    nprobe = int(meta_obj.get("nprobe", nprobe))
+                except Exception:
+                    pass
+            if hasattr(index, "nprobe"):
+                index.nprobe = nprobe
         self.train_mod = train_mod
         self.model = model
         self.row2note = row2note
         self.note2row = note2row_map
         self.ann_index = index
-        if item_meta_path.exists() and item_emb_path.exists():
+        if item_document is not None or (item_meta_path.exists() and item_emb_path.exists()):
             try:
-                with open(item_meta_path, "r", encoding="utf-8") as f:
-                    item_meta = json.load(f)
-                n_items = int(item_meta["num_items"])
-                dim = int(item_meta["dim"])
+                item_meta = item_document or json.loads(item_meta_path.read_text(encoding="utf-8"))
+                n_items, dim = int(item_meta["num_items"]), int(item_meta["dim"])
                 if dim != self.retrieval_dim or n_items != len(row2note):
                     raise ValueError("DSSM item vectors differ from the model/index shape")
                 self.item_emb = np.memmap(str(item_emb_path), dtype="float32", mode="r", shape=(n_items, dim))
@@ -190,9 +292,6 @@ class DSSMRecaller:
                 self.user_store["search_query"] = train_mod.MMapStore("query_text_emb", "search_query")
             except Exception:
                 pass
-
-        # Rebuild towers from current request inputs; historical vectors may use another query/history.
-
         self.enabled = True
 
     def _load_query_encoder(self) -> None:
@@ -319,7 +418,10 @@ class DSSMRecaller:
         masked = bool(getattr(self, "masked_user_dense", False))
         dense_vals = [0.0] * 40 if masked else [_fget(f"dense_feat{i}", 0.0) for i in range(1, 41)]
         hist_raw = row.get("recent_clicked_note_idxs", [])
-        if isinstance(hist_raw, np.ndarray):
+        if _is_residual_family(getattr(self, "model_family", "dssm_v1")):
+            from training.history import recent_history_ids
+            hist_ids = recent_history_ids(hist_raw, 20)
+        elif isinstance(hist_raw, np.ndarray):
             hist_ids = [int(x) for x in hist_raw.tolist()]
         elif isinstance(hist_raw, list):
             hist_ids = [int(x) for x in hist_raw]
@@ -339,7 +441,7 @@ class DSSMRecaller:
             "follows_num": torch.tensor([0.0 if masked else _fget("follows_num", 0.0)], dtype=torch.float32),
             "dense_feats": torch.tensor([dense_vals], dtype=torch.float32),
         }
-        if getattr(self, "model_family", "dssm_v1") == "residual_dssm_v1":
+        if _is_residual_family(getattr(self, "model_family", "dssm_v1")):
             from recall.residual_dssm import raw_history_text_mean
             meta = self.checkpoint_meta
             if int(user_idx) not in self.known_user_ids:
@@ -446,7 +548,7 @@ class DSSMRecaller:
         return note_ids, scores
 
     def _search_ann_by_history_items(self, hist_ids: list[int], max_rank: int, per_item_topk: int = 180) -> tuple[list[int], list[float]]:
-        if getattr(self, "model_family", "dssm_v1") == "residual_dssm_v1":
+        if _is_residual_family(getattr(self, "model_family", "dssm_v1")):
             raise ValueError("Residual DSSM supports current-request IP retrieval without legacy normalized expansion")
         if self.ann_index is None or self.item_emb is None or not hist_ids:
             return [], []
@@ -684,7 +786,7 @@ class DSSMRecaller:
         max_rank: int,
         max_seed: int = 80,
     ) -> tuple[list[int], list[float]]:
-        if getattr(self, "model_family", "dssm_v1") == "residual_dssm_v1":
+        if _is_residual_family(getattr(self, "model_family", "dssm_v1")):
             raise ValueError("Residual DSSM supports current-request IP retrieval without legacy normalized expansion")
         if self.ann_index is None or self.item_emb is None or not seed_scores:
             return [], []
