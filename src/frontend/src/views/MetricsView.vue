@@ -739,6 +739,7 @@ onUnmounted(stopValidationProgress);
       <section v-if="ablationRows.length" class="panel ablation-panel">
         <details>
           <summary><span><span class="intro-eyebrow">消融实验</span><strong>阶段消融与实验结果</strong></span><span class="meta">{{ ablationRows.length }} 组 · 展开查看</span></summary>
+          <p v-if="activeSnapshot.ablations.baseline_name" class="meta">{{ evaluationText(activeSnapshot.ablations.baseline_name) }}。本表小字为相对该基线的绝对差值（pp）；上方最终结果单独标注其对照基线。</p>
           <p class="meta">{{ evaluationText(activeSnapshot.ablations.warning || '固定数据划分与评测口径，验证集选择方案，测试集报告效果；未采用的实验保留真实结果。') }}</p>
           <div class="data-table-scroll"><table class="table evaluation-table ablation-table">
             <thead><tr><th scope="col">实验</th><th scope="col">状态</th><th v-for="key in ablationMetricKeys" :key="key" scope="col">{{ metricLabel(key) }}</th><th scope="col">改动与解释</th></tr></thead>

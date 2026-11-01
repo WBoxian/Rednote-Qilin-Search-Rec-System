@@ -3,6 +3,7 @@ import { expect } from 'storybook/test';
 import { http, HttpResponse } from 'msw';
 import MetricsView from './MetricsView.vue';
 import evaluation from '../../.storybook/fixtures/evaluation.json';
+import { evaluationText } from '../services/evaluation';
 
 const meta = { component: MetricsView, tags: ['ai-generated'], parameters: { route: '/metrics', scene: 'search' } } satisfies Meta<typeof MetricsView>;
 export default meta;
@@ -28,6 +29,7 @@ export const SearchMetrics: Story = {
     await expect(canvas.queryByRole('heading', { name: /召回.*HitRate@10/ })).not.toBeInTheDocument();
     await userEvent.click(canvas.getByText('阶段消融与实验结果'));
     await expect(canvas.getByRole('columnheader', { name: '实验' })).toBeVisible();
+    await expect(canvas.getByText(/冻结基线：DSSM第三版与原融合。本表小字为相对该基线的绝对差值/)).toBeVisible();
   },
 };
 export const RecommendationMetrics: Story = {
@@ -35,9 +37,12 @@ export const RecommendationMetrics: Story = {
   play: async ({ canvas, userEvent }) => {
     await expect(await canvas.findByRole('button', { name: /命中率（HitRate@50）/ })).toBeVisible();
     await expect(canvas.getByText(/当前服务：仅召回/)).toBeVisible();
+    const finalBaseline = evaluationText(evaluation.scenes.rec.comparisons.end_to_end.baseline_name);
+    await expect(canvas.getByText(content => content.startsWith(`${finalBaseline} →`))).toBeVisible();
     await userEvent.click(canvas.getByText('阶段消融与实验结果'));
     const selectedLabel = evaluation.scenes.rec.ablations.rows.find(row => row.id === 'adapter_dual128')!.label;
     await expect(canvas.getByRole('rowheader', { name: selectedLabel })).toBeVisible();
+    await expect(canvas.getByText(/冻结基线：DSSM第三版与原融合。本表小字为相对该基线的绝对差值/)).toBeVisible();
   },
 };
 export const MetricsUnavailable: Story = {
