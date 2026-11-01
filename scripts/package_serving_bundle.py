@@ -5,7 +5,9 @@ from pathlib import Path
 import faiss
 import numpy as np
 import torch
-from backend.online.bundle import bundle_identity,file_sha256,required_asset_names,resolve_asset,validate_manifest
+from backend.online.bundle import (bundle_identity,file_sha256,required_asset_names,resolve_asset,validate_manifest,
+    LEARNED_FUSION_PATHS,_validate_learned_policy)
+from recall.residual_dssm import CONTENT_MODEL_FAMILY,RESIDUAL_FAMILIES,model_from_checkpoint
 from training.history import HISTORY_ORDER
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -39,6 +41,33 @@ def validate_towers(scene,checkpoint,user_path,item_path,selected):
     user=torch.load(user_path,map_location='cpu',weights_only=True)
     item=torch.load(item_path,map_location='cpu',weights_only=True)
     meta=user.get('meta',{});state=user.get('state_dict',{})
+    full_state=full.get('state_dict',full)
+    family=meta.get('model_family','dssm_v1')
+    if family in RESIDUAL_FAMILIES:
+        # Factory validation rejects missing active heads, unexpected tensors and malformed geometry.
+        complete=model_from_checkpoint(checkpoint)
+        if complete.checkpoint_is_partial:raise ValueError('Selected full residual checkpoint is partial')
+        full_meta=complete.checkpoint_meta
+        if full_meta.get('model_family')!=family or full_meta.get('scene')!=scene:
+            raise ValueError('Full and partial residual family/scene mismatch')
+        for name,value in full_state.items():
+            loaded=complete.state_dict().get(name)
+            if loaded is None or loaded.dtype!=value.dtype or not torch.equal(loaded,value):
+                raise ValueError('Full residual factory changed a source tensor')
+        for role,payload,path in [('user',user,user_path),('item',item,item_path)]:
+            partial_meta=payload.get('meta',{})
+            if any(partial_meta.get(key)!=value for key,value in full_meta.items() if key!='tower'):
+                raise ValueError('Full and partial residual metadata differs')
+            active=model_from_checkpoint(path,allow_partial=True)
+            if not active.checkpoint_is_partial or active.checkpoint_loaded_tower!=role:
+                raise ValueError('Residual partial role mismatch')
+            if family==CONTENT_MODEL_FAMILY:
+                if partial_meta.get('exported_full_checkpoint_sha256')!=selected['checkpoint_sha256']:
+                    raise ValueError('Adapted partial does not bind selected full checkpoint SHA')
+                for name,value in payload['state_dict'].items():
+                    if name.startswith('content_') and value.is_floating_point() and value.dtype!=torch.float32:
+                        raise ValueError('Adapted head tensors require float32')
+    elif family!='dssm_v1':raise ValueError('Unsupported DSSM model family')
     if meta.get('scene')!=scene or meta.get('history_contract')!=HISTORY_ORDER:
         raise ValueError('DSSM scene/history contract mismatch')
     if not meta.get('masked_user_dense') or not bool(state.get('user_mask_profile',torch.tensor(False)).item()):
@@ -53,17 +82,34 @@ def validate_towers(scene,checkpoint,user_path,item_path,selected):
         raise ValueError('Item/user tower metadata differs')
     for tower in (user,item):
         for name,value in tower.get('state_dict',{}).items():
-            if name not in full or not torch.equal(value,full[name]):
+            if name not in full_state or value.dtype!=full_state[name].dtype or not torch.equal(value,full_state[name]):
                 raise ValueError(f'Partial tower does not match selected full checkpoint: {name}')
     if selected.get('user_tower_sha256') and file_sha256(user_path)!=selected['user_tower_sha256']:
         raise ValueError('Selected user tower checksum mismatch')
+    if selected.get('item_tower_sha256') and file_sha256(item_path)!=selected['item_tower_sha256']:
+        raise ValueError('Selected item tower checksum mismatch')
     return meta
+
+def learned_sources(policy,scene,root):
+    if policy.get('strategy')!='learned_rrf':return {}
+    config=_validate_learned_policy(policy,scene)
+    paths={key:contained(root,config[key]) for key in LEARNED_FUSION_PATHS}
+    hashes={key:file_sha256(path) for key,path in paths.items()}
+    support=load_json(paths['support'])
+    for key in LEARNED_FUSION_PATHS:
+        if key!='support' and support.get(key+'_sha256')!=hashes[key]:
+            raise ValueError('Learned support/source checksum mismatch: '+key)
+    # Enforce the actual model feature schema without constructing the rank stack.
+    from recall.learned_context_fusion import LearnedContextFusion
+    LearnedContextFusion.from_model_path(paths['model'],num_threads=2)
+    return {key:{'path':path,'sha256':hashes[key]} for key,path in paths.items()}
 
 def package_bundle(args,root:Path=ROOT):
     root=Path(root).resolve();scene=args.scene;tag=args.tag
     if scene not in {'search','rec'} or tag not in {'easy','hard'}:raise ValueError('Invalid scene/tag')
     rank=contained(root,args.rank_dir);experiment=contained(root,args.recall_experiment_dir)
     policy_source=contained(root,args.policy_file);policy=copy.deepcopy(load_json(policy_source))
+    learned=learned_sources(policy,scene,root)
     selected_path=contained(root,args.selected_dssm or experiment/'dssm/selected.json')
     index_selection_path=contained(root,args.selected_index or experiment/'index/selected.json')
     index_selection=load_json(index_selection_path);selected=selected_entry(selected_path)
@@ -100,12 +146,25 @@ def package_bundle(args,root:Path=ROOT):
         bound_pair|=bool(vector_hash and index_hash)
     if not bound_pair:raise ValueError('ANN build metadata must bind both index and selected vector checksums')
     nprobe=args.nprobe if args.nprobe is not None else index_selection.get('nprobe')
-    if isinstance(nprobe,bool) or not isinstance(nprobe,int) or not 1<=int(nprobe)<=int(getattr(index,'nlist',max(1,int(nprobe)))):
-        raise ValueError('Bind an explicit frozen nprobe via selected-index JSON or --nprobe')
-    if args.nprobe is not None and index_selection.get('nprobe') is not None and args.nprobe!=index_selection['nprobe']:
-        raise ValueError('Explicit nprobe differs from frozen selection')
+    if hasattr(index,'nlist'):
+        if isinstance(nprobe,bool) or not isinstance(nprobe,int) or not 1<=nprobe<=index.nlist:
+            raise ValueError('Bind an explicit frozen nprobe via selected-index JSON or --nprobe')
+        if args.nprobe is not None and index_selection.get('nprobe') is not None and args.nprobe!=index_selection['nprobe']:
+            raise ValueError('Explicit nprobe differs from frozen selection')
+    elif not isinstance(index,faiss.IndexFlat):
+        raise ValueError('Only frozen IVF or exact FlatIP indexes are supported')
+    else:
+        # Historical FlatIP fixtures may carry nprobe=1; exact search does not consume it.
+        if nprobe is not None and (type(nprobe) is not int or nprobe!=1):
+            raise ValueError('FlatIP has no nprobe search parameter')
+        nprobe=None
     cutoff=int(args.training_cutoff_exclusive)
     if cutoff<=0:raise ValueError('Training cutoff must be positive')
+    if learned:
+        support=load_json(learned['support']['path'])
+        if (support.get('history_contract')!=HISTORY_ORDER or any(type(support.get(key)) is not int or
+                support[key]!=expected for key,expected in [('version',1),('dim',128),('training_cutoff_exclusive',cutoff)])):
+            raise ValueError('Learned support history/version/dimension/training cutoff differs from package')
     rank_meta=contained(root,args.rank_manifest or rank/'manifest.json')
     if not all(path.is_file() for path in (rank_meta,rank/'gbdt.txt',rank/'dien.pt')):raise FileNotFoundError('Frozen rank stack is incomplete')
     encoder=None;lexical=None
@@ -128,14 +187,26 @@ def package_bundle(args,root:Path=ROOT):
     for source,name in ((rank_meta,'manifest.json'),(rank/'gbdt.txt','gbdt.txt'),(rank/'dien.pt','dien.pt')):
         copy_bound(source,rank_out/name)
     copy_bound(user,recall_out/'models'/f'{prefix}_user_tower.pt');copy_bound(item,recall_out/'models'/f'{prefix}_item_tower.pt')
+    full_exports=[]
+    if metadata.get('model_family')==CONTENT_MODEL_FAMILY:
+        for source,name in [(full,f'{prefix}.pt'),(full.with_suffix('.meta.json'),f'{prefix}.meta.json')]:
+            target=recall_out/'models'/name;copy_bound(source,target);full_exports.append(target.relative_to(root).as_posix())
     copy_bound(vectors,index_out/f'{prefix}_item_emb.bin');copy_bound(index_path,index_out/f'{prefix}_ivfpq.faiss')
     copy_bound(ids_path,index_out/f'{prefix}_row2note.npy')
     (index_out/f'{prefix}_item_map.json').write_text(json.dumps({str(int(item)):int(row) for row,item in enumerate(ids)},separators=(',',':')))
-    (index_out/f'{prefix}_item_meta.json').write_text(json.dumps({'num_items':len(ids),'dim':dim,'dtype':'float32',
-        'selected_checkpoint_sha256':selected['checkpoint_sha256'],'history_contract':metadata['history_contract']},indent=2))
-    ann_meta={'scene':scene,'tag':tag,'num_items':len(ids),'dim':dim,'metric':'ip','nprobe':int(nprobe),
+    item_meta={'num_items':len(ids),'dim':dim,'dtype':'float32',
+        'selected_checkpoint_sha256':selected['checkpoint_sha256'],'history_contract':metadata['history_contract']}
+    if metadata.get('model_family')==CONTENT_MODEL_FAMILY:
+        item_meta.update(model_family=CONTENT_MODEL_FAMILY,metric='ip',
+            selected_item_vectors_sha256=selected['item_vectors_sha256'])
+    (index_out/f'{prefix}_item_meta.json').write_text(json.dumps(item_meta,indent=2))
+    ann_meta={'scene':scene,'tag':tag,'num_items':len(ids),'dim':dim,'metric':'ip',
         'index_sha256':file_sha256(index_path),'selected_checkpoint_sha256':selected['checkpoint_sha256'],
         'selected_item_vectors_sha256':selected['item_vectors_sha256'],'selected_index_source_sha256':file_sha256(index_selection_path)}
+    if metadata.get('model_family')==CONTENT_MODEL_FAMILY:
+        ann_meta.update(model_family=CONTENT_MODEL_FAMILY,dtype='float32',history_contract=metadata['history_contract'])
+    if nprobe is not None:ann_meta['nprobe']=int(nprobe)
+    else:ann_meta['index_type']='FlatIP'
     (index_out/f'{prefix}_ivfpq_meta.json').write_text(json.dumps(ann_meta,indent=2))
     manifest={'version':1,'scene':scene,'tag':tag,'history_order':HISTORY_ORDER,
         'selection_split':'train_internal_validation','allow_dpr':False,'training_cutoff_exclusive':cutoff,
@@ -169,6 +240,16 @@ def package_bundle(args,root:Path=ROOT):
                 'configuration':policy['cf_config'],'assets':{name:file_sha256(graph/name) for name in ('graph.npz','users.npy','items.npy','swing.npz')}}
             (graph_out/'meta.json').write_text(json.dumps(graph_meta,indent=2))
         policy['cf_graph_dir']=graph_out.relative_to(root).as_posix()
+    if learned:
+        names_by_role={'model':'model.txt','support':'support.json','pca_vectors':'item_pca.bin',
+            'pca_ids':'item_pca_ids.npy','pca_mean':'mean.npy','pca_components':'components.npy'}
+        for key,entry in learned.items():
+            target=recall_out/'learned_fusion'/names_by_role[key]
+            copy_bound(entry['path'],target)
+            if file_sha256(target)!=entry['sha256']:raise ValueError('Learned asset changed after preflight')
+            policy['learned_fusion'][key]=target.relative_to(root).as_posix()
+        manifest['packaging_provenance']['learned_fusion_sources']={key:{
+            'path':entry['path'].relative_to(root).as_posix(),'sha256':entry['sha256']} for key,entry in learned.items()}
     if getattr(args,'validation_snapshot',None):
         snapshot=contained(root,args.validation_snapshot)
         snapshot_out=output/'evaluation/validation.json';copy_bound(snapshot,snapshot_out)
@@ -182,12 +263,13 @@ def package_bundle(args,root:Path=ROOT):
         catalog=contained(root,args.note_metadata_index)
         manifest['note_metadata_index']=catalog.relative_to(root).as_posix()
     names=required_asset_names(manifest,root)
+    names.update(full_exports)
     if manifest.get('evaluation',{}).get('release_evidence'):
         names.add(manifest['evaluation']['release_evidence']['path'])
     runtime_files=[
         'backend/online/'+name for name in ['bundle.py','pipeline.py','live_context.py','shared_query_encoder.py','item_features.py',
             'recall/service.py','recall/dssm.py','preranking/service.py','preranking/gbdt.py','ranking/service.py','ranking/stack.py']]
-    runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py','context_fusion.py','residual_dssm.py','weighted_context_fusion.py']]
+    runtime_files += ['recall/'+name for name in ['dssm_trainer.py','cf_retrieval.py','fusion.py','lexical.py','context_fusion.py','residual_dssm.py','weighted_context_fusion.py','learned_context_fusion.py']]
     runtime_files += ['training/'+name for name in ['rank_stack.py','history.py','dien_ranker.py','scoring.py','recall_prior.py']]
     names.update('src/'+name for name in runtime_files if (root/'src'/name).is_file())
     names.update(path.relative_to(root).as_posix() for path in (root/'src/backend/online').rglob('*.py'))

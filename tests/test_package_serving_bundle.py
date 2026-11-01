@@ -121,4 +121,229 @@ class PackageServingBundleTests(unittest.TestCase):
             source.write_text('modified runtime')
             with self.assertRaisesRegex(ValueError,'asset mismatch'):validate_manifest(manifest,'rec',fixture_root)
 
-if __name__=='__main__':unittest.main()
+
+# Real small trained heads exercise the same release format as production artifacts.
+from training.content_adapter_release import export_content_adapter_release
+from tests.test_rec_residual_driver import _TrainedReleaseFixture
+from recall.learned_context_fusion import FEATURE_NAMES
+from recall.residual_dssm import model_from_checkpoint
+import lightgbm as lgb
+
+
+def adapted_fixture(root, dim=128, learned=False):
+    args, experiment, _ = fixture(root)
+    trained = root / 'artifacts/trained'
+    trained.mkdir()
+    source = _TrainedReleaseFixture(trained, dim)
+    base_meta_path = source.base.with_suffix('.meta.json')
+    base_meta = json.loads(base_meta_path.read_text())
+    base_meta['history_contract'] = HISTORY_ORDER
+    base_meta_path.write_text(json.dumps(base_meta))
+    release = export_content_adapter_release(**source.arguments()).parent
+    args.model_prefix = 'dssm_rec_residual'
+    vectors = np.zeros((3, 256), np.float32)
+    vectors[:, :3] = np.eye(3)
+    vectors.tofile(release / 'item_vectors.bin')
+    selected = dict(epoch=2, directory=str(release),
+        checkpoint_sha256=file_sha256(release / 'dssm_rec_residual.pt'),
+        item_vectors_sha256=file_sha256(release / 'item_vectors.bin'))
+    (experiment / 'dssm/selected.json').write_text(json.dumps(selected))
+    index = faiss.IndexFlatIP(256)
+    index.add(vectors)
+    faiss.write_index(index, str(experiment / 'index/ivfpq.faiss'))
+    (experiment / 'index/selected.json').write_text(json.dumps(dict(
+        index_sha256=file_sha256(experiment / 'index/ivfpq.faiss'),
+        selected_item_vectors_sha256=selected['item_vectors_sha256'],
+        selected_checkpoint_sha256=selected['checkpoint_sha256'])))
+    if learned:
+        fusion = root / 'artifacts/learned'
+        fusion.mkdir()
+        rng = np.random.default_rng(42)
+        data = lgb.Dataset(rng.normal(size=(32, 23)).astype(np.float32),
+            label=np.arange(32) % 2, feature_name=list(FEATURE_NAMES))
+        model = lgb.train(dict(objective='binary', num_leaves=3, min_data_in_leaf=1,
+            verbosity=-1, num_threads=2), data, num_boost_round=2)
+        model.save_model(str(fusion / 'model.txt'))
+        np.save(fusion / 'ids.npy', np.arange(3, dtype=np.int64))
+        np.save(fusion / 'mean.npy', np.load(trained / 'pca/mean.npy'))
+        np.save(fusion / 'components.npy', np.load(trained / 'pca/components.npy'))
+        np.eye(3, 128, dtype=np.float32).tofile(fusion / 'item_pca.bin')
+        paths = dict(model=fusion / 'model.txt', support=fusion / 'support.json',
+            pca_vectors=fusion / 'item_pca.bin', pca_ids=fusion / 'ids.npy',
+            pca_mean=fusion / 'mean.npy', pca_components=fusion / 'components.npy')
+        support = dict(version=1, history_contract=HISTORY_ORDER,
+            training_cutoff_exclusive=10, num_items=3, dim=128,
+            item_counts=[[0, 2], [1, 1]], user_counts=[[0, 2]], graph_items=[0, 1, 2])
+        support.update({key + '_sha256': file_sha256(path)
+                        for key, path in paths.items() if key != 'support'})
+        paths['support'].write_text(json.dumps(support))
+        policy = json.loads(args.policy_file.read_text())
+        policy.update(strategy='learned_rrf', context_policy='learned_filter_history',
+            weights=dict(ann=2, swing=1, usercf=1), learned_fusion=dict(version=1,
+                feature_schema='rec_context_23_v1', alpha=.5,
+                prior_precision='float32_rrf211_v1',
+                **{key: path.relative_to(root).as_posix() for key, path in paths.items()}))
+        args.policy_file.write_text(json.dumps(policy))
+        rank_path = args.rank_dir / 'manifest.json'
+        rank = json.loads(rank_path.read_text())
+        rank['dien']['inference_contract'] = 'request_fp32_v1'
+        rank_path.write_text(json.dumps(rank))
+        runtime = root / 'src/recall/learned_context_fusion.py'
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text('# bound learned fusion runtime fixture\n')
+    return args, experiment, release
+
+
+class AdaptedServingPackageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+
+    @classmethod
+    def tearDownClass(cls):
+        torch.set_num_threads(cls.threads)
+
+    def test_real_full_partials_and_exact_flatip_without_nprobe_are_packaged(self):
+        for dim in (128, 768):
+            with self.subTest(dim=dim), tempfile.TemporaryDirectory(prefix='qilin-package-test-') as tmp:
+                root = Path(tmp)
+                args, _, source = adapted_fixture(root, dim)
+                _, bundle = package_bundle(args, root)
+                folder = root / bundle['recall_dir'] / 'models'
+                full = folder / 'dssm_rec_hard.pt'
+                self.assertEqual(file_sha256(full), file_sha256(source / 'dssm_rec_residual.pt'))
+                model = model_from_checkpoint(full)
+                self.assertEqual(model.checkpoint_meta['content_input_dim'], dim)
+                for role in ('user', 'item'):
+                    partial = torch.load(folder / f'dssm_rec_hard_{role}_tower.pt', weights_only=True)
+                    self.assertEqual(partial['meta']['tower'], role)
+                    self.assertEqual(partial['meta']['exported_full_checkpoint_sha256'], file_sha256(full))
+                self.assertIn(full.relative_to(root).as_posix(), bundle['assets'])
+                ann = json.loads((root / bundle['recall_dir'] / 'index/dssm_rec_hard_ivfpq_meta.json').read_text())
+                self.assertEqual(ann['index_type'], 'FlatIP')
+                self.assertNotIn('nprobe', ann)
+                from backend.online.recall.dssm import DSSMRecaller
+                recaller = DSSMRecaller.__new__(DSSMRecaller)
+                recaller.scene, recaller.tag = 'rec', 'hard'
+                recaller.model_family = model.checkpoint_meta['model_family']
+                indexes = root / bundle['recall_dir'] / 'index'
+                ann_path = indexes / 'dssm_rec_hard_ivfpq.faiss'
+                ann_meta, item_meta = recaller._adapted_asset_metadata(model.checkpoint_meta,
+                    indexes / 'dssm_rec_hard_ivfpq_meta.json', indexes / 'dssm_rec_hard_item_meta.json',
+                    ann_path, indexes / 'dssm_rec_hard_item_emb.bin', indexes / 'dssm_rec_hard_row2note.npy')
+                self.assertEqual(recaller._adapted_index_contract(faiss.read_index(str(ann_path)),
+                    ann_meta, item_meta, 3), 'FlatIP')
+                self.assertFalse(list(root.rglob('active_bundle.json')))
+
+    def test_corrupt_active_heads_roles_or_full_binding_are_rejected(self):
+        for mutation in ('missing_head', 'shape', 'role', 'full_sha', 'nonfinite', 'dtype'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix='qilin-package-test-') as tmp:
+                root = Path(tmp)
+                args, _, source = adapted_fixture(root)
+                path = source / 'dssm_rec_residual_user_tower.pt'
+                payload = torch.load(path, weights_only=True)
+                if mutation == 'missing_head':
+                    del payload['state_dict']['content_query_adapter.2.bias']
+                elif mutation == 'shape':
+                    payload['state_dict']['content_query_adapter.2.bias'] = torch.zeros(129)
+                elif mutation == 'role':
+                    payload['meta']['tower'] = 'item'
+                elif mutation == 'full_sha':
+                    payload['meta']['exported_full_checkpoint_sha256'] = '0' * 64
+                elif mutation == 'nonfinite':
+                    payload['state_dict']['content_query_adapter.2.bias'][0] = float('nan')
+                else:
+                    payload['state_dict']['content_query_adapter.2.bias'] = payload['state_dict']['content_query_adapter.2.bias'].double()
+                torch.save(payload, path)
+                with self.assertRaises((ValueError, RuntimeError)):
+                    package_bundle(args, root)
+                self.assertFalse(args.output_dir.exists())
+
+    def test_six_learned_assets_are_copied_bound_and_independent_of_source(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-package-test-') as tmp:
+            root = Path(tmp)
+            args, _, _ = adapted_fixture(root, learned=True)
+            source_policy = json.loads(args.policy_file.read_text())
+            _, bundle = package_bundle(args, root)
+            provenance = bundle['packaging_provenance']['learned_fusion_sources']
+            self.assertEqual(set(provenance), {'model','support','pca_vectors','pca_ids','pca_mean','pca_components'})
+            for key, source in provenance.items():
+                packaged = bundle['recall_policy']['learned_fusion'][key]
+                self.assertNotEqual(packaged, source_policy['learned_fusion'][key])
+                self.assertEqual(bundle['assets'][packaged], source['sha256'])
+                self.assertTrue((root / packaged).is_file())
+            from backend.online.bundle import ServingBundle
+            from backend.online.ranking.inference import REQUEST_FP32, configure_request_inference
+            previous = (torch.get_num_threads(), torch.backends.cuda.matmul.allow_tf32,
+                torch.backends.cudnn.allow_tf32, torch.backends.cudnn.benchmark)
+            try:
+                configure_request_inference(REQUEST_FP32)
+                ready = ServingBundle(bundle, None, root)._get_learned_fusion()
+                np.testing.assert_array_equal(ready.ids, np.arange(3, dtype=np.int64))
+            finally:
+                torch.set_num_threads(previous[0])
+                torch.backends.cuda.matmul.allow_tf32 = previous[1]
+                torch.backends.cudnn.allow_tf32 = previous[2]
+                torch.backends.cudnn.benchmark = previous[3]
+            original_model = root / source_policy['learned_fusion']['model']
+            original_model.write_text('source changed after packaging')
+            validate_manifest(bundle, 'rec', root)
+            copied_model = root / bundle['recall_policy']['learned_fusion']['model']
+            copied_model.write_text('packaged model corrupted')
+            with self.assertRaisesRegex(ValueError, 'asset mismatch'):
+                validate_manifest(bundle, 'rec', root)
+
+    def test_ivf_requires_frozen_nprobe_while_flatip_does_not(self):
+        with tempfile.TemporaryDirectory(prefix='qilin-package-test-') as tmp:
+            root = Path(tmp)
+            args, experiment, epoch = fixture(root)
+            vectors = np.fromfile(epoch / 'item_vectors.bin', dtype=np.float32).reshape(3, 2)
+            threads = faiss.omp_get_max_threads()
+            try:
+                faiss.omp_set_num_threads(1)
+                index = faiss.IndexIVFFlat(faiss.IndexFlatIP(2), 2, 1, faiss.METRIC_INNER_PRODUCT)
+                index.train(np.random.default_rng(42).normal(size=(64, 2)).astype(np.float32))
+                index.add(vectors)
+            finally:
+                faiss.omp_set_num_threads(threads)
+            path = experiment / 'index/ivfpq.faiss'
+            faiss.write_index(index, str(path))
+            selection_path = experiment / 'index/selected.json'
+            selection = json.loads(selection_path.read_text())
+            selection['index_sha256'] = file_sha256(path)
+            del selection['nprobe']
+            selection_path.write_text(json.dumps(selection))
+            with self.assertRaisesRegex(ValueError, 'nprobe'):
+                package_bundle(args, root)
+            self.assertFalse(args.output_dir.exists())
+            selection['nprobe'] = 1
+            selection_path.write_text(json.dumps(selection))
+            _, bundle = package_bundle(args, root)
+            meta = json.loads((root / bundle['recall_dir'] / 'index/dssm_rec_hard_ivfpq_meta.json').read_text())
+            self.assertEqual(meta['nprobe'], 1)
+
+    def test_wrong_support_cross_sha_and_wrong_model_schema_are_rejected(self):
+        for mutation in ('support', 'model', 'cutoff'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix='qilin-package-test-') as tmp:
+                root = Path(tmp)
+                args, _, _ = adapted_fixture(root, learned=True)
+                config = json.loads(args.policy_file.read_text())['learned_fusion']
+                support_path = root / config['support']
+                support = json.loads(support_path.read_text())
+                if mutation == 'support':
+                    support['model_sha256'] = '0' * 64
+                elif mutation == 'cutoff':
+                    support['training_cutoff_exclusive'] = 11
+                else:
+                    path = root / config['model']
+                    path.write_text(path.read_text().replace('feature_names=', 'feature_names=wrong_', 1))
+                    support['model_sha256'] = file_sha256(path)
+                support_path.write_text(json.dumps(support))
+                with self.assertRaises(ValueError):
+                    package_bundle(args, root)
+                self.assertFalse(args.output_dir.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
