@@ -427,8 +427,6 @@ def _json_safe(value: Any) -> Any:
 
 
 def _personalize_validation(validation: dict[str, Any], context_user_idx: int | None) -> dict[str, Any]:
-	if validation.get("bound_to_active_bundle"):
-		return validation
 	if context_user_idx is None:
 		return validation
 	try:
@@ -445,6 +443,9 @@ def _personalize_validation(validation: dict[str, Any], context_user_idx: int | 
 		src_uid = _safe_int(row.get("source_user_idx"), -1)
 		row["is_current_user"] = bool(src_uid == uid)
 		personalized.append(row)
+	if validation.get("bound_to_active_bundle"):
+		out["examples"] = sorted(personalized, key=lambda row: not row["is_current_user"])
+		return out
 	personalized.sort(
 		key=lambda row: (
 			0 if bool(row.get("is_current_user")) else 1,

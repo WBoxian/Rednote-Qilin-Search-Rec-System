@@ -13,6 +13,18 @@ from backend.online.bundle import file_sha256
 
 
 class VersionedValidationTests(unittest.TestCase):
+    def test_bound_current_user_moves_first_without_mutating_frozen_order_or_labels(self):
+        from backend.online.api.main import _personalize_validation
+        original = {"bound_to_active_bundle": True, "examples": [
+            {"request_id":1,"source_user_idx":8,"overlap":{"ranking":0}},
+            {"request_id":2,"source_user_idx":7,"overlap":{"ranking":1}},
+            {"request_id":3,"source_user_idx":9,"overlap":{"ranking":10}}]}
+        result = _personalize_validation(original, context_user_idx=7)
+        self.assertEqual([r["request_id"] for r in result["examples"]],[2,1,3])
+        self.assertTrue(result["examples"][0]["is_current_user"])
+        self.assertEqual([r["request_id"] for r in original["examples"]],[1,2,3])
+        self.assertNotIn("is_current_user",original["examples"][1])
+
     def fixture(self, root):
         with patch.dict(os.environ, {"QILIN_ASYNC_PREWARM": "0"}):
             app = create_app(tag="hard")
@@ -58,7 +70,7 @@ class VersionedValidationTests(unittest.TestCase):
                 result = endpoint(scene="search", tag="hard", max_groups=800, example_limit=5, user_idx=7)
             payload = result["validation"]
             self.assertEqual(payload["model_bundle_id"], "new-model")
-            self.assertEqual(payload["examples"], [{"request_id": 123, "source_user_idx": 8}])
+            self.assertEqual(payload["examples"], [{"request_id": 123, "source_user_idx": 8, "is_current_user": False}])
             self.assertEqual(payload["split"], "test")
             loader.assert_called_once_with(current)
             state.build_user_validation_example.assert_not_called()

@@ -2859,6 +2859,14 @@ class OnlineScenePipeline:
 
     def _build_cards(self, req_id: int, user_idx: int, page_df: pd.DataFrame) -> list[dict[str, Any]]:
         cards = []
+        count_fields = ("accum_like_num", "accum_collect_num", "accum_comment_num")
+        missing = [name for name in count_fields if name not in page_df]
+        if missing and not page_df.empty:
+            # Display metadata is attached after inference and never enters model features.
+            notes = self.state._fetch_notes(page_df.note_idx.astype(int).tolist()).set_index("note_idx")
+            page_df = page_df.copy()
+            for name in missing:
+                page_df[name] = page_df.note_idx.map(notes[name]) if name in notes else 0
         for r in page_df.to_dict("records"):
             imgs = _existing_images(_to_path_list(r.get("image_path")))
             cards.append(

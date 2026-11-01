@@ -10,6 +10,9 @@ type Story = StoryObj<typeof meta>;
 export const Recommendation: Story = {
   play: async ({ canvas }) => {
     await expect((await canvas.findAllByText('城市漫步：发现日常中的小风景')).length).toBeGreaterThan(0);
+    await expect((await canvas.findAllByText(/点赞 32/)).length).toBeGreaterThan(0);
+    await expect(canvas.getAllByText(/收藏 8/).length).toBeGreaterThan(0);
+    await expect(canvas.getAllByText(/评论 2/).length).toBeGreaterThan(0);
   },
 };
 export const SearchSuggestion: Story = {

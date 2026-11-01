@@ -4,6 +4,20 @@ from unittest.mock import Mock,patch
 import pandas as pd
 from backend.online.pipeline import OnlineScenePipeline
 
+class CardMetadataRegressionTests(unittest.TestCase):
+    def test_recall_only_cards_recover_display_counts_without_changing_scores(self):
+        import pandas as pd
+        from types import SimpleNamespace
+        from backend.online.pipeline import OnlineScenePipeline
+        pipeline = object.__new__(OnlineScenePipeline)
+        pipeline.state = SimpleNamespace(scene="rec", _fetch_notes=lambda ids: pd.DataFrame({"note_idx":[9], "accum_like_num":[32],"accum_collect_num":[8],"accum_comment_num":[2]}))
+        frame = pd.DataFrame({"note_idx":[9],"recall_score":[.25],"final_score":[.25]})
+        cards = pipeline._build_cards(1,7,frame)
+        self.assertEqual([cards[0][k] for k in ("accum_like_num","accum_collect_num","accum_comment_num")],[32,8,2])
+        self.assertEqual(cards[0]["scores"]["final"],.25)
+        self.assertNotIn("accum_like_num",frame)
+
+
 class LatencyTests(unittest.TestCase):
     def test_cache_hit_reports_current_elapsed_time_not_historical_inference(self):
         pipeline=OnlineScenePipeline.__new__(OnlineScenePipeline)

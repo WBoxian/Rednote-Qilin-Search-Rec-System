@@ -425,9 +425,9 @@ watch(
         <div class="card-body">
           <div class="card-title">{{ it.title }}</div>
           <div class="stats">
-            <span class="stat-chip stat-like"><i>&#x2665;</i>{{ fmtNum(it.accum_like_num) }}</span>
-            <span class="stat-chip stat-collect"><i>&#x2605;</i>{{ fmtNum(it.accum_collect_num) }}</span>
-            <span class="stat-chip stat-comment"><i>&#x1F4AC;</i>{{ fmtNum(it.accum_comment_num) }}</span>
+            <span class="stat-chip stat-like"><i aria-hidden="true">&#x2665;</i>点赞 {{ fmtNum(it.accum_like_num) }}</span>
+            <span class="stat-chip stat-collect"><i aria-hidden="true">&#x2605;</i>收藏 {{ fmtNum(it.accum_collect_num) }}</span>
+            <span class="stat-chip stat-comment"><i aria-hidden="true">&#x1F4AC;</i>评论 {{ fmtNum(it.accum_comment_num) }}</span>
           </div>
         </div>
       </article>
