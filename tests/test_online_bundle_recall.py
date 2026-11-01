@@ -117,5 +117,109 @@ class BundleRecallTests(unittest.TestCase):
         self.assertEqual(result.attrs["route_status"]["errors"], {"bm25": "RuntimeError"})
 
 
+class LearnedBundleRecallTests(unittest.TestCase):
+    def fixture(self, *, fail=None):
+        from recall.learned_context_fusion import FEATURE_NAMES, LearnedContextFusion, PastSupport
+        class Predictor:
+            def feature_name(self): return list(FEATURE_NAMES)
+            def num_feature(self): return len(FEATURE_NAMES)
+            def predict(self, values, **kwargs): return -values[:, 1].astype(np.float64)
+        model = LearnedContextFusion(Predictor(), num_threads=2)
+        support = PastSupport({20: 3}, {7: 4}, frozenset({0, 1}))
+        lookup = lambda ids: np.eye(128, dtype=np.float32)[np.asarray(ids) % 128]
+        history = [0, 0, 1]
+        context = pd.DataFrame({'request_idx': [123], 'user_idx': [7], 'query': [''],
+                                'recent_clicked_note_idxs': [history]})
+        tower = SimpleNamespace(fetch_candidates=Mock(return_value=pd.DataFrame({
+            'note_idx': [20, 0, 30], 'score_ann': [1., 3., 2.]})), user_store={'note_text': object()})
+        policy = {'strategy': 'learned_rrf', 'context_policy': 'learned_filter_history',
+            'weights': {'ann': 2, 'swing': 1, 'usercf': 1}, 'route_topk': 1000, 'topk': 500, 'rrf_k': 60,
+            'learned_fusion': {'version': 1, 'feature_schema': 'rec_context_23_v1', 'alpha': .5,
+                'prior_precision': 'float32_rrf211_v1', **{k: 'fusion/' + k for k in
+                    ['model', 'support', 'pca_vectors', 'pca_ids', 'pca_mean', 'pca_components']}}}
+        def fuse(routes, hist, uid, store):
+            if fail: raise ValueError(fail)
+            self.assertIs(store, tower.user_store['note_text'])
+            return model.fuse(routes, history=hist, user_idx=uid, q0_pca=lookup([0])[0],
+                item_pca_lookup=lookup, support=support).to_frame()
+        bundle = SimpleNamespace(bundle_id='learned', manifest={'recall_policy': policy},
+            cf_candidates=Mock(return_value={'swing': {1: 3., 30: 2., 20: 1.}, 'usercf': {40: 2., 20: 1.}}),
+            fuse_learned_routes=Mock(side_effect=fuse))
+        return bundle, tower, context
+
+    def test_actual_core_output_scores_attribution_and_complete_budget_are_preserved(self):
+        bundle, tower, context = self.fixture()
+        result = fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=1)
+        call = bundle.fuse_learned_routes.call_args
+        self.assertEqual(set(call.args[0]), {'ann', 'swing', 'usercf'})
+        self.assertEqual(call.args[0]['ann'].ids.tolist(), [0, 30, 20])
+        self.assertEqual(call.args[1], [0, 0, 1])
+        full = bundle.fuse_learned_routes.side_effect(*call.args)
+        self.assertEqual(result.note_idx.tolist(), full.note_idx.iloc[:1].tolist())
+        np.testing.assert_array_equal(result.recall_score, full.score.iloc[:1])
+        status = result.attrs['route_status']
+        self.assertEqual(status['merged_before_input_budget'], 3)
+        self.assertEqual(status['history_filter_removed'], {'ann': 1, 'swing': 1, 'usercf': 0})
+        self.assertEqual(status['source_attribution'], 'rrf211_prior_contribution_diagnostic')
+        self.assertNotIn(0, result.note_idx.tolist())
+        self.assertIn(result.first_route.iloc[0], ['ann', 'swing', 'usercf'])
+        self.assertEqual(tower.fetch_candidates.call_args.args[1], 1000)
+        self.assertEqual(bundle.cf_candidates.call_args.args[2], 1000)
+        self.assertEqual(result.recall_score.dtype, np.dtype('float64'))
+
+    def test_model_failure_and_missing_store_raise_without_rrf_fallback(self):
+        bundle, tower, context = self.fixture(fail='bad model')
+        with patch('backend.online.recall.service.weighted_rrf', side_effect=AssertionError('No fallback')):
+            with self.assertRaisesRegex(ValueError, 'bad model'):
+                fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+        del tower.user_store['note_text']
+        with self.assertRaisesRegex(ValueError, 'raw text store'):
+            fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+
+    def test_legitimate_empty_union_remains_empty_under_same_core(self):
+        bundle, tower, context = self.fixture()
+        tower.fetch_candidates.return_value = pd.DataFrame()
+        bundle.cf_candidates.return_value = {'swing': {}, 'usercf': {}}
+        result = fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+        self.assertTrue(result.empty)
+        self.assertEqual(bundle.fuse_learned_routes.call_count, 1)
+        self.assertEqual(result.attrs['route_status']['errors'], {})
+        self.assertEqual(result.attrs['route_status']['merged_before_input_budget'], 0)
+
+    def test_provider_exceptions_fail_closed_without_private_error_details(self):
+        for route in ('ann', 'cf'):
+            with self.subTest(route=route):
+                bundle, tower, context = self.fixture()
+                provider = tower.fetch_candidates if route == 'ann' else bundle.cf_candidates
+                provider.side_effect = ValueError('private filesystem token')
+                with self.assertRaisesRegex(RuntimeError, 'provider ' + route + ' failed: ValueError') as caught:
+                    fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+                self.assertNotIn('private', str(caught.exception))
+                bundle.fuse_learned_routes.assert_not_called()
+        bundle, tower, context = self.fixture()
+        tower.enabled = False
+        with self.assertRaisesRegex(RuntimeError, 'ann is disabled'):
+            fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+
+    def test_legitimate_empty_cf_still_runs_the_frozen_learned_core(self):
+        bundle, tower, context = self.fixture()
+        bundle.cf_candidates.return_value = {'swing': {}, 'usercf': {}}
+        result = fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+        self.assertEqual(set(result.note_idx), {20, 30})
+        self.assertEqual(bundle.fuse_learned_routes.call_count, 1)
+        self.assertEqual(result.attrs['route_status']['errors'], {})
+        self.assertEqual(result.attrs['route_status']['counts'], {'ann': 3, 'swing': 0, 'usercf': 0})
+
+    def test_oversized_original_route_and_changed_contract_reject(self):
+        bundle, tower, context = self.fixture()
+        tower.fetch_candidates.return_value = pd.DataFrame({'note_idx': np.arange(1001), 'score_ann': np.ones(1001)})
+        with self.assertRaisesRegex(ValueError, 'budget'):
+            fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+        tower.fetch_candidates.return_value = pd.DataFrame()
+        bundle.manifest['recall_policy']['learned_fusion']['alpha'] = 1.
+        with self.assertRaisesRegex(ValueError, 'learned request-context'):
+            fetch_bundle_recall_candidates(bundle, tower, context, scene='rec', max_rank=500)
+
+
 if __name__ == "__main__":
     unittest.main()

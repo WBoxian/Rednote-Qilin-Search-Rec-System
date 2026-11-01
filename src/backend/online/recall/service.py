@@ -771,6 +771,9 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
     policy = bundle.manifest["recall_policy"]
     route_topk = int(policy.get("route_topk", 1000))
     final_topk = int(policy.get("topk", 500))
+    fail_closed = scene == "rec" and policy.get("strategy") == "learned_rrf"
+    if fail_closed and getattr(dssm_recaller, "enabled", None) is False:
+        raise RuntimeError("Learned recall provider ann is disabled")
     errors = {}
     ann, swing, usercf, bm25 = {}, {}, {}, {}
     try:
@@ -778,6 +781,8 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
         if not frame.empty:
             ann = dict(zip(frame.note_idx.astype(int), frame.score_ann.astype(float)))
     except (OSError, ValueError, RuntimeError) as error:
+        if fail_closed:
+            raise RuntimeError(f"Learned recall provider ann failed: {type(error).__name__}") from None
         errors["ann"] = type(error).__name__
     if scene == "search":
         try:
@@ -790,6 +795,8 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
             routes = bundle.cf_candidates(uid, list(row["recent_clicked_note_idxs"]), route_topk)
             swing, usercf = routes["swing"], routes["usercf"]
         except (OSError, ValueError, RuntimeError) as error:
+            if fail_closed:
+                raise RuntimeError(f"Learned recall provider cf failed: {type(error).__name__}") from None
             errors["cf"] = type(error).__name__
     weights = dict(policy["weights"])
     if scene == "search":
@@ -798,7 +805,10 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
     strategy = policy.get("strategy", "weighted_rrf")
     context_policy = policy.get("context_policy")
     if context_policy is not None:
-        if context_policy == "weighted_filter_history":
+        if context_policy == "learned_filter_history":
+            from backend.online.bundle import _validate_learned_policy
+            _validate_learned_policy(policy, scene)
+        elif context_policy == "weighted_filter_history":
             if (scene != "rec" or strategy != "weighted_rrf" or set(weights) != {"ann", "swing", "usercf"}
                     or weights["ann"] not in (1., 2., 4., 8.) or weights["swing"] not in (1., 2.)
                     or weights["usercf"] != 1. or any(isinstance(value, bool) for value in weights.values())
@@ -813,7 +823,15 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
         route_scores = {"ann": ann, "swing": swing, "usercf": usercf}
         route_ids = {name: np.asarray(sorted(scores, key=lambda note: (-scores[note], note)), dtype=np.int64)
                      for name, scores in route_scores.items()}
-        if context_policy == "weighted_filter_history":
+        if context_policy == "learned_filter_history":
+            from recall.learned_context_fusion import RouteCandidates
+            stores = getattr(dssm_recaller, "user_store", {})
+            if "note_text" not in stores:
+                raise ValueError("Learned fusion requires the current request's raw text store")
+            current = {name: RouteCandidates(ids, np.asarray([route_scores[name][int(note)] for note in ids], np.float32))
+                       for name, ids in route_ids.items()}
+            fused = bundle.fuse_learned_routes(current, recent, uid, stores["note_text"])
+        elif context_policy == "weighted_filter_history":
             from recall.weighted_context_fusion import fuse_weighted_request_routes
             fused = fuse_weighted_request_routes(route_ids, recent, weights, topk=final_topk)
         else:
@@ -852,5 +870,6 @@ def fetch_bundle_recall_candidates(bundle, dssm_recaller, context: pd.DataFrame,
         **({"bm25": len(bm25)} if scene == "search" else {"swing": len(swing), "usercf": len(usercf)})},
         "context_policy": context_policy,
         "history_filter_removed": {name: len(route_ids[name])-len(positions[name]) for name in route_ids} if context_policy else {},
-        "merged_before_input_budget": len(merged), "input_budget": int(max_rank), "errors": errors}
+        "merged_before_input_budget": len(merged), "input_budget": int(max_rank), "errors": errors,
+        **({"source_attribution": "rrf211_prior_contribution_diagnostic"} if context_policy == "learned_filter_history" else {})}
     return result

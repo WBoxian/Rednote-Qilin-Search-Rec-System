@@ -57,6 +57,190 @@ def resign(manifest):
     return manifest
 
 
+def learned_fixture(root):
+    import lightgbm as lgb
+    from recall.learned_context_fusion import FEATURE_NAMES
+    from backend.online.ranking.inference import REQUEST_FP32, configure_request_inference
+    import recall.learned_context_fusion as core
+    manifest = fixture(root, 'rec')
+    policy = manifest['recall_policy']
+    paths = {key: 'artifacts/fusion/' + filename for key, filename in {
+        'model': 'model.txt', 'support': 'support.json', 'pca_vectors': 'vectors.bin',
+        'pca_ids': 'ids.npy', 'pca_mean': 'mean.npy', 'pca_components': 'components.npy'}.items()}
+    policy.update(strategy='learned_rrf', context_policy='learned_filter_history',
+        weights={'ann': 2, 'swing': 1, 'usercf': 1}, learned_fusion={**paths, 'version': 1,
+            'feature_schema': 'rec_context_23_v1', 'alpha': .5, 'prior_precision': 'float32_rrf211_v1'})
+    folder = root/'artifacts/fusion'
+    folder.mkdir()
+    inputs = np.random.default_rng(42).normal(size=(12, 23)).astype(np.float32)
+    model = lgb.train({'objective': 'regression', 'num_threads': 2, 'verbosity': -1,
+        'min_data_in_leaf': 1, 'min_data_in_bin': 1, 'seed': 42},
+        lgb.Dataset(inputs, label=np.arange(12) % 2, feature_name=list(FEATURE_NAMES)), num_boost_round=2)
+    model.save_model(str(root/paths['model']))
+    np.save(root/paths['pca_ids'], np.array([0, 7, 20, 30], np.int64))
+    np.save(root/paths['pca_mean'], np.zeros(768, np.float32))
+    components = np.zeros((128, 768), np.float32)
+    components[:, :128] = np.eye(128)
+    np.save(root/paths['pca_components'], components)
+    np.eye(128, dtype=np.float32)[:4].tofile(root/paths['pca_vectors'])
+    runtime = root/'src/recall/learned_context_fusion.py'
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(Path(core.__file__).read_bytes())
+    support = {'version': 1, 'history_contract': HISTORY_ORDER, 'training_cutoff_exclusive': 10,
+        'num_items': 4, 'dim': 128, 'item_counts': [[0, 2], [7, 1]], 'user_counts': [[7, 4]],
+        'graph_items': [0, 7], **{key+'_sha256': file_sha256(root/paths[key]) for key in
+            ['model', 'pca_vectors', 'pca_ids', 'pca_mean', 'pca_components']}}
+    (root/paths['support']).write_text(json.dumps(support))
+    rank = root/manifest['rank_dir']/'manifest.json'
+    metadata = json.loads(rank.read_text())
+    metadata['dien']['inference_contract'] = REQUEST_FP32
+    rank.write_text(json.dumps(metadata))
+    manifest['assets'] = {name: file_sha256(root/name) for name in required_asset_names(manifest, root)}
+    configure_request_inference(REQUEST_FP32)
+    return resign(manifest)
+
+
+class LearnedServingBundleTests(unittest.TestCase):
+    def refresh(self, root, manifest, key):
+        paths = manifest['recall_policy']['learned_fusion']
+        if key != 'support':
+            support = json.loads((root/paths['support']).read_text())
+            support[key+'_sha256'] = file_sha256(root/paths[key])
+            (root/paths['support']).write_text(json.dumps(support))
+        for name in required_asset_names(manifest, root):
+            manifest['assets'][name] = file_sha256(root/name)
+        resign(manifest)
+
+    def test_policy_requires_fixed_schema_paths_budgets_and_all_required_bindings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = learned_fixture(root)
+            validate_manifest(manifest, 'rec', root)
+            config = manifest['recall_policy']['learned_fusion']
+            for field, value in [('version', True), ('alpha', 1.), ('feature_schema', 'other'),
+                                 ('prior_precision', 'float64'), ('model', str(root/config['model']))]:
+                changed = copy.deepcopy(manifest)
+                changed['recall_policy']['learned_fusion'][field] = value
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    validate_manifest(resign(changed), 'rec', root)
+            for name in [*(config[k] for k in bundle_module.LEARNED_FUSION_PATHS), 'src/recall/learned_context_fusion.py']:
+                changed = copy.deepcopy(manifest)
+                del changed['assets'][name]
+                with self.subTest(missing=name), self.assertRaisesRegex(ValueError, 'omits required'):
+                    validate_manifest(resign(changed), 'rec', root)
+            for changed in [{'weights': {'ann': 1, 'swing': 2, 'usercf': 1}}, {'rrf_k': 20},
+                            {'route_topk': 500}, {'topk': 600}, {'context_policy': None}]:
+                mutation = copy.deepcopy(manifest)
+                mutation['recall_policy'].update(changed)
+                with self.assertRaises(ValueError):
+                    validate_manifest(resign(mutation), 'rec', root)
+
+    def test_startup_warms_actual_model_once_and_fuses_original_q0_under_contract(self):
+        import torch
+        from backend.online.ranking.inference import REQUEST_FP32, check_request_inference
+        from recall.learned_context_fusion import LearnedContextFusion, RouteCandidates
+        from recall.residual_dssm import raw_history_text_mean, project_content
+        class Store:
+            def get_batch_vecs(self, ids):
+                values = np.zeros((len(ids), 768), np.float32)
+                for row, item in enumerate(ids): values[row, 0 if item == 0 else 1] = 1.
+                return torch.from_numpy(values)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = learned_fixture(root)
+            active = root/'outputs/deploy/rec/hard/active_bundle.json'
+            active.parent.mkdir(parents=True)
+            active.write_text(json.dumps(manifest))
+            with patch.object(bundle_module, 'RankStackPredictor'), patch.object(LearnedContextFusion, 'from_model_path', wraps=LearnedContextFusion.from_model_path) as constructor:
+                serving = get_active_bundle('rec', 'hard', root)
+                state = serving._get_learned_fusion()
+                self.assertEqual(constructor.call_count, 1)
+                routes = {'ann': RouteCandidates([0, 7, 20], [3., 2., 1.]),
+                    'swing': RouteCandidates([30, 20], [2., 1.]), 'usercf': RouteCandidates([], [])}
+                with patch.object(state.predictor, 'fuse', wraps=state.predictor.fuse) as shared:
+                    actual = serving.fuse_learned_routes(routes, [0, 0, 7], 7, Store())
+                q0 = project_content(torch.from_numpy(raw_history_text_mean([0, 0, 7], Store()).reshape(1, 768)), state.mean, state.components).numpy()[0]
+                np.testing.assert_array_equal(shared.call_args.kwargs['q0_pca'], q0)
+                self.assertEqual(actual.note_idx.tolist(), [20, 30])
+                self.assertEqual(actual['rank'].tolist(), [1, 2])
+                self.assertEqual(actual.score.dtype, np.dtype('float64'))
+                self.assertFalse(state.ids.flags.writeable)
+                self.assertFalse(state.vectors.flags.writeable)
+                with self.assertRaises(TypeError): state.support.item_counts[0] = 99
+                check_request_inference(REQUEST_FP32)
+                self.assertEqual(torch.get_num_threads(), 4)
+                serving.fuse_learned_routes({}, [], 7, Store())
+                self.assertEqual(constructor.call_count, 1)
+
+    def test_support_cutoff_hash_counts_and_history_reject_without_fallback(self):
+        mutations = [('training_cutoff_exclusive', 9), ('version', True), ('dim', 64),
+            ('history_contract', 'old'), ('num_items', True), ('model_sha256', '0'*64),
+            ('item_counts', [[0, 1], [0, 2]]), ('user_counts', [[True, 1]]),
+            ('graph_items', [0, 0]), ('graph_items', [99]), ('item_counts', [[99, 1]])]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = learned_fixture(root)
+            path = root/manifest['recall_policy']['learned_fusion']['support']
+            original = path.read_bytes()
+            for field, value in mutations:
+                with self.subTest(field=field, value=value):
+                    support = json.loads(original)
+                    support[field] = value
+                    path.write_text(json.dumps(support))
+                    self.refresh(root, manifest, 'support')
+                    with self.assertRaises(ValueError): ServingBundle(manifest, None, root)._get_learned_fusion()
+                    path.write_bytes(original)
+            path.write_text('{bad json')
+            self.refresh(root, manifest, 'support')
+            with self.assertRaises(ValueError): ServingBundle(manifest, None, root)._get_learned_fusion()
+
+    def test_actual_hash_and_wrong_model_columns_are_rejected(self):
+        import lightgbm as lgb
+        from backend.online.ranking.inference import REQUEST_FP32, configure_request_inference
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = learned_fixture(root)
+            serving = ServingBundle(manifest, None, root)
+            serving._get_learned_fusion()
+            paths = manifest['recall_policy']['learned_fusion']
+            model_path = root/paths['model']
+            content = model_path.read_bytes()
+            model_path.write_bytes(bytes([content[0]^1]) + content[1:])
+            with self.assertRaisesRegex(ValueError, 'asset mismatch'): serving._get_learned_fusion()
+            model_path.write_bytes(content)
+            from recall.learned_context_fusion import FEATURE_NAMES
+            names = ['wrong_column', *FEATURE_NAMES[1:]]
+            model = lgb.train({'objective': 'regression', 'verbosity': -1, 'num_threads': 2},
+                lgb.Dataset(np.zeros((8, 23), np.float32), label=np.arange(8), feature_name=names), num_boost_round=1)
+            model.save_model(str(model_path))
+            self.refresh(root, manifest, 'model')
+            configure_request_inference(REQUEST_FP32)
+            with self.assertRaisesRegex(ValueError, '23-feature schema'):
+                ServingBundle(manifest, None, root)._get_learned_fusion()
+
+    def test_pca_dtype_shape_basis_and_bytes_reject_after_cross_hash_is_updated(self):
+        for mutation in ['mean_float64', 'basis_nonorthogonal', 'basis_nan', 'ids_duplicate', 'ids_int32', 'vector_length', 'vector_nan']:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = learned_fixture(root)
+                paths = manifest['recall_policy']['learned_fusion']
+                if mutation == 'mean_float64':
+                    key = 'pca_mean'; np.save(root/paths[key], np.zeros(768, np.float64))
+                elif mutation.startswith('basis'):
+                    key = 'pca_components'; values = np.load(root/paths[key]); values[1] = values[0]
+                    if mutation == 'basis_nan': values[0, 0] = np.nan
+                    np.save(root/paths[key], values)
+                elif mutation.startswith('ids'):
+                    key = 'pca_ids'; np.save(root/paths[key], np.array([0, 0, 20, 30], np.int64) if mutation == 'ids_duplicate' else np.array([0, 7, 20, 30], np.int32))
+                else:
+                    key = 'pca_vectors'; values = np.fromfile(root/paths[key], np.float32)
+                    if mutation == 'vector_length': values = values[:-1]
+                    else: values[0] = np.nan
+                    values.tofile(root/paths[key])
+                self.refresh(root, manifest, key)
+                with self.assertRaises(ValueError): ServingBundle(manifest, None, root)._get_learned_fusion()
+
+
 class ServingBundleTests(unittest.TestCase):
     def test_weighted_f1_accepts_only_the_declared_eight_weight_recipes(self):
         with tempfile.TemporaryDirectory() as directory:

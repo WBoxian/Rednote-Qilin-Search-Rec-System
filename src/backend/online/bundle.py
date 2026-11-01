@@ -57,6 +57,40 @@ def resolve_asset(root: Path, value: str) -> Path:
     return path
 
 
+LEARNED_FUSION_PATHS = ("model", "support", "pca_vectors", "pca_ids", "pca_mean", "pca_components")
+
+
+def _validate_learned_policy(policy: dict, scene: str) -> dict:
+    config = policy.get("learned_fusion")
+    if (scene != "rec" or policy.get("strategy") != "learned_rrf"
+            or policy.get("context_policy") != "learned_filter_history"
+            or policy.get("weights") != {"ann": 2, "swing": 1, "usercf": 1}
+            or any(type(value) not in (int, float) for value in policy.get("weights", {}).values())
+            or any(type(policy.get(key)) is not int or policy[key] != expected
+                   for key, expected in (("rrf_k", 60), ("route_topk", 1000), ("topk", 500)))
+            or not isinstance(config, dict) or type(config.get("version")) is not int or config["version"] != 1
+            or config.get("feature_schema") != "rec_context_23_v1" or config.get("alpha") != .5
+            or config.get("prior_precision") != "float32_rrf211_v1"):
+        raise ValueError("Unsupported frozen learned request-context fusion contract")
+    for key in LEARNED_FUSION_PATHS:
+        value = config.get(key)
+        if not isinstance(value, str) or not value or Path(value).is_absolute():
+            raise ValueError("Learned fusion asset paths must be relative to ROOT")
+    return config
+
+
+def _support_counts(values, name):
+    if not isinstance(values, list):
+        raise ValueError(f"Learned support {name} must be explicit ID/count pairs")
+    result = {}
+    for pair in values:
+        if (not isinstance(pair, list) or len(pair) != 2
+                or any(type(value) is not int or not 0 <= value <= 2**63-1 for value in pair) or pair[0] in result):
+            raise ValueError(f"Invalid or duplicate learned support {name}")
+        result[pair[0]] = pair[1]
+    return result
+
+
 def required_asset_names(manifest: dict, root: Path) -> set[str]:
     """Every file consumed by current serving, not an arbitrary caller-provided subset."""
     root = Path(root).resolve()
@@ -98,6 +132,11 @@ def required_asset_names(manifest: dict, root: Path) -> set[str]:
         graph = resolve_asset(root, manifest["recall_policy"]["cf_graph_dir"])
         for name in ("graph.npz", "users.npy", "items.npy", "swing.npz", "meta.json"):
             require(graph / name)
+    if manifest.get("recall_policy", {}).get("strategy") == "learned_rrf":
+        config = _validate_learned_policy(manifest["recall_policy"], scene)
+        for key in LEARNED_FUSION_PATHS:
+            require(config[key])
+        require("src/recall/learned_context_fusion.py")
     diagnostic = manifest.get("evaluation", {}).get("validation_snapshot")
     if diagnostic is not None:
         if not isinstance(diagnostic, dict) or set(diagnostic) != {"path", "sha256"}:
@@ -128,7 +167,7 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
         raise ValueError("A positive complete-request training cutoff must be bound")
     policy = manifest.get("recall_policy", {})
     strategy = policy.get("strategy")
-    if strategy not in ({"weighted_rrf", "protected_headfill"} if scene == "search" else {"weighted_rrf"}):
+    if strategy not in ({"weighted_rrf", "protected_headfill"} if scene == "search" else {"weighted_rrf", "learned_rrf"}):
         raise ValueError("Unsupported frozen recall policy")
     weights = policy.get("weights", {})
     routes = {"ann", "bm25"} if scene == "search" else {"ann", "swing", "usercf"}
@@ -145,7 +184,9 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     if int(policy.get("rrf_k", 60)) < 1:
         raise ValueError("Invalid reciprocal-rank smoothing")
     context_policy = policy.get("context_policy")
-    if context_policy == "weighted_filter_history":
+    if strategy == "learned_rrf" or context_policy == "learned_filter_history":
+        _validate_learned_policy(policy, scene)
+    elif context_policy == "weighted_filter_history":
         if (scene != "rec" or strategy != "weighted_rrf" or weights["ann"] not in (1., 2., 4., 8.)
                 or weights["swing"] not in (1., 2.) or weights["usercf"] != 1.
                 or any(isinstance(value, bool) for value in weights.values())
@@ -196,6 +237,10 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     score_contract = dien.get("score_contract", "request_minmax_v1")
     from backend.online.ranking.inference import validate_inference_contract
     validate_inference_contract(dien.get("inference_contract"))
+    if strategy == "learned_rrf":
+        from backend.online.ranking.inference import REQUEST_FP32
+        if dien.get("inference_contract") != REQUEST_FP32:
+            raise ValueError("Learned fusion requires the canonical request FP32 contract")
     if score_contract not in {"request_minmax_v1", "probability_v2"}:
         raise ValueError("Unsupported ranking score contract")
     if score_contract == "probability_v2" and metadata.get("trees", {}).get("chosen", {}).get("config", {}).get("kind") != "classifier":
@@ -204,6 +249,16 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     for name, expected in assets.items():
         path = resolve_asset(root, name)
         verify_asset(path, expected)
+
+
+@dataclass(frozen=True)
+class _LearnedFusionState:
+    predictor: object
+    support: object
+    ids: object
+    vectors: object
+    mean: object
+    components: object
 
 
 @dataclass
@@ -238,6 +293,96 @@ class ServingBundle:
                 recaller = CFGraphRecaller(resolve_asset(self.root, policy["cf_graph_dir"]), policy["cf_config"])
                 self._cf = recaller
             return recaller.score(user_idx, history, topk)
+
+    def _get_learned_fusion(self):
+        import numpy as np
+        import torch
+        from backend.online.ranking.inference import REQUEST_FP32, check_request_inference
+        from recall.learned_context_fusion import CandidateFeatures, LearnedContextFusion, PastSupport
+
+        with self._lock:
+            config = _validate_learned_policy(self.manifest["recall_policy"], self.manifest["scene"])
+            paths = {key: resolve_asset(self.root, config[key]) for key in LEARNED_FUSION_PATHS}
+            paths["runtime"] = resolve_asset(self.root, "src/recall/learned_context_fusion.py")
+            bound = self.manifest["assets"]
+            for path in paths.values():
+                verify_asset(path, bound.get(path.relative_to(self.root.resolve()).as_posix()))
+            cached = getattr(self, "_learned", None)
+            if cached is not None:
+                return cached
+            check_request_inference(REQUEST_FP32)
+            support = json.loads(paths["support"].read_text(encoding="utf-8"))
+            if not isinstance(support, dict):
+                raise ValueError("Learned fusion support must be an object")
+            for key, expected in (("version", 1), ("training_cutoff_exclusive", self.manifest["training_cutoff_exclusive"]), ("dim", 128)):
+                if type(support.get(key)) is not int or support[key] != expected:
+                    raise ValueError("Learned fusion support cutoff/version/dimension mismatch")
+            if support.get("history_contract") != HISTORY_ORDER:
+                raise ValueError("Learned fusion support history contract mismatch")
+            for key in ("model", "pca_vectors", "pca_ids", "pca_mean", "pca_components"):
+                expected = bound[paths[key].relative_to(self.root.resolve()).as_posix()]
+                if support.get(key + "_sha256") != expected:
+                    raise ValueError("Learned fusion support cross-SHA mismatch: " + key)
+            ids = np.load(paths["pca_ids"], mmap_mode="r", allow_pickle=False)
+            if (ids.dtype != np.dtype("int64") or ids.ndim != 1 or not len(ids)
+                    or np.any(ids < 0) or np.any(ids[1:] <= ids[:-1])
+                    or type(support.get("num_items")) is not int or support["num_items"] != len(ids)):
+                raise ValueError("Learned PCA IDs require sorted unique nonnegative int64 IDs and matching num_items")
+            mean = np.load(paths["pca_mean"], allow_pickle=False)
+            components = np.load(paths["pca_components"], allow_pickle=False)
+            if (mean.dtype != np.dtype("float32") or mean.shape != (768,) or not np.isfinite(mean).all()
+                    or components.dtype != np.dtype("float32") or components.shape != (128, 768)
+                    or not np.isfinite(components).all()
+                    or not np.allclose(components @ components.T, np.eye(128), atol=2e-4, rtol=2e-4)):
+                raise ValueError("Learned PCA requires a finite float32 mean and orthonormal float32 basis")
+            if paths["pca_vectors"].stat().st_size != len(ids) * 128 * 4:
+                raise ValueError("Learned PCA vector byte length differs from N*128*4")
+            vectors = np.memmap(paths["pca_vectors"], dtype="float32", mode="r", shape=(len(ids), 128))
+            for first in range(0, len(ids), 65536):
+                if not np.isfinite(vectors[first:first+65536]).all():
+                    raise ValueError("Learned PCA item vectors must be finite")
+            item_counts = _support_counts(support.get("item_counts"), "item_counts")
+            user_counts = _support_counts(support.get("user_counts"), "user_counts")
+            graph = support.get("graph_items")
+            if (not isinstance(graph, list) or any(type(value) is not int or not 0 <= value <= 2**63-1 for value in graph)
+                    or len(graph) != len(set(graph))):
+                raise ValueError("Learned support graph_items require unique int64 IDs")
+            for values in (list(item_counts), graph):
+                positions = np.searchsorted(ids, values)
+                if np.any(positions >= len(ids)) or not np.array_equal(ids[positions], values):
+                    raise ValueError("Learned support item/graph ID is outside the PCA catalog")
+            frozen_support = PastSupport(item_counts, user_counts, frozenset(graph))
+            predictor = LearnedContextFusion.from_model_path(paths["model"], num_threads=2)
+            predictor.predict(CandidateFeatures(np.array([int(ids[0])], np.int64),
+                np.zeros((1, 23), np.float32), np.full((1, 3), 1001, np.int32)))
+            check_request_inference(REQUEST_FP32)
+            ids.flags.writeable = False
+            cached = _LearnedFusionState(predictor, frozen_support, ids, vectors,
+                torch.tensor(mean, dtype=torch.float32), torch.tensor(components, dtype=torch.float32))
+            self._learned = cached
+            return cached
+
+    def fuse_learned_routes(self, routes, history, user_idx, raw_text_store):
+        import numpy as np
+        import torch
+        from backend.online.ranking.inference import REQUEST_FP32, check_request_inference
+        from recall.residual_dssm import raw_history_text_mean, project_content
+
+        with self._lock:
+            check_request_inference(REQUEST_FP32)
+            state = self._get_learned_fusion()
+            raw = raw_history_text_mean(history, raw_text_store)
+            with torch.no_grad(), torch.autocast("cpu", enabled=False):
+                q0 = project_content(torch.from_numpy(raw.reshape(1, 768)), state.mean, state.components).numpy()[0]
+            def lookup(note_ids):
+                positions = np.searchsorted(state.ids, note_ids)
+                if np.any(positions >= len(state.ids)) or not np.array_equal(state.ids[positions], note_ids):
+                    raise ValueError("Learned fusion item is outside the bound PCA catalog")
+                return np.asarray(state.vectors[positions], np.float32)
+            ranked = state.predictor.fuse(routes, history=history, user_idx=user_idx,
+                q0_pca=q0, item_pca_lookup=lookup, support=state.support)
+            check_request_inference(REQUEST_FP32)
+            return ranked.to_frame()
 
     def bm25_candidates(self, query, topk):
         return self._get_bm25_index().search(query, topk)
@@ -294,6 +439,8 @@ def get_active_bundle(scene: str, tag: str, root: Path) -> ServingBundle | None:
     bundle = ServingBundle(manifest, ranker, root)
     if scene == "search":
         bundle._get_bm25_index()
+    if scene == "rec" and manifest["recall_policy"].get("strategy") == "learned_rrf":
+        bundle._get_learned_fusion()
     if manifest.get('note_metadata_index'):
         bundle._get_note_metadata_index()
     return bundle
