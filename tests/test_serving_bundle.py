@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import copy
 import json
 import os
@@ -5,6 +7,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -577,6 +580,119 @@ class SimpleCoarse:
     def predict(self, frame):
         return np.asarray([1., 2., 100., 200.], dtype=np.float32)
 
+
+
+
+class ParallelAssetIntegrityTests(unittest.TestCase):
+    def test_distinct_files_hash_concurrently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            files = [Path(directory)/name for name in ('a.bin', 'b.bin')]
+            for index, path in enumerate(files):
+                path.write_bytes(bytes([index])*1024)
+            expected = {path: file_sha256(path) for path in files}
+            original = bundle_module.file_sha256
+            both_entered = threading.Barrier(2)
+            def observed_hash(path):
+                both_entered.wait(timeout=3)
+                return original(path)
+            with patch.object(bundle_module, 'file_sha256', side_effect=observed_hash):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = [pool.submit(verify_asset, path, expected[path]) for path in files]
+                    for result in results:
+                        result.result(timeout=4)
+
+    def test_same_file_eight_waiters_hash_exactly_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'one.bin'
+            path.write_bytes(b'one complete immutable file')
+            expected, original = file_sha256(path), bundle_module.file_sha256
+            ready = threading.Barrier(8)
+            count = 0
+            count_lock = threading.Lock()
+            def observed_hash(value):
+                nonlocal count
+                with count_lock:
+                    count += 1
+                time.sleep(.02)
+                return original(value)
+            def worker():
+                ready.wait(timeout=3)
+                verify_asset(path, expected)
+            with patch.object(bundle_module, 'file_sha256', side_effect=observed_hash):
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    list(pool.map(lambda _: worker(), range(8)))
+            self.assertEqual(count, 1)
+
+    def test_completed_cache_rejects_same_size_mutation_with_restored_mtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'mutable.bin'
+            path.write_bytes(b'old!')
+            expected = file_sha256(path)
+            verify_asset(path, expected)
+            before = path.stat()
+            time.sleep(.002)
+            path.write_bytes(b'new!')
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(path.stat().st_size, before.st_size)
+            self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
+            with self.assertRaisesRegex(ValueError, 'asset mismatch'):
+                verify_asset(path, expected)
+
+    def test_mid_hash_mutation_with_restored_mtime_never_seeds_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'mutating.bin'
+            path.write_bytes(b'old!')
+            expected, original = file_sha256(path), bundle_module.file_sha256
+            before = path.stat()
+            def mutate_after_read(value):
+                result = original(value)
+                time.sleep(.002)
+                value.write_bytes(b'new!')
+                os.utime(value, ns=(before.st_atime_ns, before.st_mtime_ns))
+                return result
+            with patch.object(bundle_module, 'file_sha256', side_effect=mutate_after_read):
+                with self.assertRaisesRegex(ValueError, 'asset mismatch'):
+                    verify_asset(path, expected)
+            self.assertFalse(any(identity[0] == str(path.resolve()) for identity in bundle_module._VERIFIED_ASSETS))
+            verify_asset(path, original(path))
+
+    def test_invalid_digest_never_seeds_or_poison_locks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'digest.bin'
+            path.write_bytes(b'actual bytes')
+            for wrong in (None, 'short', '0'*64):
+                with self.assertRaisesRegex(ValueError, 'asset mismatch'):
+                    verify_asset(path, wrong)
+            self.assertFalse(any(identity[0] == str(path.resolve()) for identity in bundle_module._VERIFIED_ASSETS))
+            verify_asset(path, file_sha256(path))
+
+    def test_manifest_uses_bounded_parallel_hash_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = fixture(root, 'rec')
+            original = bundle_module.file_sha256
+            lock, first_pair = threading.Lock(), threading.Barrier(2)
+            active = maximum = calls = 0
+            def observed_hash(path):
+                nonlocal active, maximum, calls
+                with lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                    calls += 1
+                    ordinal = calls
+                try:
+                    if ordinal <= 2:
+                        first_pair.wait(timeout=3)
+                    time.sleep(.005)
+                    return original(path)
+                finally:
+                    with lock:
+                        active -= 1
+            with patch.object(bundle_module, 'file_sha256', side_effect=observed_hash):
+                validate_manifest(manifest, 'rec', root)
+            self.assertEqual(calls, len(manifest['assets']))
+            self.assertGreaterEqual(maximum, 2)
+            self.assertLessEqual(maximum, 4)
 
 if __name__ == "__main__":
     unittest.main()

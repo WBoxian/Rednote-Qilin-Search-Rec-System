@@ -1,6 +1,8 @@
 """Load an explicitly promoted, content-bound serving bundle for one scene."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import hashlib
 import json
 import math
@@ -24,23 +26,31 @@ def file_sha256(path: Path) -> str:
 
 _VERIFIED_ASSETS = set()
 _ASSET_LOCK = RLock()
+_ASSET_FILE_LOCKS = {}
 
 
 def verify_asset(path: Path, expected: str) -> None:
-    """Process-local only: first load hashes bytes, subsequent loads bind full file stat."""
+    """Hash complete bytes once per file identity; independent files may overlap."""
     path = path.resolve()
     if not isinstance(expected, str) or len(expected) != 64 or not path.is_file():
         raise ValueError(f"Serving bundle asset mismatch: {path}")
-    before = path.stat()
-    identity = (str(path), before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_ino, before.st_dev, expected)
     with _ASSET_LOCK:
-        if identity in _VERIFIED_ASSETS:
-            return
+        file_lock = _ASSET_FILE_LOCKS.get(str(path))
+        if file_lock is None:
+            file_lock = _ASSET_FILE_LOCKS[str(path)] = RLock()
+    with file_lock:
+        # A waiter must observe the identity after acquiring this file's lock.
+        before = path.stat()
+        identity = (str(path), before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_ino, before.st_dev, expected)
+        with _ASSET_LOCK:
+            if identity in _VERIFIED_ASSETS:
+                return
         actual = file_sha256(path)
         after = path.stat()
         if (after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_ino, after.st_dev) != identity[1:6] or actual != expected:
             raise ValueError(f"Serving bundle asset mismatch: {path}")
-        _VERIFIED_ASSETS.add(identity)
+        with _ASSET_LOCK:
+            _VERIFIED_ASSETS.add(identity)
 
 
 def bundle_identity(manifest: dict) -> str:
@@ -262,9 +272,11 @@ def validate_manifest(manifest: dict, scene: str, root: Path, *, tag: str | None
     if score_contract == "probability_v2" and metadata.get("trees", {}).get("chosen", {}).get("config", {}).get("kind") != "classifier":
         raise ValueError("Probability fusion requires a binary-classifier teacher")
     validate_rank_prior(dien.get("rank_prior"))
-    for name, expected in assets.items():
-        path = resolve_asset(root, name)
-        verify_asset(path, expected)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        pending = [executor.submit(verify_asset, resolve_asset(root, name), expected)
+                   for name, expected in assets.items()]
+        for future in pending:
+            future.result()
 
 
 @dataclass(frozen=True)
