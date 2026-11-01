@@ -214,7 +214,7 @@
         },
         "candidate_path": "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/final_candidates.parquet"
       },
-      "model_bundle_id": "78dc58d12f6215f9e223d482e729018c895eaed8e89c2ea9b0e5048f74d88329",
+      "model_bundle_id": "b6745c1bf7bed843c481d6e0def4e5b96ab8158a14851314e95d9cd2d62d23db",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -752,7 +752,7 @@
         },
         "candidate_path": ".qilin/rec_balanced_official_generation_20261102_v1/finalrefit_k3_safehead/final.parquet"
       },
-      "model_bundle_id": "729dbd6dec19b33bc8adda3f09e3e00da2338586ff745a0c1d1e4fd7750b7473",
+      "model_bundle_id": "8150eee1bd3220fd04e8acd22cb140970f9488ce1fc27c416a6a09291c61f499",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -1251,7 +1251,7 @@
         "bytes": 9650
       },
       "outputs/deploy/search/hard/active_bundle.json": {
-        "sha256": "2d2dab1dbe3de509071c828a27c4769d58b6419ea11f01eb1f59330a2e04bb63",
+        "sha256": "1ef87a27d7a124eaf8955d8e6f1d1f531a32d3783282ce2bef132a49e98920c8",
         "bytes": 14923
       },
       "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/deployment_v1/numerical_release.json": {
@@ -1399,7 +1399,7 @@
         "bytes": 16557
       },
       "outputs/deploy/rec/hard/active_bundle.json": {
-        "sha256": "c90dba4fd88fe9c04008cbbecf1b975d8f57c654c94400f11524cc670267300c",
+        "sha256": "19802ae0f47a37afb0b8a98b04c9e2689c16f3739d880ccb0c790eb72511ccc1",
         "bytes": 17625
       },
       ".qilin/rec_final_refit_20261101_v1/publish_acceptance_v1/release_evidence.json": {
