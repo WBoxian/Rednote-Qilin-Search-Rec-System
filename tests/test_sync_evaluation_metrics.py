@@ -245,3 +245,114 @@ class TestNumericalReplayPublication(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdaptedReleasePublication(unittest.TestCase):
+    def prepare(self, root):
+        def write(name, value):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value))
+            return {"path": name, "sha256": sync.sha256(path)}
+        digest = "a" * 64
+        config = dict(version=1, feature_schema="rec_context_23_v1", alpha=.5,
+                      prior_precision="float32_rrf211_v1")
+        fusion = {}
+        for key in ("model", "support", "pca_vectors", "pca_ids", "pca_mean", "pca_components"):
+            entry = write("fusion/" + key + ".json", {"asset": key})
+            config[key] = entry["path"]
+            fusion[key] = entry["sha256"]
+        policy = dict(strategy="learned_rrf", context_policy="learned_filter_history",
+            weights=dict(ann=2, swing=1, usercf=1), rrf_k=60, route_topk=1000, topk=500,
+            cf_config=dict(fold_in=True, neighbors=200, history_weight=.25), cf_graph_dir="cf",
+            learned_fusion=config)
+        recipe = dict(model_checkpoint_sha256=digest, item_vectors_sha256=digest,
+            index_sha256=digest, index_type="FlatIP", nprobe=None, fusion_assets_sha256=fusion)
+        entries = {}
+        entries["selection"] = write("selection.json", dict(scene="rec", selection_split="train_internal_validation",
+            frozen_before_official_test=True, inference_contract="request_fp32_v1", recipe=recipe,
+            recall_policy=policy, training_cutoff_exclusive=100))
+        entries["candidates"] = write("candidates.json", {"fixture": "actual candidates"})
+        entries["raw_test"] = write("raw_test.json", {"fixture": "original truth"})
+        binding = dict(selection_sha256=entries["selection"]["sha256"],
+            candidate_sha256=entries["candidates"]["sha256"], raw_test_sha256=entries["raw_test"]["sha256"])
+        entries["test_metrics"] = write("test.json", dict(binding, parameter_choice_after_test=False,
+            accepted_for_release=True, all_requests=11115, unique_clicked_pairs=44683))
+        entries["independent_verification"] = write("proof.json", dict(binding, status="PASS",
+            original_requests=11115, original_positive_pairs=44683))
+        entries["model_checkpoint"] = write("checkpoint.fixture", {"fixture": "trained model bytes"})
+        entries["item_vectors"] = write("vectors.fixture", {"fixture": "catalog vector bytes"})
+        recipe["model_checkpoint_sha256"] = entries["model_checkpoint"]["sha256"]
+        recipe["item_vectors_sha256"] = entries["item_vectors"]["sha256"]
+        plan_path = root / "selection.json"
+        plan_data = json.loads(plan_path.read_text()); plan_data["recipe"] = recipe
+        plan_path.write_text(json.dumps(plan_data)); entries["selection"]["sha256"] = sync.sha256(plan_path)
+        for filename, logical in (("test.json", "test_metrics"), ("proof.json", "independent_verification")):
+            path = root / filename; data = json.loads(path.read_text())
+            data["selection_sha256"] = entries["selection"]["sha256"]
+            path.write_text(json.dumps(data)); entries[logical]["sha256"] = sync.sha256(path)
+        for name in ("plan", "data_contract", "summary"):
+            entries["content_training_" + name] = write("training_" + name + ".json", {"fixture": name})
+        entries["model_selection"] = write("model.json", dict(
+            checkpoint_sha256=recipe["model_checkpoint_sha256"], item_vectors_sha256=recipe["item_vectors_sha256"]))
+        entries["model_metadata"] = write("model_metadata.json", dict(model_family="adapted_residual_dssm_v1",
+            gradient_update_scope="content_adapter_stage_only", gradient_updates=327,
+            packaging_gradient_updates=0, exported_full_checkpoint_sha256=recipe["model_checkpoint_sha256"], residual_weight=.25,
+            content_training_steps_by_epoch=[109, 109, 109],
+            **{"content_training_" + name + "_sha256": entries["content_training_" + name]["sha256"]
+               for name in ("plan", "data_contract", "summary")}))
+        index = dict(index_sha256=digest, index_type="FlatIP", selected_checkpoint_sha256=recipe["model_checkpoint_sha256"],
+                     selected_item_vectors_sha256=recipe["item_vectors_sha256"])
+        entries["index_selection"] = write("index.json", index)
+        write("recall/index/dssm_rec_hard_ivfpq_meta.json", index)
+        for name in ("graph.npz", "users.npy", "items.npy", "swing.npz"):
+            entries["cf_" + name] = write("cf/" + name, {"fixture": name})
+        release = dict(release_schema="adapted_content_v1", scene="rec", ranking_strategy="recall_only",
+                       accepted_for_release=True, sources=entries)
+        entry = write("release.json", release)
+        bundle = dict(recall_dir="recall", recall_policy=policy, training_cutoff_exclusive=100,
+            packaging_provenance=dict(full_checkpoint_source_sha256=recipe["model_checkpoint_sha256"]),
+            evaluation=dict(release_evidence=entry),
+            assets={entry["path"]: entry["sha256"], **{config[k]: fusion[k] for k in fusion}})
+        return bundle
+
+    def test_trained_steps_and_exact_index_lineage_are_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.prepare(root)
+            release = sync.load_rec_release(root, bundle, sync.Sources(root))
+            self.assertEqual(release["lineage"]["gradient_updates"], 327)
+            self.assertEqual(release["lineage"]["packaging_gradient_updates"], 0)
+            self.assertEqual(release["lineage"]["index_type"], "FlatIP")
+            self.assertIsNone(release["lineage"]["nprobe"])
+
+    def test_self_consistent_pass_badge_cannot_override_wrong_truth_or_policy(self):
+        cases = (("proof.json", "original_positive_pairs", 1),
+                 ("test.json", "parameter_choice_after_test", True),
+                 ("model_metadata.json", "gradient_updates", 0),
+                 ("selection.json", "inference_contract", "batched_fp32"))
+        for name, key, value in cases:
+            with self.subTest(name=name, key=key), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                bundle = self.prepare(root)
+                path = root / name
+                data = json.loads(path.read_text()); data[key] = value
+                path.write_text(json.dumps(data))
+                release_path = root / "release.json"
+                release = json.loads(release_path.read_text())
+                for entry in release["sources"].values():
+                    if entry["path"] == name:
+                        entry["sha256"] = sync.sha256(path)
+                release_path.write_text(json.dumps(release))
+                bundle["evaluation"]["release_evidence"]["sha256"] = sync.sha256(release_path)
+                bundle["assets"]["release.json"] = sync.sha256(release_path)
+                with self.assertRaises(ValueError):
+                    sync.load_rec_release(root, bundle, sync.Sources(root))
+
+    def test_changed_fusion_asset_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.prepare(root)
+            (root / "fusion/model.json").write_text("different model")
+            with self.assertRaisesRegex(ValueError, "fusion asset"):
+                sync.load_rec_release(root, bundle, sync.Sources(root))

@@ -240,6 +240,92 @@ def bind_recall_provenance(root, base, scene, candidate_path, bundle, sources):
     return {"selection_sha256": sha256(selection_path), "nprobe": nprobe,
             "route_topk": 1000, "final_topk": 500}
 
+def load_adapted_rec_release(root, bundle, release, sources):
+    """Bind a trained content adapter and learned fusion to one frozen full-test run."""
+    entries = release["sources"]
+    required = {"selection", "test_metrics", "independent_verification", "model_selection",
+                "model_metadata", "index_selection", "candidates", "raw_test"}
+    if not required.issubset(entries):
+        raise ValueError("Adapted Recommendation release sources are incomplete")
+    docs = {key: sources.read(root / entries[key]["path"]) for key in required - {"candidates", "raw_test"}}
+    plan, test, proof = (docs[key] for key in ("selection", "test_metrics", "independent_verification"))
+    if (plan.get("scene") != "rec" or plan.get("selection_split") != "train_internal_validation"
+            or plan.get("frozen_before_official_test") is not True
+            or plan.get("inference_contract") != "request_fp32_v1"
+            or test.get("parameter_choice_after_test") is not False
+            or test.get("accepted_for_release") is not True
+            or (test.get("all_requests"), test.get("unique_clicked_pairs")) != EXPECTED["rec"][::2]):
+        raise ValueError("Adapted Recommendation selection or full-test scope is invalid")
+    bindings = {"selection_sha256": entries["selection"]["sha256"],
+                "candidate_sha256": entries["candidates"]["sha256"],
+                "raw_test_sha256": entries["raw_test"]["sha256"]}
+    if any(document.get(key) != value for document in (test, proof) for key, value in bindings.items()):
+        raise ValueError("Adapted Recommendation proof binds different selection, truth or candidates")
+    if (proof.get("status") != "PASS"
+            or (proof.get("original_requests"), proof.get("original_positive_pairs")) != EXPECTED["rec"][::2]):
+        raise ValueError("Adapted Recommendation lacks independent full-test verification")
+    selected = docs["model_selection"].get("selected", docs["model_selection"])
+    metadata, recipe = docs["model_metadata"], plan["recipe"]
+    if (metadata.get("model_family") != "adapted_residual_dssm_v1"
+            or metadata.get("gradient_update_scope") != "content_adapter_stage_only"
+            or type(metadata.get("gradient_updates")) is not int or metadata["gradient_updates"] <= 0
+            or metadata.get("packaging_gradient_updates") != 0
+            or selected["checkpoint_sha256"] != recipe["model_checkpoint_sha256"]
+            or selected["item_vectors_sha256"] != recipe["item_vectors_sha256"]
+            or metadata.get("exported_full_checkpoint_sha256") != selected["checkpoint_sha256"]
+            or bundle["packaging_provenance"]["full_checkpoint_source_sha256"] != selected["checkpoint_sha256"]):
+        raise ValueError("Serving adapted DSSM differs from trained and evaluated checkpoint")
+    if (entries.get("model_checkpoint", {}).get("sha256") != selected["checkpoint_sha256"]
+            or entries.get("item_vectors", {}).get("sha256") != selected["item_vectors_sha256"]):
+        raise ValueError("Adapted Recommendation omits actual selected checkpoint or vector bytes")
+    for name in ("plan", "data_contract", "summary"):
+        if entries.get("content_training_" + name, {}).get("sha256") != metadata.get("content_training_" + name + "_sha256"):
+            raise ValueError("Adapted Recommendation omits the actual training " + name)
+    steps = metadata.get("content_training_steps_by_epoch")
+    if (not isinstance(steps, list) or not steps
+            or any(type(value) is not int or value < 1 for value in steps)
+            or sum(steps) != metadata["gradient_updates"]):
+        raise ValueError("Adapted Recommendation training steps are inconsistent")
+    policy = bundle["recall_policy"]
+    from backend.online.bundle import _validate_learned_policy, LEARNED_FUSION_PATHS
+    config = _validate_learned_policy(policy, "rec")
+    expected = plan["recall_policy"]
+    for key in ("strategy", "context_policy", "weights", "rrf_k", "route_topk", "topk", "cf_config"):
+        if policy.get(key) != expected.get(key):
+            raise ValueError("Serving learned fusion differs from frozen evaluation policy")
+    if (policy["route_topk"], policy["topk"]) != (1000, 500):
+        raise ValueError("Adapted Recommendation candidate budgets changed")
+    for key in LEARNED_FUSION_PATHS:
+        path = sources.add(root / config[key])
+        digest = sha256(path)
+        if (digest != recipe["fusion_assets_sha256"][key]
+                or bundle["assets"].get(config[key]) != digest):
+            raise ValueError("Serving learned fusion asset differs from evaluated source: " + key)
+    if bundle["training_cutoff_exclusive"] != plan["training_cutoff_exclusive"]:
+        raise ValueError("Serving Recommendation past-data cutoff differs from evaluation")
+    index = sources.read(root / bundle["recall_dir"] / "index/dssm_rec_hard_ivfpq_meta.json")
+    frozen_index = docs["index_selection"]
+    for key in ("index_sha256", "index_type", "nprobe"):
+        if index.get(key) != frozen_index.get(key) or index.get(key) != recipe.get(key):
+            raise ValueError("Serving adapted ANN differs from frozen evaluated index")
+    if (index.get("selected_checkpoint_sha256") != selected["checkpoint_sha256"]
+            or index.get("selected_item_vectors_sha256") != selected["item_vectors_sha256"]):
+        raise ValueError("Serving adapted ANN binds different towers or item vectors")
+    for filename in ("graph.npz", "users.npy", "items.npy", "swing.npz"):
+        path = sources.add(root / policy["cf_graph_dir"] / filename)
+        if sha256(path) != entries["cf_" + filename]["sha256"]:
+            raise ValueError("Serving CF differs from full-test evaluated past-only graph")
+    release["lineage"] = dict(selection_sha256=entries["selection"]["sha256"],
+        index_type=index["index_type"], nprobe=index.get("nprobe"), route_topk=1000, final_topk=500,
+        inference_contract=plan["inference_contract"], model_family=metadata["model_family"],
+        residual_learned_weight=metadata["residual_weight"], gradient_updates=metadata["gradient_updates"],
+        gradient_update_scope=metadata["gradient_update_scope"], packaging_gradient_updates=0,
+        content_training_plan_sha256=metadata["content_training_plan_sha256"],
+        content_training_data_contract_sha256=metadata["content_training_data_contract_sha256"],
+        pca_fit_split="original_train_fit", fusion_strategy="learned_rrf")
+    return release
+
+
 def load_rec_release(root, bundle, sources):
     bound = bundle.get("evaluation", {}).get("release_evidence")
     if bound is None:
@@ -254,6 +340,8 @@ def load_rec_release(root, bundle, sources):
         path = sources.add(root / entry["path"])
         if sha256(path) != entry["sha256"]:
             raise ValueError("Recommendation release input changed")
+    if release.get("release_schema") == "adapted_content_v1":
+        return load_adapted_rec_release(root, bundle, release, sources)
     docs = {name: json.loads((root / release["sources"][name]["path"]).read_text())
             for name in ("selection", "test_metrics", "independent_verification", "model_selection", "index_selection")}
     selection, test = docs["selection"], docs["test_metrics"]
@@ -403,6 +491,11 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
             candidate_path = sources.add(root / current_evidence["sources"]["candidates"]["path"])
         candidates = pd.read_parquet(candidate_path)
         recall = recall_metrics(raw, candidates)
+        if release and release.get("release_schema") == "adapted_content_v1":
+            evaluated = sources.read(root / release["sources"]["test_metrics"]["path"])["metrics"]
+            for name in ("HitRate@50", "Recall@100", "MRR@100", "known_positive_NDCG@10"):
+                if not math.isclose(evaluated[name], recall[name], rel_tol=0, abs_tol=1e-12):
+                    raise ValueError("Published adapted metrics differ from raw-test recomputation: " + name)
         if (len(raw), exposures, recall["positive_pairs"]) != counts:
             raise ValueError(f"{scene} original test counts changed")
         baseline_recall = recall_metrics(raw, pd.read_parquet(original_candidate_path)) if release else recall

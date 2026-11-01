@@ -1,5 +1,5 @@
 import unittest
-from scripts.evaluation_comparisons import metric_delta, comparison, exposure_comparison
+from scripts.evaluation_comparisons import metric_delta, comparison, exposure_comparison, adapted_release_comparisons
 
 
 class EvaluationComparisonTests(unittest.TestCase):
@@ -35,3 +35,19 @@ class EvaluationComparisonTests(unittest.TestCase):
         self.assertEqual(result['diagnostics']['requests_at_most_10_fraction'], .6)
         self.assertAlmostEqual(result['metrics'][0]['absolute_delta'], .09)
         self.assertEqual(result['metrics'][1]['baseline'], .5)
+
+    def test_adapted_comparisons_separate_index_model_and_merge_gains(self):
+        def metrics(value):
+            return {key: value for key in ("HitRate@50", "Recall@100", "known_positive_NDCG@10", "MRR@100")}
+        evaluated = {"ablations": {key: {"metrics": metrics(value)} for key, value in (
+            ("original_baseline", .1), ("original_flat211", .2), ("dual128_rrf", .3), ("dual128", .25))}}
+        current, rows = {"comparisons": {}}, []
+        adapted_release_comparisons(current, evaluated, rows, metrics(.01))
+        self.assertEqual(len(rows), 4)
+        self.assertEqual([row["status"] for row in rows], ["diagnostic", "diagnostic", "diagnostic", "accepted"])
+        result = current["comparisons"]
+        self.assertAlmostEqual(result["index_precision"]["metrics"][0]["absolute_delta"], .1)
+        self.assertAlmostEqual(result["content_adapter"]["metrics"][0]["absolute_delta"], .1)
+        self.assertAlmostEqual(result["learned_fusion"]["metrics"][0]["absolute_delta"], -.05)
+        self.assertAlmostEqual(result["end_to_end"]["metrics"][0]["baseline"], .1)
+        self.assertIn("Previous residual", result["end_to_end"]["baseline_name"])

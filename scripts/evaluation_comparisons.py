@@ -56,6 +56,30 @@ def ablation_row(identifier, label, metrics, baseline, *, status, changed, paire
     return dict(id=identifier, label=label, status=status, changed=changed,
                 metrics=values, comparison=differences)
 
+def adapted_release_comparisons(current, evaluated, rows, historical_baseline):
+    """Separate index precision, trained representation, and learned merge effects."""
+    labels = {
+        "original_baseline": "Previous residual DSSM + PQ + 2:1:1 fusion",
+        "original_flat211": "Previous residual DSSM + exact FlatIP + 2:1:1 fusion",
+        "dual128_rrf": "Trained dual content adapter + exact FlatIP + 2:1:1 fusion",
+        "dual128": "Trained dual content adapter + exact FlatIP + learned fusion",
+    }
+    metrics = {key: evaluated["ablations"][key]["metrics"] for key in labels}
+    for key, label in labels.items():
+        rows.append(ablation_row("adapter_" + key, label, metrics[key], historical_baseline,
+            status="accepted" if key == "dual128" else "diagnostic",
+            changed="Frozen full-test regression; same cohort and past-only CF; index precision and learned merge are explicit"))
+    for key, control, treatment in (
+        ("end_to_end", "original_baseline", "dual128"),
+        ("index_precision", "original_baseline", "original_flat211"),
+        ("content_adapter", "original_flat211", "dual128_rrf"),
+        ("learned_fusion", "dual128_rrf", "dual128"),
+    ):
+        current["comparisons"][key] = comparison(metrics[control], metrics[treatment],
+            baseline_name=labels[control], current_name=labels[treatment], scene="rec",
+            paired=evaluated.get("paired", {}).get(treatment + "-" + control))
+
+
 def attach_comparisons(root, base, scenes, sources, load_catalog_metrics):
     """Consume independently checked artifacts; never choose recipes from test values."""
     audit = sources.read(root / '.qilin/final_metrics_acceptance_20261031.json')
@@ -100,22 +124,26 @@ def attach_comparisons(root, base, scenes, sources, load_catalog_metrics):
             evidence = current['pipeline'].get('release_evidence')
             if evidence:
                 release = sources.read(root / evidence['path'])
-                residual = sources.read(root / release['sources']['test_metrics']['path'])
-                result = residual['results']['allpast']
-                rows.append(ablation_row('residual_f1','DSSM residual + history filter',result['metrics'],baseline,
-                                         status='accepted',changed='Same learned weights and CF graph; train-only PCA residual representation; fixed 256-dimensional ANN'))
-                current['comparisons']['residual_vs_history_filter'] = comparison(
-                    result['baseline_v3_F1'], result['metrics'], baseline_name='v3 + accepted history filter',
-                    current_name='Residual DSSM + same history filter',scene='rec',paired=result['paired_vs_v3_F1'])
-                if 'fusion_selection' in release['sources']:
-                    fusion_test = sources.read(root / release['sources']['fusion_test_metrics']['path'])
-                    fusion_proof = sources.read(root / release['sources']['fusion_independent_verification']['path'])
-                    final_fusion = fusion_test['results']['allpast']
-                    rows.append(ablation_row('residual_fusion_selected','Residual DSSM + validation-selected fusion',final_fusion['winner']['metrics'],baseline,
-                                             status='accepted',changed='Same residual model and CF graph; validation selected ANN2/Swing1/UserCF1 from eight fixed trials'))
-                    current['comparisons']['fusion_vs_residual_control'] = comparison(
-                        final_fusion['control']['metrics'], final_fusion['winner']['metrics'],
-                        baseline_name='Residual model + 1:2:1',current_name='Same residual model + 2:1:1',scene='rec',
-                        paired=fusion_proof['graphs']['allpast']['paired'])
+                if release.get("release_schema") == "adapted_content_v1":
+                    evaluated = sources.read(root / release["sources"]["test_metrics"]["path"])
+                    adapted_release_comparisons(current, evaluated, rows, baseline)
+                else:
+                    residual = sources.read(root / release['sources']['test_metrics']['path'])
+                    result = residual['results']['allpast']
+                    rows.append(ablation_row('residual_f1','DSSM residual + history filter',result['metrics'],baseline,
+                                             status='accepted',changed='Same learned weights and CF graph; train-only PCA residual representation; fixed 256-dimensional ANN'))
+                    current['comparisons']['residual_vs_history_filter'] = comparison(
+                        result['baseline_v3_F1'], result['metrics'], baseline_name='v3 + accepted history filter',
+                        current_name='Residual DSSM + same history filter',scene='rec',paired=result['paired_vs_v3_F1'])
+                    if 'fusion_selection' in release['sources']:
+                        fusion_test = sources.read(root / release['sources']['fusion_test_metrics']['path'])
+                        fusion_proof = sources.read(root / release['sources']['fusion_independent_verification']['path'])
+                        final_fusion = fusion_test['results']['allpast']
+                        rows.append(ablation_row('residual_fusion_selected','Residual DSSM + validation-selected fusion',final_fusion['winner']['metrics'],baseline,
+                                                 status='accepted',changed='Same residual model and CF graph; validation selected ANN2/Swing1/UserCF1 from eight fixed trials'))
+                        current['comparisons']['fusion_vs_residual_control'] = comparison(
+                            final_fusion['control']['metrics'], final_fusion['winner']['metrics'],
+                            baseline_name='Residual model + 1:2:1',current_name='Same residual model + 2:1:1',scene='rec',
+                            paired=fusion_proof['graphs']['allpast']['paired'])
         current['ablations'] = dict(scope='full_catalog_known_click',baseline_name='Frozen DSSM v3 + original fusion',rows=rows,
                                    warning='All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed. Canonical Search stages share one regenerated input pool; the frozen baseline retains its recorded numerical contract.')
