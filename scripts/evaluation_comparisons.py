@@ -80,10 +80,75 @@ def adapted_release_comparisons(current, evaluated, rows, historical_baseline):
             paired=evaluated.get("paired", {}).get(treatment + "-" + control))
 
 
+def multi_interest_refit_comparisons(current, proof):
+    """Use the actual immediate predecessor and fixed component contrasts."""
+    mapping = {"HitRate@50": "HR50", "Recall@100": "R100", "known_positive_NDCG@10": "KP_NDCG10",
+               "MRR@100": "MRR100", "Recall@500": "R500", "HitRate@500": "HR500"}
+    keys = ("current_global_LGB", "oldfit_k3_lgb", "oldfit_k3_safehead", "finalrefit_k3_safehead")
+    if (proof.get("status") != "PASS" or proof.get("parameter_choice_after_test") is not False
+            or (proof.get("all_requests"), proof.get("known_positive_pairs")) != (11115, 44683)):
+        raise ValueError("Multi-interest comparisons require independently audited full-cohort results")
+    metrics = {}
+    for key in keys + (("old_PQ211",) if "old_PQ211" in proof["outputs"] else ()):
+        row = proof["outputs"][key]
+        if (row.get("all_requests"), row.get("known_positive_pairs")) != (11115, 44683):
+            raise ValueError("Comparison arm has a different request/positive denominator")
+        metrics[key] = {name: row["metrics"][short] for name, short in mapping.items()}
+    selected = "finalrefit_k3_safehead"
+    for name, value in metrics[selected].items():
+        if name not in current["pipeline"]["test"] or not math.isclose(value, current["pipeline"]["test"][name], rel_tol=0, abs_tol=1e-12):
+            raise ValueError("Comparison does not match the current released pipeline: " + name)
+    labels = {"current_global_LGB": "Previous global single-interest DSSM + FlatIP + learned fusion",
+        "oldfit_k3_lgb": "Same fit heads + K3 + learned fusion",
+        "oldfit_k3_safehead": "Same fit K3 + fixed SafeHead fusion postprocessing",
+        selected: "All-past content-head refit + K3 + fixed SafeHead"}
+    def paired(treatment, control):
+        evidence = proof.get("paired_usercluster95_exploratory_CI", {}).get(treatment + "__minus__" + control, {})
+        result = {}
+        for name, short in mapping.items():
+            if short in evidence:
+                value = evidence[short]
+                if not math.isclose(value["delta"], metrics[treatment][name] - metrics[control][name], rel_tol=0, abs_tol=1e-12):
+                    raise ValueError("Audited paired interval belongs to a different contrast")
+                result[name] = value
+        return result
+    comparisons = {}
+    for key, control, treatment in (("end_to_end", "current_global_LGB", selected),
+        ("interest_queries", "current_global_LGB", "oldfit_k3_lgb"),
+        ("head_guard", "oldfit_k3_lgb", "oldfit_k3_safehead"),
+        ("content_refit", "oldfit_k3_safehead", selected)):
+        comparisons[key] = comparison(metrics[control], metrics[treatment], baseline_name=labels[control],
+            current_name=labels[treatment], scene="rec", paired=paired(treatment, control))
+    if "old_PQ211" in metrics:
+        comparisons["original_PQ_reference"] = comparison(metrics["old_PQ211"], metrics[selected],
+            baseline_name="Original residual DSSM + PQ + 2:1:1 fusion", current_name=labels[selected],
+            scene="rec", paired=paired(selected, "old_PQ211"))
+    current["comparisons"] = comparisons
+    baseline = metrics["current_global_LGB"]
+    return [ablation_row(key, labels[key], metrics[key], baseline,
+        status="baseline" if key == "current_global_LGB" else "accepted" if key == selected else "diagnostic",
+        changed=("Immediate previous released global-query pipeline" if key == "current_global_LGB" else
+                 "Fixed content weights; interest-query extraction only" if key == "oldfit_k3_lgb" else
+                 "Fusion postprocessing only; Top100/Top500 sets preserved; no DIEN gain" if key == "oldfit_k3_safehead" else
+                 "Content training data and optimizer steps both change (327 to 408); not an isolated data effect"),
+        paired=paired(key, "current_global_LGB") if key == selected else None) for key in keys]
+
+
 def attach_comparisons(root, base, scenes, sources, load_catalog_metrics):
     """Consume independently checked artifacts; never choose recipes from test values."""
     audit = sources.read(root / '.qilin/final_metrics_acceptance_20261031.json')
     for scene, current in scenes.items():
+        evidence = current['pipeline'].get('release_evidence') if scene == 'rec' else None
+        release = sources.read(root / evidence['path']) if evidence else None
+        if release and release.get('release_schema') == 'multi_interest_refit_v1':
+            proof = sources.read(root / release['sources']['independent_verification']['path'])
+            rows = multi_interest_refit_comparisons(current, proof)
+            current['comparisons']['logged_exposure'] = exposure_comparison(
+                audit['scopes']['rec_test_logged_exposure'], current['ranking']['ranking']['test'])
+            current['ablations'] = dict(scope='full_catalog_known_click',
+                baseline_name=current['comparisons']['end_to_end']['baseline_name'], rows=rows,
+                warning='Historical full-test regression. SafeHead is fusion postprocessing; exposure rankers remain diagnostic. Refit changes data and update count together; its same-family paired intervals can cross zero.')
+            continue
         original = base / ('search_v3/test_selected.parquet' if scene == 'search' else 'rec_v3/refit_cf_pretest/selected.parquet')
         baseline = load_catalog_metrics(scene, sources.add(original))
         gate = sources.read(base / f'{scene}_rank_prior_gate/test/metrics.json')

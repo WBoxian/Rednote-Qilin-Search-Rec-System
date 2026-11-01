@@ -327,6 +327,172 @@ def load_adapted_rec_release(root, bundle, release, sources):
     return release
 
 
+def load_multi_interest_refit_release(root, bundle, release, sources):
+    """Publish a real preselection -> sealed generation -> independent audit chain.
+
+    The release/test wrapper is created after testing. It is never treated as
+    the original pretest selection, nor as a fresh blind-test certificate.
+    """
+    entries = release["sources"]
+    documents = {"selection", "test_metrics", "independent_verification", "independent_plan",
+        "generation_plan", "generation_manifest", "generation_postexit", "source_inventory",
+        "model_selection", "final_refit_provenance", "model_metadata", "index_selection",
+        "content_training_plan", "content_training_data_contract", "content_training_summary"}
+    required = documents | {"candidates", "raw_test", "model_checkpoint", "item_vectors"} | {
+        "cf_" + name for name in ("graph.npz", "users.npy", "items.npy", "swing.npz")}
+    def require(condition, message):
+        if not condition:
+            raise ValueError("Multi-interest refit " + message)
+    require(required.issubset(entries), "release sources are incomplete")
+    docs = {key: sources.read(root / entries[key]["path"]) for key in documents}
+    digest = lambda name: entries[name]["sha256"]
+    selection, test, proof = (docs[k] for k in ("selection", "test_metrics", "independent_verification"))
+    plan, generation, post, inventory, audit = (docs[k] for k in (
+        "generation_plan", "generation_manifest", "generation_postexit", "source_inventory", "independent_plan"))
+    arm = "finalrefit_k3_safehead"
+    require(selection.get("selected_recipe") == "A_K3_safehead"
+        and selection.get("no_official_test_feedback_in_this_selection") is True,
+        "requires the original A_K3_safehead selection")
+    require(test.get("phase") == "post_test_release_acceptance"
+        and test.get("selected_recipe") == arm and test.get("accepted_for_release") is True
+        and test.get("parameter_choice_after_test") is False
+        and test.get("frozen_before_official_test") is not True
+        and release.get("frozen_before_official_test") is not True
+        and (test.get("all_requests"), test.get("unique_clicked_pairs"), test.get("catalog")) == (11115, 44683, 1983938),
+        "post-test acceptance or full-test scope is invalid")
+    for field, name in {"selection_sha256": "selection", "generation_plan_sha256": "generation_plan",
+        "generation_manifest_sha256": "generation_manifest", "generation_postexit_sha256": "generation_postexit",
+        "independent_plan_sha256": "independent_plan", "independent_verification_sha256": "independent_verification",
+        "candidate_sha256": "candidates", "raw_test_sha256": "raw_test"}.items():
+        require(test.get(field) == digest(name), "test wrapper binds a different " + name)
+    config = plan["config"]
+    require(config.get("selection_sha256") == digest("selection")
+        and generation.get("plan_sha256") == digest("generation_plan")
+        and generation.get("status") == "ALL_PREDICTIONS_SEALED_NO_FEEDBACK"
+        and generation.get("feedback_decoded") is False and generation.get("quality_evaluation") is False
+        and generation.get("parameter_choice_after_test") is False and generation.get("requests") == 11115
+        and generation.get("raw_test_sha256_opaque_bytes_only") == digest("raw_test")
+        and generation.get("arms", {}).get(arm, {}).get("files", {}).get("final", {}).get("sha256") == digest("candidates"),
+        "generation does not bind the original selection, truth and selected candidates")
+    require(post.get("status") == "PASS" and post.get("actual_generator_exit_code") == 0
+        and post.get("generation_manifest_sha256") == digest("generation_manifest")
+        and post.get("plan_sha256") == digest("generation_plan")
+        and post.get("source_inventory_sha256") == digest("source_inventory")
+        and post.get("all_nonlog_artifacts_and_sources_real_SHA_verified") is True
+        and post.get("sealed_log_prefix_and_exact_append_verified") is True
+        and post.get("source_stat_identity_unchanged") is True
+        and post.get("all5arm_final_ann_stages_pre_guard_SHA_verified") is True,
+        "generation lacks successful post-exit source/output verification")
+    output = proof.get("outputs", {}).get(arm, {})
+    require(proof.get("status") == "PASS" and proof.get("selection_sha256") == digest("selection")
+        and proof.get("plan_sha256") == digest("independent_plan")
+        and proof.get("raw_test_sha256") == digest("raw_test")
+        and proof.get("parameter_choice_after_test") is False
+        and (proof.get("all_requests"), proof.get("known_positive_pairs"), proof.get("catalog")) == (11115, 44683, 1983938)
+        and output.get("candidate_sha256") == digest("candidates")
+        and (output.get("all_requests"), output.get("known_positive_pairs")) == (11115, 44683)
+        and audit.get("feedback_decoded") is False and audit.get("historically_seen_regression_not_blind") is True,
+        "independent full-test proof binds another run or denominator")
+    metric_names = {"HitRate@50": "HR50", "Recall@100": "R100", "known_positive_NDCG@10": "KP_NDCG10",
+                    "MRR@100": "MRR100", "Recall@500": "R500", "HitRate@500": "HR500"}
+    require(all(name in test.get("metrics", {}) and short in output.get("metrics", {})
+        and math.isclose(test["metrics"][name], output["metrics"][short], rel_tol=0, abs_tol=1e-12)
+        for name, short in metric_names.items()), "published metrics differ from independent selected-arm results")
+    runtime = plan.get("runtime_sources", {})
+    require(runtime and runtime == generation.get("runtime_sources") == inventory.get("runtime_sources"),
+        "runtime source closures disagree")
+    audit_assets = {str(Path(v["path"]).resolve()): v["sha256"] for v in audit["assets"].values()}
+    def bind(path, expected, label):
+        path = sources.add(root / path)
+        require(sources.files[path.relative_to(sources.root).as_posix()]["sha256"] == expected, label + " bytes changed")
+        return path
+    for path, expected in runtime.items():
+        require(audit_assets.get(str(Path(path).resolve())) == expected, "runtime source omitted from independent audit")
+        bind(Path(path), expected, "runtime source")
+    for name in ("learned_context_fusion", "multi_interest", "head_guard", "exact_ip_filter"):
+        logical = "src/recall/" + name + ".py"
+        matches = [value for path, value in runtime.items() if path.endswith("/" + logical)]
+        require(len(matches) == 1 and bundle["assets"].get(logical) == matches[0],
+                "serving runtime source is not bound: " + name)
+    for name in ("selection", "generation_plan", "generation_manifest", "generation_postexit", "source_inventory", "candidates", "raw_test"):
+        require(audit_assets.get(str((root / entries[name]["path"]).resolve())) == digest(name),
+                "independent audit omits " + name)
+    def frozen(path):
+        path = Path(path).resolve()
+        expected = plan["source_snapshot"].get(str(path), {}).get("sha256")
+        require(expected is not None, "asset missing from pre-generation inventory")
+        bind(path, expected, "frozen asset")
+        return expected
+    selected, metadata, provenance = (docs[k] for k in ("model_selection", "model_metadata", "final_refit_provenance"))
+    full_sha = frozen(config["finalrefit_full_checkpoint"])
+    native = Path(config["finalrefit_dir"]) / "index/dssm_rec_hard"
+    vector_sha, index_sha = frozen(Path(str(native) + "_item_emb.bin")), frozen(Path(str(native) + "_ivfpq.faiss"))
+    require(selected.get("epoch") == 3 and selected.get("selected_recipe_sha256") == digest("selection")
+        and selected.get("checkpoint_sha256") == digest("model_checkpoint") == full_sha
+        and selected.get("item_vectors_sha256") == digest("item_vectors") == vector_sha
+        and selected.get("final_provenance_sha256") == digest("final_refit_provenance")
+        and provenance.get("model", {}).get("exported_full_checkpoint_sha256") == full_sha
+        and bundle["packaging_provenance"].get("full_checkpoint_source_sha256") == full_sha
+        and bundle["packaging_provenance"].get("selected_dssm_sha256") == digest("model_selection"),
+        "serving model differs from fixed epoch3 final-refit checkpoint")
+    require(frozen(root / entries["model_metadata"]["path"]) == digest("model_metadata")
+        and frozen(root / entries["final_refit_provenance"]["path"]) == digest("final_refit_provenance"),
+        "metadata/provenance differs from original generation")
+    require(metadata.get("model_family") == "adapted_residual_dssm_v1"
+        and metadata.get("exported_full_checkpoint_sha256") == full_sha and metadata.get("residual_weight") == .25
+        and metadata.get("gradient_update_scope") == "content_adapter_stage_only"
+        and type(metadata.get("gradient_updates")) is int and metadata["gradient_updates"] == 408
+        and metadata.get("content_training_steps_by_epoch") == [136, 136, 136]
+        and all(type(step) is int for step in metadata["content_training_steps_by_epoch"])
+        and metadata.get("packaging_gradient_updates") == 0
+        and docs["content_training_summary"].get("optimizer_updates") == 408
+        and docs["content_training_plan"].get("training_cutoff_exclusive") == 1732706088
+        and provenance.get("content_training_cutoff_exclusive") == 1732706088
+        and provenance.get("original_base_PCA_known_users_cutoff_exclusive") == 1732696816
+        and provenance.get("known_users_preserved_count") == 8300,
+        "training steps or base/head cutoffs are inconsistent")
+    for name in ("plan", "data_contract", "summary"):
+        require(metadata.get("content_training_" + name + "_sha256") == digest("content_training_" + name),
+                "training lineage differs: " + name)
+    policy = bundle["recall_policy"]
+    from backend.online.bundle import _validate_learned_policy, LEARNED_FUSION_PATHS
+    serving = _validate_learned_policy(policy, "rec")
+    expected_policy = plan["facade_manifests"]["True"]["recall_policy"]
+    for key in ("strategy", "context_policy", "weights", "rrf_k", "route_topk", "topk", "cf_config", "ann_query", "head_guard", "ann_engine"):
+        require(policy.get(key) == expected_policy.get(key), "serving policy differs: " + key)
+    require(policy.get("ann_query") == {"version": 1, "strategy": "adapted_k3_v1"}
+        and policy.get("head_guard") == {"version": 1, "strategy": "coarse100_prior10_v1"}
+        and bundle.get("training_cutoff_exclusive") == 1732706088, "K3/head policy or past-data cutoff changed")
+    for key in LEARNED_FUSION_PATHS:
+        expected = frozen(root / expected_policy["learned_fusion"][key])
+        bind(root / serving[key], expected, "serving fusion " + key)
+        require(bundle["assets"].get(serving[key]) == expected, "fusion asset is not bundle-bound")
+    for name in ("graph.npz", "users.npy", "items.npy", "swing.npz"):
+        expected = frozen(root / expected_policy["cf_graph_dir"] / name)
+        require(digest("cf_" + name) == expected, "CF graph lineage differs")
+        bind(root / policy["cf_graph_dir"] / name, expected, "serving CF")
+    index = sources.read(root / bundle["recall_dir"] / "index/dssm_rec_hard_ivfpq_meta.json")
+    expected_index = docs["index_selection"]
+    require(index.get("index_type") == expected_index.get("index_type") == "FlatIP"
+        and index.get("index_sha256") == expected_index.get("index_sha256") == index_sha
+        and index.get("nprobe") is None and expected_index.get("nprobe") is None
+        and index.get("selected_checkpoint_sha256") == full_sha
+        and index.get("selected_item_vectors_sha256") == vector_sha, "serving exact index differs")
+    bind(root / bundle["recall_dir"] / "index/dssm_rec_hard_ivfpq.faiss", index_sha, "serving index")
+    bind(root / bundle["recall_dir"] / "index/dssm_rec_hard_item_emb.bin", vector_sha, "serving item vectors")
+    release["lineage"] = dict(selection_sha256=digest("selection"), generation_plan_sha256=digest("generation_plan"),
+        independent_plan_sha256=digest("independent_plan"), index_type="FlatIP", nprobe=None,
+        route_topk=1000, final_topk=500, inference_contract="request_fp32_v1", model_family="adapted_residual_dssm_v1",
+        residual_learned_weight=.25, gradient_updates=408, gradient_update_scope="content_adapter_stage_only",
+        packaging_gradient_updates=0, content_training_plan_sha256=digest("content_training_plan"),
+        content_training_data_contract_sha256=digest("content_training_data_contract"), pca_fit_split="original_train_fit",
+        base_training_cutoff_exclusive=1732696816, content_training_cutoff_exclusive=1732706088,
+        fusion_strategy="learned_rrf", ann_query_strategy="adapted_k3_v1", head_guard_strategy="coarse100_prior10_v1",
+        ann_engine=policy.get("ann_engine", {}).get("strategy", "cpu"), runtime_source_count=len(runtime),
+        evaluated_at=release.get("evaluated_at"))
+    return release
+
+
 def load_rec_release(root, bundle, sources):
     bound = bundle.get("evaluation", {}).get("release_evidence")
     if bound is None:
@@ -341,6 +507,8 @@ def load_rec_release(root, bundle, sources):
         path = sources.add(root / entry["path"])
         if sha256(path) != entry["sha256"]:
             raise ValueError("Recommendation release input changed")
+    if release.get("release_schema") == "multi_interest_refit_v1":
+        return load_multi_interest_refit_release(root, bundle, release, sources)
     if release.get("release_schema") == "adapted_content_v1":
         return load_adapted_rec_release(root, bundle, release, sources)
     docs = {name: json.loads((root / release["sources"][name]["path"]).read_text())
@@ -492,9 +660,12 @@ def build_snapshot(base: Path, bundle_paths: dict[str, Path], *, root: Path = RO
             candidate_path = sources.add(root / current_evidence["sources"]["candidates"]["path"])
         candidates = pd.read_parquet(candidate_path)
         recall = recall_metrics(raw, candidates)
-        if release and release.get("release_schema") == "adapted_content_v1":
+        if release and release.get("release_schema") in {"adapted_content_v1", "multi_interest_refit_v1"}:
             evaluated = sources.read(root / release["sources"]["test_metrics"]["path"])["metrics"]
-            for name in ("HitRate@50", "Recall@100", "MRR@100", "known_positive_NDCG@10"):
+            names = ("HitRate@50", "Recall@100", "MRR@100", "known_positive_NDCG@10")
+            if release.get("release_schema") == "multi_interest_refit_v1":
+                names += ("Recall@500", "HitRate@500")
+            for name in names:
                 if not math.isclose(evaluated[name], recall[name], rel_tol=0, abs_tol=1e-12):
                     raise ValueError("Published adapted metrics differ from raw-test recomputation: " + name)
         if (len(raw), exposures, recall["positive_pairs"]) != counts:
@@ -619,7 +790,10 @@ def update_readme_text(text: str, snapshot: dict, *, english=False) -> str:
                 if not math.isclose(comparison["current"], values["Recall@100"], abs_tol=1e-12, rel_tol=0):
                     raise ValueError("README comparison does not match current pipeline")
                 suffix = "Recall@100 relative lift vs frozen baseline" if english else "Recall@100 较冻结基线相对提升"
-                if current["recall"].get("lineage", {}).get("model_family") == "adapted_residual_dssm_v1":
+                if current["recall"].get("lineage", {}).get("ann_query_strategy") == "adapted_k3_v1":
+                    suffix = ("Recall@100 relative lift vs previous global single-interest DSSM/FlatIP/learned fusion" if english
+                              else "Recall@100 较上一版（全局单兴趣DSSM/FlatIP/学习融合）相对提升")
+                elif current["recall"].get("lineage", {}).get("model_family") == "adapted_residual_dssm_v1":
                     suffix = ("Recall@100 relative lift vs previous residual DSSM/PQ/211 fusion" if english
                               else "Recall@100 较上一版（残差DSSM/PQ/211融合）相对提升")
                 body += f"; {suffix} {comparison['relative_delta_pct']:+.2f}%"
