@@ -43,9 +43,16 @@ def _load_encoder():
     return tokenizer, model
 
 # ======================
+def _clean_text(value):
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.casefold() == "nan" else text
+
+
 def build_text(title, content):
-    title = "" if title is None or pd.isna(title) else str(title).strip()
-    content = "" if content is None or pd.isna(content) else str(content).strip()
+    title = _clean_text(title)
+    content = _clean_text(content)
     if title and content:
         return f"title：{title}\ncontent：{content}"
     elif title:

@@ -63,13 +63,14 @@ class FeaturePreprocessingTests(unittest.TestCase):
             module = importlib.reload(module)
             tokenizer.assert_not_called()
             model.assert_not_called()
-        for missing in (None, np.nan, pd.NA, pd.NaT):
+        for missing in (None, np.nan, pd.NA, pd.NaT, "nan", " NaN "):
             with self.subTest(missing=repr(missing)):
                 self.assertEqual(module.build_text(missing, " body "), "content：body")
                 self.assertEqual(module.build_text(" title ", missing), "title：title")
                 self.assertEqual(module.build_text(missing, missing), "content：")
         self.assertEqual(module.build_text(" title ", " body "), "title：title\ncontent：body")
         self.assertEqual(module.build_text("0", None), "title：0")
+        self.assertEqual(module.build_text("nanotechnology", "数值为nan"), "title：nanotechnology\ncontent：数值为nan")
 
     def test_fractional_raw_click_is_not_rounded_into_a_positive(self):
         path = self.dataset / "recommendation_train/train-00000-of-00001.parquet"
