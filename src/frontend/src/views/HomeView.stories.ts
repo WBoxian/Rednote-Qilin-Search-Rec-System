@@ -21,7 +21,7 @@ export const SearchSuggestion: Story = {
     await userEvent.type(canvas.getByRole('textbox', { name: '搜索内容' }), '城市');
     await userEvent.click(await canvas.findByRole('button', { name: /城市漫步路线/ }));
     await expect(canvas.getByRole('textbox', { name: '搜索内容' })).toHaveValue('城市漫步路线');
-    await expect(await canvas.findByText('SEARCH')).toBeVisible();
+    await expect((await canvas.findAllByText('搜索')).length).toBeGreaterThan(0);
   },
 };
 export const FeedUnavailable: Story = {

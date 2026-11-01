@@ -47,9 +47,9 @@ const stageEntries = computed(() => {
 });
 
 const navItems = [
-  { to: '/', title: '\u9996\u9875', meta: 'Feed / Search' },
-  { to: '/user', title: '\u6700\u8fd1\u884c\u4e3a', meta: 'Behavior Stream' },
-  { to: '/metrics', title: '\u6307\u6807\u770b\u677f', meta: 'Metrics / Compare' },
+  { to: '/', title: '\u9996\u9875', meta: '推荐与搜索' },
+  { to: '/user', title: '\u6700\u8fd1\u884c\u4e3a', meta: '行为记录' },
+  { to: '/metrics', title: '\u6307\u6807\u770b\u677f', meta: '评测与对比' },
 ];
 
 function logout() {
@@ -81,7 +81,7 @@ function goHomeNav() {
         <div class="topbar-left topbar-left-premium">
           <button class="topbar-brand brand-button" @click="goBrandHome">
             <span class="brand-symbol" aria-hidden="true">Q</span>
-            <div class="topbar-kicker">QILIN WORKSPACE</div>
+            <div class="topbar-kicker">麒麟工作台</div>
             <div class="topbar-title">{{ props.title }}</div>
           </button>
 
@@ -117,8 +117,8 @@ function goHomeNav() {
         </div>
         <div class="topbar-side topbar-side-premium">
           <div class="user-chip user-chip-strong">
-            <span class="user-chip-label">{{ props.sceneMode ? String(props.sceneMode).toUpperCase() : 'ONLINE' }}</span>
-            <span class="user-chip-value">UID {{ userId ?? '-' }}</span>
+            <span class="user-chip-label">{{ props.sceneMode === 'search' ? '搜索' : props.sceneMode === 'rec' ? '推荐' : '在线服务' }}</span>
+            <span class="user-chip-value">用户 {{ userId ?? '-' }}</span>
           </div>
           <button class="nav-chip nav-chip-ghost logout-button" @click="logout">&#x9000;&#x51FA;</button>
         </div>

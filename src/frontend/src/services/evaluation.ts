@@ -59,6 +59,8 @@ export function evaluationText(value: string): string {
     'Same learned weights and CF graph; train-only PCA residual representation; fixed 256-dimensional ANN': '固定模型与协同图，用训练集拟合内容残差，近邻检索维度固定为256',
     'Same residual model and CF graph; validation selected ANN2/Swing1/UserCF1 from eight fixed trials': '固定残差模型与协同图，验证集从八组权重中选出2比1比1融合',
     'Uniform random ordering expectation': '均匀随机排序期望',
+    'Random expected ordering': '随机排序期望',
+    'All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed. Canonical Search stages share one regenerated input pool; the frozen baseline retains its recorded numerical contract.': '所有实验保留完整官方测试请求；未通过验收的方案不启用。追加训练采用相同时长对照，协同图数据量变化单独报告。测试集已被多轮观察。搜索阶段对比使用同一候选池，冻结基线保留原推理口径。',
     'Frozen DSSM v3 + original fusion': '冻结基线：DSSM第三版与原融合',
     'Current released ordering': '当前服务顺序',
     'Frozen v3 recall order': '冻结基线召回顺序',

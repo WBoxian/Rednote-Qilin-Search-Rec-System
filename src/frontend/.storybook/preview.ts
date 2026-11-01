@@ -22,6 +22,7 @@ const preview: Preview = {
     localStorage.setItem('qilin_scene', parameters.scene || 'search');
     localStorage.setItem('qilin_user_idx', String(20000 + [...id].reduce((sum, char) => sum + char.charCodeAt(0), 0)));
     sessionStorage.removeItem('qilin_home_cache_v2');
+    sessionStorage.removeItem('qilin_home_cache_v3');
     sessionStorage.removeItem('qilin_detail_seed');
     await router.replace(parameters.route || '/metrics');
   },

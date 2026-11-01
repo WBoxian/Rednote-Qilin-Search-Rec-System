@@ -524,7 +524,9 @@ async function openExampleDetail(item: any) {
   detailError.value = '';
   detailLoading.value = true;
   try {
-    const res = ex.scope === 'frozen_full_test_examples'
+    const res = ex.scope === 'current_user_request_replay'
+      ? { detail: ex.notes?.find((note: any) => Number(note.note_idx) === Number(item?.note_idx)) }
+      : ex.scope === 'frozen_full_test_examples'
       ? await api.validationNote(ex.scene, Number(ex.request_id), Number(item?.note_idx), String(validationByScene.value[ex.scene]?.model_bundle_id || ''))
       : await api.note(
       ex.scene,
@@ -556,7 +558,9 @@ async function openBehaviorDetail(row: any) {
   detailError.value = '';
   detailLoading.value = true;
   try {
-    const res = ex.scope === 'frozen_full_test_examples'
+    const res = ex.scope === 'current_user_request_replay'
+      ? { detail: ex.notes?.find((note: any) => Number(note.note_idx) === Number(row?.note_idx)) }
+      : ex.scope === 'frozen_full_test_examples'
       ? await api.validationNote(ex.scene, Number(ex.request_id), Number(row?.note_idx), String(validationByScene.value[ex.scene]?.model_bundle_id || ''))
       : await api.note(
       String(row?.scene || ex.scene || 'search'),
@@ -735,7 +739,7 @@ onUnmounted(stopValidationProgress);
       <section v-if="ablationRows.length" class="panel ablation-panel">
         <details>
           <summary><span><span class="intro-eyebrow">消融实验</span><strong>阶段消融与实验结果</strong></span><span class="meta">{{ ablationRows.length }} 组 · 展开查看</span></summary>
-          <p class="meta">{{ activeSnapshot.ablations.warning || '固定数据划分与评测口径，验证集选择方案，测试集报告效果；未采用的实验保留真实结果。' }}</p>
+          <p class="meta">{{ evaluationText(activeSnapshot.ablations.warning || '固定数据划分与评测口径，验证集选择方案，测试集报告效果；未采用的实验保留真实结果。') }}</p>
           <div class="data-table-scroll"><table class="table evaluation-table ablation-table">
             <thead><tr><th scope="col">实验</th><th scope="col">状态</th><th v-for="key in ablationMetricKeys" :key="key" scope="col">{{ metricLabel(key) }}</th><th scope="col">改动与解释</th></tr></thead>
             <tbody><tr v-for="row in ablationRows" :key="row.id">
@@ -758,7 +762,7 @@ onUnmounted(stopValidationProgress);
                 {{ activeExample.is_current_user ? copy.currentUser : copy.otherUser }}
               </span>
             </div>
-            <div class="meta">固定展示 5 条测试样例，按预先确定的顺序展示，不按命中数筛选。</div>
+            <div class="meta">当前用户优先，其余为固定测试样例；样例不按命中数筛选。</div>
           </div>
           <div v-if="activeExample" class="pager">
             <button class="btn" @click="prevExample">上一条</button>
@@ -781,6 +785,7 @@ onUnmounted(stopValidationProgress);
           <div class="meta">{{ validationStage || copy.loading }}</div>
         </div>
         <template v-else-if="activeExample">
+          <p v-if="activeExample.sample_note" class="meta">{{ activeExample.sample_note }}</p>
           <div class="profile-card">
             <div class="profile-line"><strong>用户画像</strong> · {{ activeUserProfile.lines.join(' · ') }}</div>
             <div class="profile-line"><strong>搜索词</strong> · {{ activeQueryText }}</div>
@@ -885,9 +890,9 @@ onUnmounted(stopValidationProgress);
           <img v-if="detailModal.cover_image" class="detail-cover" :src="api.imageUrl(detailModal.cover_image)" alt="" />
           <div class="detail-content">{{ detailModal.content || copy.noContent }}</div>
           <div class="detail-stats">
-            <span>点赞 {{ detailModal.like_count ?? 0 }}</span>
-            <span>收藏 {{ detailModal.collect_count ?? 0 }}</span>
-            <span>评论 {{ detailModal.comment_count ?? 0 }}</span>
+            <span>点赞 {{ detailModal.accum_like_num ?? detailModal.like_count ?? 0 }}</span>
+            <span>收藏 {{ detailModal.accum_collect_num ?? detailModal.collect_count ?? 0 }}</span>
+            <span>评论 {{ detailModal.accum_comment_num ?? detailModal.comment_count ?? 0 }}</span>
           </div>
         </template>
       </div>

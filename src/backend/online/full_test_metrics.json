@@ -214,7 +214,7 @@
         },
         "candidate_path": "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/final_candidates.parquet"
       },
-      "model_bundle_id": "f322a33d96d31049724c5a8075ba08d2a1f9948e15a1cdc5b473c9a40a264245",
+      "model_bundle_id": "2814de79ca5d2151376523e7d521da4d8be2079ab61abf0cb9c6ec97d78bca6f",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -737,7 +737,7 @@
         },
         "candidate_path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/allpast/winner_selected.parquet"
       },
-      "model_bundle_id": "3f4bab6f3abc286d9c9891d07cdc8bb6942143caf0675eb32de59ccfdbf4e2f1",
+      "model_bundle_id": "25e4942eeef0ecf242b099c12278c67ab3dae3c5bf7648907d9acb367e9c738d",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -1352,8 +1352,8 @@
         "bytes": 9650
       },
       "outputs/deploy/search/hard/active_bundle.json": {
-        "sha256": "2f0dd2437ababf714f2be93e2ecea819d7f6969c0b3589cadbbfbf5831f4c7c9",
-        "bytes": 14392
+        "sha256": "94dd49045ab19da18afe947d0958223470904607cc52ef611197d287746671d7",
+        "bytes": 14502
       },
       "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/deployment_v1/numerical_release.json": {
         "sha256": "9962a0cae71151c2f182971a85ffa6a9e8d4923f4a3509db2620df54e7cc5e68",
@@ -1500,8 +1500,8 @@
         "bytes": 16557
       },
       "outputs/deploy/rec/hard/active_bundle.json": {
-        "sha256": "6299952a9cca55bf6d67d93169a3ff1fe6eeddf4baada948300d08d476ffff72",
-        "bytes": 14460
+        "sha256": "97fea61bac6a85202bcca5756062192a00adf6b9fc25c642aeed32d198c648cb",
+        "bytes": 14570
       },
       "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json": {
         "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621",

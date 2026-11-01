@@ -25,6 +25,40 @@ class VersionedValidationTests(unittest.TestCase):
         self.assertEqual([r["request_id"] for r in original["examples"]],[1,2,3])
         self.assertNotIn("is_current_user",original["examples"][1])
 
+    def test_bound_missing_current_user_replays_active_model_without_changing_test_counts(self):
+        from backend.online.api.main import _ensure_current_user_example
+        app_ctx=SimpleNamespace(get_cached_user_validation_example=Mock(return_value={"model_bundle_id":"old"}),set_cached_user_validation_example=Mock())
+        pipeline=object();runtime=SimpleNamespace(get_pipeline=lambda scene:pipeline)
+        snapshot={"bound_to_active_bundle":True,"model_bundle_id":"new","sampled_groups":6192,"examples":[{"request_id":1,"source_user_idx":8}]}
+        row={"request_id":2,"source_user_idx":7,"model_bundle_id":"new","scope":"current_user_request_replay","split":"train","evaluation_included":False,"sample_note":"训练请求回放"}
+        with patch("backend.online.user_example.build_current_user_example",return_value=row) as replay:
+            result=_ensure_current_user_example(snapshot,app_ctx,runtime,"search","hard",7,800,5)
+        replay.assert_called_once_with(pipeline,7,snapshot)
+        self.assertEqual(result["examples"][0],row)
+        self.assertEqual(result["sampled_groups"],6192)
+        self.assertEqual(snapshot["examples"],[{"request_id":1,"source_user_idx":8}])
+
+    def test_current_user_training_replay_keeps_labels_out_of_inference(self):
+        import pandas as pd
+        from backend.online.user_example import build_current_user_example
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);target=root/"datasets/recommendation_train";target.mkdir(parents=True)
+            pd.DataFrame({"request_idx":[2,1],"user_idx":[7,7],"query":["", ""],"recent_clicked_note_idxs":[[0],[0]],"rec_result_details_with_idx":[[{"note_idx":5,"click":1}],[{"note_idx":3,"click":1}]]}).to_parquet(target/"part.parquet",index=False)
+            state=SimpleNamespace(scene="rec",bundle=SimpleNamespace(root=root,bundle_id="current"),_fetch_notes=lambda ids:pd.DataFrame({"note_idx":ids,"note_title":[str(i) for i in ids],"note_content":[""]*len(ids)}))
+            feed={"model_bundle_id":"current","stage_top10_ids":{"recall":[3,5],"preranking":[],"ranking":[]},"stages":{"preranking":{"enabled":False},"ranking":{"enabled":False}}}
+            pipeline=SimpleNamespace(state=state,build_feed=Mock(return_value=feed))
+            row=build_current_user_example(pipeline,7,{})
+            self.assertEqual(row["request_id"],1)
+            self.assertEqual(row["split"],"train")
+            self.assertFalse(row["evaluation_included"])
+            self.assertEqual(row["dssm_top10"][0]["rank_in_true"],1)
+            self.assertIsNone(row["dssm_top10"][1]["rank_in_true"])
+            kwargs=pipeline.build_feed.call_args.kwargs
+            self.assertFalse(kwargs["record_exposure"])
+            self.assertEqual(set(kwargs["request_context"].columns),{"request_idx","user_idx","query","recent_clicked_note_idxs"})
+            self.assertEqual(kwargs["request_context"].recent_clicked_note_idxs.iloc[0],[0])
+            self.assertEqual(row["ranking_top10"],[])
+
     def fixture(self, root):
         with patch.dict(os.environ, {"QILIN_ASYNC_PREWARM": "0"}):
             app = create_app(tag="hard")

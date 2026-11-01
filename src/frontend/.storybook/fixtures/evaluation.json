@@ -8,7 +8,7 @@
     "sampling": "none",
     "label": "binary_click",
     "evaluated_at": "2026-10-31",
-    "publication_status": "preview_unpromoted",
+    "publication_status": "active_bundle_bound",
     "strict_acceptance_reasons": [
       "feature_point_in_time_lineage_unknown",
       "official_test_previously_observed"
@@ -17,6 +17,29 @@
   },
   "scenes": {
     "search": {
+      "label_coverage": {
+        "scope": "All original test requests; current final candidates joined only to same-request historical exposures",
+        "purpose": "Label-coverage diagnostic only; not an unbiased estimate of new-policy CTR or ranking quality",
+        "all_requests": 6192,
+        "exposure_rows": 128191,
+        "empty_exposure_requests": 0,
+        "zero_click_requests": 0,
+        "mean_exposures": 20.70268087855297,
+        "median_exposures": 12.0,
+        "minimum_exposures": 2,
+        "maximum_exposures": 476,
+        "exposure_requests_with_both_labels": 6171,
+        "final_candidate_pairs": 990720,
+        "labeled_candidate_pairs": 67657,
+        "unlabeled_candidate_pairs": 923063,
+        "labeled_candidate_fraction": 0.0682907380490956,
+        "empty_final_candidate_requests": 0,
+        "requests_without_exposure_overlap": 186,
+        "requests_without_known_click_in_candidates": 928,
+        "requests_with_both_labels_in_overlap": 5047,
+        "unexposed_label": "unknown; never converted to an observed negative",
+        "traffic_scope": "Published test requests only; zero-click traffic coverage must be checked separately"
+      },
       "recall": {
         "test": {
           "all_requests": 6192,
@@ -188,9 +211,10 @@
             "plan_sha256": "ada0545449eee37a9ee5179301525b2e4c6d05da13a178199541d2f14bf0629d"
           },
           "warning": "Accepted on this recorded machine/backend only. CPU/GPU or package-version equivalence is not established."
-        }
+        },
+        "candidate_path": "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/final_candidates.parquet"
       },
-      "model_bundle_id": "f322a33d96d31049724c5a8075ba08d2a1f9948e15a1cdc5b473c9a40a264245",
+      "model_bundle_id": "2814de79ca5d2151376523e7d521da4d8be2079ab61abf0cb9c6ec97d78bca6f",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -528,6 +552,29 @@
       }
     },
     "rec": {
+      "label_coverage": {
+        "scope": "All original test requests; current final candidates joined only to same-request historical exposures",
+        "purpose": "Label-coverage diagnostic only; not an unbiased estimate of new-policy CTR or ranking quality",
+        "all_requests": 11115,
+        "exposure_rows": 182567,
+        "empty_exposure_requests": 0,
+        "zero_click_requests": 0,
+        "mean_exposures": 16.42528115159694,
+        "median_exposures": 10.0,
+        "minimum_exposures": 1,
+        "maximum_exposures": 79,
+        "exposure_requests_with_both_labels": 11048,
+        "final_candidate_pairs": 5557500,
+        "labeled_candidate_pairs": 5988,
+        "unlabeled_candidate_pairs": 5551512,
+        "labeled_candidate_fraction": 0.0010774628879892038,
+        "empty_final_candidate_requests": 0,
+        "requests_without_exposure_overlap": 7403,
+        "requests_without_known_click_in_candidates": 9284,
+        "requests_with_both_labels_in_overlap": 647,
+        "unexposed_label": "unknown; never converted to an observed negative",
+        "traffic_scope": "Published test requests only; zero-click traffic coverage must be checked separately"
+      },
       "recall": {
         "test": {
           "all_requests": 11115,
@@ -687,9 +734,10 @@
         "release_evidence": {
           "path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json",
           "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621"
-        }
+        },
+        "candidate_path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/allpast/winner_selected.parquet"
       },
-      "model_bundle_id": "3f4bab6f3abc286d9c9891d07cdc8bb6942143caf0675eb32de59ccfdbf4e2f1",
+      "model_bundle_id": "25e4942eeef0ecf242b099c12278c67ab3dae3c5bf7648907d9acb367e9c738d",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",

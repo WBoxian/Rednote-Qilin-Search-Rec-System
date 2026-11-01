@@ -470,7 +470,24 @@ def _ensure_current_user_example(
 	example_limit: int,
 ) -> dict[str, Any]:
 	if validation.get("bound_to_active_bundle"):
-		return validation
+		if context_user_idx is None or any(_safe_int(row.get("source_user_idx"),-1)==int(context_user_idx) for row in validation.get("examples",[])):
+			return validation
+		from backend.online.user_example import build_current_user_example
+		out = deepcopy(validation)
+		try:
+			uid = int(context_user_idx)
+			row = app_ctx.get_cached_user_validation_example(scene,tag,uid)
+			if not row or row.get("model_bundle_id") != validation.get("model_bundle_id") or row.get("scope") != "current_user_request_replay":
+				row = build_current_user_example(runtime.get_pipeline(scene),uid,validation)
+				app_ctx.set_cached_user_validation_example(scene,tag,uid,row)
+			if row:
+				out["examples"] = [row]+[item for item in out.get("examples",[]) if item.get("request_id") != row["request_id"]][:max(0,example_limit-1)]
+				out["current_user_example_status"] = row["sample_note"]
+			else:
+				out["current_user_example_status"] = "当前用户没有可回放的原始请求，以下展示其他用户的固定测试样例"
+		except Exception:
+			out["current_user_example_status"] = "当前用户样例暂不可用，以下展示其他用户的固定测试样例"
+		return out
 	if context_user_idx is None:
 		return validation
 	uid = int(context_user_idx)

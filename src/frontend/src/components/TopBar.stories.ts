@@ -14,7 +14,7 @@ export const HomeNavigation: Story = {
   parameters: { route: '/' },
   play: async ({ canvas, userEvent, args }) => {
     await expect(canvas.getByRole('button', { name: /首页/ })).toHaveAttribute('aria-current', 'page');
-    await userEvent.click(canvas.getByRole('button', { name: /QILIN WORKSPACE/ }));
+    await userEvent.click(canvas.getByRole('button', { name: /麒麟工作台/ }));
     await expect(args.onHome).toHaveBeenCalledOnce();
   },
 };

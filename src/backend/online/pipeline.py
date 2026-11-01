@@ -2917,6 +2917,7 @@ class OnlineScenePipeline:
         self, user_idx: int, query: str, page: int, page_size: int, refresh_key: str = "",
         exclude_note_ids: list[int] | None = None, record_exposure: bool = True,
         request_context: pd.DataFrame | None = None,
+        include_stage_items: bool = False,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         uid = int(user_idx)
@@ -3002,10 +3003,15 @@ class OnlineScenePipeline:
             stage_ms = {"recall": (coarse_started-recall_started)*1000,
                         "preranking": (fine_started-coarse_started)*1000,
                         "ranking": (finished-fine_started)*1000}
+            stage_top10 = {"recall": recall.note_idx.astype(int).tolist()[:10],
+                           "preranking": coarse.sort_values("preranking_rank").note_idx.astype(int).tolist()[:10] if ranking_strategy == "learned" and not coarse.empty else [],
+                           "ranking": base.note_idx.astype(int).tolist()[:10] if ranking_strategy == "learned" else []}
+            if ranking_strategy == "recall_only":
+                stage_top10["ranking"] = []
             route_status = recall.attrs.get("route_status", {})
             degraded = "validated_model_bundle_unavailable" if not bundle_active else (
                 "recall_route_failure" if route_status.get("errors") else None)
-            meta = {"stages": {"coldstart": {"enabled": cold}, "recall": {"candidates": len(recall)},
+            meta = {"stage_top10_ids": stage_top10, "stages": {"coldstart": {"enabled": cold}, "recall": {"candidates": len(recall)},
                     "preranking": {"candidates": len(coarse), "topn": coarse_cap,
                         "enabled": bundle_active and ranking_strategy == "learned"},
                     "ranking": {"candidates": len(base), "enabled": bundle_active and ranking_strategy == "learned",
@@ -3040,7 +3046,7 @@ class OnlineScenePipeline:
             "cached_pipeline_ms": meta["pipeline_ms"] if cache_hit else 0.0,
             "latency_ms": float(elapsed), "cache_hit": cache_hit, "route_status": meta.get("route_status", {}),
             "degraded_reason": meta.get("degraded_reason"), "eligibility_dropped": len(base)-len(eligible),
-            "items": cards}
+            "items": cards, **({"stage_top10_ids": meta["stage_top10_ids"]} if include_stage_items else {})}
 
 
 class OnlineRuntime:

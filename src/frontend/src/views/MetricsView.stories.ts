@@ -44,3 +44,22 @@ export const MetricsUnavailable: Story = {
   },
   play: async ({ canvas }) => { await expect(await canvas.findByText('演示：指标版本未就绪')).toBeVisible(); },
 };
+
+export const CurrentUserTrainingReplay: Story = {
+  beforeEach: async context => {
+    const uid = Number(localStorage.getItem('qilin_user_idx'));
+    const note = { note_idx: 101, title: '训练样例目标', rank_in_true: 1 };
+    const example = { scope: 'current_user_request_replay', split: 'train', evaluation_included: false, scene: 'search', request_id: 99, source_user_idx: uid, result_count: 12, query: '测试查询', true_top10: [note, { note_idx: 102, title: '第二个点击目标', rank_in_true: 2 }], dssm_top10: [{ note_idx: 102, title: '第二个点击目标', rank_in_true: 2 }, { note_idx: 999, title: '未命中目标', rank_in_true: null }, note], preranking_top10: [note], ranking_top10: [note], source_recent_behaviors: [], overlap: { dssm: 1, preranking: 1, ranking: 1 }, sample_note: '当前用户训练请求回放，不能作为测试成绩', notes: [{ ...note, content: '此详情来自当前回放的笔记元数据', accum_like_num: 32, accum_collect_num: 8, accum_comment_num: 2 }] };
+    (context as any).msw.use(http.get('/api/validation', () => HttpResponse.json({ validation: { examples: [example] } })));
+  },
+  play: async ({ canvas, canvasElement, userEvent }) => {
+    await expect(await canvas.findByText('当前用户训练请求回放，不能作为测试成绩')).toBeVisible();
+    await expect(canvas.getByText('当前用户')).toBeVisible();
+    const recallRanks = Array.from(canvasElement.querySelectorAll('.compare-cell:nth-child(2) tbody tr')).map(row => row.querySelector('td')?.textContent?.trim());
+    await expect(recallRanks).toEqual(['2', '(-)', '1']);
+    await userEvent.click(canvas.getAllByText('训练样例目标')[0]);
+    await expect(await canvas.findByText('此详情来自当前回放的笔记元数据')).toBeVisible();
+    await expect(canvas.getByText('点赞 32')).toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: '关闭' }));
+  },
+};
