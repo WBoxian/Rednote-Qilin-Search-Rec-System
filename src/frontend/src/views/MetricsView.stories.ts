@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/vue3-vite';
 import { expect } from 'storybook/test';
 import { http, HttpResponse } from 'msw';
 import MetricsView from './MetricsView.vue';
+import evaluation from '../../.storybook/fixtures/evaluation.json';
 
 const meta = { component: MetricsView, tags: ['ai-generated'], parameters: { route: '/metrics', scene: 'search' } } satisfies Meta<typeof MetricsView>;
 export default meta;
@@ -35,7 +36,8 @@ export const RecommendationMetrics: Story = {
     await expect(await canvas.findByRole('button', { name: /命中率（HitRate@50）/ })).toBeVisible();
     await expect(canvas.getByText(/当前服务：仅召回/)).toBeVisible();
     await userEvent.click(canvas.getByText('阶段消融与实验结果'));
-    await expect(canvas.getByRole('rowheader', { name: '内容残差与验证集选择的融合' })).toBeVisible();
+    const selectedLabel = evaluation.scenes.rec.ablations.rows.find(row => row.id === 'adapter_dual128')!.label;
+    await expect(canvas.getByRole('rowheader', { name: selectedLabel })).toBeVisible();
   },
 };
 export const MetricsUnavailable: Story = {

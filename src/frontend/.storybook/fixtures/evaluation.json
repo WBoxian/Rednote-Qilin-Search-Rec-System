@@ -7,7 +7,7 @@
     "strict_acceptance": "blocked",
     "sampling": "none",
     "label": "binary_click",
-    "evaluated_at": "2026-10-31",
+    "evaluated_at": "2026-11-01",
     "publication_status": "active_bundle_bound",
     "strict_acceptance_reasons": [
       "feature_point_in_time_lineage_unknown",
@@ -214,7 +214,7 @@
         },
         "candidate_path": "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/test/final_candidates.parquet"
       },
-      "model_bundle_id": "2814de79ca5d2151376523e7d521da4d8be2079ab61abf0cb9c6ec97d78bca6f",
+      "model_bundle_id": "f53b640e55373bd9d339be0e5cb1598dc0ca34e1d165f4b108e959985bb7872f",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
@@ -565,13 +565,13 @@
         "maximum_exposures": 79,
         "exposure_requests_with_both_labels": 11048,
         "final_candidate_pairs": 5557500,
-        "labeled_candidate_pairs": 5988,
-        "unlabeled_candidate_pairs": 5551512,
-        "labeled_candidate_fraction": 0.0010774628879892038,
+        "labeled_candidate_pairs": 8346,
+        "unlabeled_candidate_pairs": 5549154,
+        "labeled_candidate_fraction": 0.0015017543859649123,
         "empty_final_candidate_requests": 0,
-        "requests_without_exposure_overlap": 7403,
-        "requests_without_known_click_in_candidates": 9284,
-        "requests_with_both_labels_in_overlap": 647,
+        "requests_without_exposure_overlap": 6435,
+        "requests_without_known_click_in_candidates": 8706,
+        "requests_with_both_labels_in_overlap": 993,
         "unexposed_label": "unknown; never converted to an observed negative",
         "traffic_scope": "Published test requests only; zero-click traffic coverage must be checked separately"
       },
@@ -590,37 +590,44 @@
           "scope": "All original test requests; unique clicked request-item pairs; actual top500 retrieval; no forced positives",
           "denominator": "All positive original test requests, including zero-hit and empty-candidate requests",
           "label": "binary click > 0; repeated positive impressions deduplicated per request-item",
-          "known_positive_NDCG@10": 0.003236697834438843,
-          "HitRate@10": 0.015024741340530815,
-          "known_positive_pairs_top10": 172,
-          "HitRate@50": 0.0456140350877193,
-          "known_positive_pairs_top50": 559,
-          "HitRate@100": 0.07197480881691408,
-          "known_positive_pairs_top100": 892,
-          "HitRate@500": 0.1647323436797121,
-          "known_positive_pairs_top500": 2242,
-          "Recall@100": 0.026752250835630695,
-          "MicroRecall@100": 0.019962849405814293,
-          "Recall@500": 0.06548263519638632,
-          "MicroRecall@500": 0.05017568202672157,
-          "MRR@10": 0.004499817920870552,
-          "MRR@100": 0.006225164933763815,
-          "MedianFirstHitRank": 126.0,
-          "MedianFirstHitRank_among_hits_at500": 126.0,
+          "known_positive_NDCG@10": 0.003779775156070707,
+          "HitRate@10": 0.016824111560953665,
+          "known_positive_pairs_top10": 198,
+          "HitRate@50": 0.06054880791722897,
+          "known_positive_pairs_top50": 747,
+          "HitRate@100": 0.09932523616734143,
+          "known_positive_pairs_top100": 1252,
+          "HitRate@500": 0.21673414304993252,
+          "known_positive_pairs_top500": 3115,
+          "Recall@100": 0.03827350675776022,
+          "MicroRecall@100": 0.028019604771389567,
+          "Recall@500": 0.0886014671561036,
+          "MicroRecall@500": 0.06971331378824161,
+          "MRR@10": 0.0052863997600839695,
+          "MRR@100": 0.007619025240105905,
+          "MedianFirstHitRank": 115.0,
+          "MedianFirstHitRank_among_hits_at500": 115.0,
           "median_scope": "Only requests with a hit in actual top500; misses excluded from median and reported separately",
-          "missed_requests_at_500": 9284,
-          "missed_requests@500": 9284
+          "missed_requests_at_500": 8706,
+          "missed_requests@500": 8706
         },
         "lineage": {
-          "selection_sha256": "7ae4490598072ba7e87bc7f70aee63b3fb731ea3586465b636cf57e802817609",
-          "nprobe": 32,
+          "selection_sha256": "0a4987f36ec8d7e1cb6f983b974ee4ea81947141dfceeb52212f6e34b648a161",
+          "index_type": "FlatIP",
+          "nprobe": null,
           "route_topk": 1000,
           "final_topk": 500,
-          "model_family": "residual_dssm_v1",
+          "inference_contract": "request_fp32_v1",
+          "model_family": "adapted_residual_dssm_v1",
           "residual_learned_weight": 0.25,
-          "gradient_updates": 0,
+          "gradient_updates": 327,
+          "gradient_update_scope": "content_adapter_stage_only",
+          "packaging_gradient_updates": 0,
+          "content_training_plan_sha256": "33fde44602e9b55f3195948e9c738e5dcf4bac95334049c0cb7634fd9e21570b",
+          "content_training_data_contract_sha256": "60f186e0924917df37575b800a5caf2104a08f7008a0259edcb02f6ca4efab91",
           "pca_fit_split": "original_train_fit",
-          "fusion_selection_sha256": "6c9a52d75ffb49253bc9bbd58dd74ca746e7455127f10f80f0761dfec274b435"
+          "fusion_strategy": "learned_rrf",
+          "evaluated_at": "2026-11-01"
         }
       },
       "ranking": {
@@ -701,26 +708,26 @@
           "scope": "All original test requests; unique clicked request-item pairs; actual top500 retrieval; no forced positives",
           "denominator": "All positive original test requests, including zero-hit and empty-candidate requests",
           "label": "binary click > 0; repeated positive impressions deduplicated per request-item",
-          "known_positive_NDCG@10": 0.003236697834438843,
-          "HitRate@10": 0.015024741340530815,
-          "known_positive_pairs_top10": 172,
-          "HitRate@50": 0.0456140350877193,
-          "known_positive_pairs_top50": 559,
-          "HitRate@100": 0.07197480881691408,
-          "known_positive_pairs_top100": 892,
-          "HitRate@500": 0.1647323436797121,
-          "known_positive_pairs_top500": 2242,
-          "Recall@100": 0.026752250835630695,
-          "MicroRecall@100": 0.019962849405814293,
-          "Recall@500": 0.06548263519638632,
-          "MicroRecall@500": 0.05017568202672157,
-          "MRR@10": 0.004499817920870552,
-          "MRR@100": 0.006225164933763815,
-          "MedianFirstHitRank": 126.0,
-          "MedianFirstHitRank_among_hits_at500": 126.0,
+          "known_positive_NDCG@10": 0.003779775156070707,
+          "HitRate@10": 0.016824111560953665,
+          "known_positive_pairs_top10": 198,
+          "HitRate@50": 0.06054880791722897,
+          "known_positive_pairs_top50": 747,
+          "HitRate@100": 0.09932523616734143,
+          "known_positive_pairs_top100": 1252,
+          "HitRate@500": 0.21673414304993252,
+          "known_positive_pairs_top500": 3115,
+          "Recall@100": 0.03827350675776022,
+          "MicroRecall@100": 0.028019604771389567,
+          "Recall@500": 0.0886014671561036,
+          "MicroRecall@500": 0.06971331378824161,
+          "MRR@10": 0.0052863997600839695,
+          "MRR@100": 0.007619025240105905,
+          "MedianFirstHitRank": 115.0,
+          "MedianFirstHitRank_among_hits_at500": 115.0,
           "median_scope": "Only requests with a hit in actual top500; misses excluded from median and reported separately",
-          "missed_requests_at_500": 9284,
-          "missed_requests@500": 9284
+          "missed_requests_at_500": 8706,
+          "missed_requests@500": 8706
         },
         "serving_strategy": "recall_only",
         "input_cap": 500,
@@ -730,51 +737,67 @@
         "evaluated_recipe_stage": "raw",
         "diagnostic_raw_pool_cap": 320,
         "label_scope": "Known positives from all original test requests; not conditional exposure NDCG or online CTR",
-        "independent_verification_sha256": "fcb948146f02256ede6be3a0e747eea6a848ba60b76587fe63fc156f47058ddc",
+        "independent_verification_sha256": "d72710aaa5917117b188eea0af9dd45f34697af2429995fd55fc50277d4fd5eb",
         "release_evidence": {
-          "path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json",
-          "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621"
+          "path": ".qilin/rec_optimization_20261101/final_recipe_v1/release_evidence_v2.json",
+          "sha256": "b728221184d72db1181c91a54890ef5232c6bce4b8c46b487edf2a5e7099e49a"
         },
-        "candidate_path": "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/allpast/winner_selected.parquet"
+        "candidate_path": ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/dual128.parquet"
       },
-      "model_bundle_id": "25e4942eeef0ecf242b099c12278c67ab3dae3c5bf7648907d9acb367e9c738d",
+      "model_bundle_id": "630ef707bb2d700e1fa569810a239f2b06128d0a7883e64b0cd5c92a34fccbe2",
       "comparisons": {
         "end_to_end": {
           "scope": "full_catalog_known_click",
-          "baseline_name": "Frozen DSSM v3 + original fusion",
-          "current_name": "Current released ordering",
+          "baseline_name": "Previous residual DSSM + PQ + 2:1:1 fusion",
+          "current_name": "Trained dual content adapter + exact FlatIP + learned fusion",
           "metrics": [
             {
               "name": "HitRate@50",
-              "baseline": 0.022762033288349078,
-              "current": 0.0456140350877193,
-              "absolute_delta": 0.022852001799370223,
-              "absolute_delta_pp": 2.2852001799370223,
-              "relative_delta_pct": 100.39525691699606
+              "baseline": 0.0456140350877193,
+              "current": 0.06054880791722897,
+              "absolute_delta": 0.014934772829509668,
+              "absolute_delta_pp": 1.4934772829509668,
+              "relative_delta_pct": 32.741617357001964,
+              "ci95_delta": [
+                0.010624170036610285,
+                0.019364648269957044
+              ]
             },
             {
               "name": "Recall@100",
-              "baseline": 0.010468837728634469,
-              "current": 0.026752250835630695,
-              "absolute_delta": 0.016283413106996228,
-              "absolute_delta_pp": 1.6283413106996227,
-              "relative_delta_pct": 155.54174712688186
+              "baseline": 0.026752250835630695,
+              "current": 0.03827350675776022,
+              "absolute_delta": 0.011521255922129527,
+              "absolute_delta_pp": 1.1521255922129527,
+              "relative_delta_pct": 43.066491836210794,
+              "ci95_delta": [
+                0.008876289183836357,
+                0.014303827811275545
+              ]
             },
             {
               "name": "known_positive_NDCG@10",
-              "baseline": 0.0016306093888105813,
-              "current": 0.003236697834438843,
-              "absolute_delta": 0.0016060884456282616,
-              "absolute_delta_pp": 0.16060884456282615,
-              "relative_delta_pct": 98.49620986174953
+              "baseline": 0.003236697834438843,
+              "current": 0.003779775156070707,
+              "absolute_delta": 0.0005430773216318643,
+              "absolute_delta_pp": 0.05430773216318643,
+              "relative_delta_pct": 16.77874640794263,
+              "ci95_delta": [
+                -0.0002592311685018541,
+                0.0013857442031946002
+              ]
             },
             {
               "name": "MRR@100",
-              "baseline": 0.003682917126909296,
-              "current": 0.006225164933763815,
-              "absolute_delta": 0.0025422478068545186,
-              "absolute_delta_pp": 0.25422478068545185,
-              "relative_delta_pct": 69.02810243216015
+              "baseline": 0.006225164933763815,
+              "current": 0.007619025240105905,
+              "absolute_delta": 0.0013938603063420908,
+              "absolute_delta_pp": 0.13938603063420907,
+              "relative_delta_pct": 22.39073697119451,
+              "ci95_delta": [
+                0.0001902595062624815,
+                0.002617608662274309
+              ]
             }
           ]
         },
@@ -815,97 +838,136 @@
             "warning": "Position order reflects historical exposure bias; this comparison does not establish online causal gain."
           }
         },
-        "residual_vs_history_filter": {
+        "index_precision": {
           "scope": "full_catalog_known_click",
-          "baseline_name": "v3 + accepted history filter",
-          "current_name": "Residual DSSM + same history filter",
+          "baseline_name": "Previous residual DSSM + PQ + 2:1:1 fusion",
+          "current_name": "Previous residual DSSM + exact FlatIP + 2:1:1 fusion",
           "metrics": [
             {
               "name": "HitRate@50",
-              "baseline": 0.022941970310391364,
-              "current": 0.03832658569500675,
-              "absolute_delta": 0.015384615384615385,
-              "absolute_delta_pp": 1.5384615384615385,
-              "relative_delta_pct": 67.05882352941177,
-              "ci95_delta": [
-                0.012511167313913768,
-                0.018136088001228387
-              ]
+              "baseline": 0.0456140350877193,
+              "current": 0.05155195681511471,
+              "absolute_delta": 0.005937921727395407,
+              "absolute_delta_pp": 0.5937921727395407,
+              "relative_delta_pct": 13.01775147928993
             },
             {
               "name": "Recall@100",
-              "baseline": 0.010746776164467642,
-              "current": 0.023194692012147168,
-              "absolute_delta": 0.012447915847679526,
-              "absolute_delta_pp": 1.2447915847679525,
-              "relative_delta_pct": 115.82930226867856,
-              "ci95_delta": [
-                0.010014027015262904,
-                0.014919149477811129
-              ]
+              "baseline": 0.026752250835630695,
+              "current": 0.029887281094674863,
+              "absolute_delta": 0.0031350302590441685,
+              "absolute_delta_pp": 0.31350302590441687,
+              "relative_delta_pct": 11.718753230545728
             },
             {
               "name": "known_positive_NDCG@10",
-              "baseline": 0.0017229595093839428,
-              "current": 0.002548425237756525,
-              "absolute_delta": 0.0008254657283725821,
-              "absolute_delta_pp": 0.08254657283725822,
-              "relative_delta_pct": 47.90975782522792,
-              "ci95_delta": [
-                0.00047809775705288693,
-                0.0011493324646398373
-              ]
+              "baseline": 0.003236697834438843,
+              "current": 0.003563216693483791,
+              "absolute_delta": 0.00032651885904494806,
+              "absolute_delta_pp": 0.032651885904494804,
+              "relative_delta_pct": 10.088024145187395
             },
             {
               "name": "MRR@100",
-              "baseline": 0.0038409602906676944,
-              "current": 0.005561775410866889,
-              "absolute_delta": 0.0017208151201991945,
-              "absolute_delta_pp": 0.17208151201991945,
-              "relative_delta_pct": 44.801689941450974,
-              "ci95_delta": [
-                0.0011806855540178577,
-                0.0022573020668693183
-              ]
+              "baseline": 0.006225164933763815,
+              "current": 0.006837761640721134,
+              "absolute_delta": 0.000612596706957319,
+              "absolute_delta_pp": 0.061259670695731905,
+              "relative_delta_pct": 9.840650223333684
             }
           ]
         },
-        "fusion_vs_residual_control": {
+        "content_adapter": {
           "scope": "full_catalog_known_click",
-          "baseline_name": "Residual model + 1:2:1",
-          "current_name": "Same residual model + 2:1:1",
+          "baseline_name": "Previous residual DSSM + exact FlatIP + 2:1:1 fusion",
+          "current_name": "Trained dual content adapter + exact FlatIP + 2:1:1 fusion",
           "metrics": [
             {
               "name": "HitRate@50",
-              "baseline": 0.03832658569500675,
-              "current": 0.0456140350877193,
-              "absolute_delta": 0.007287449392712551,
-              "absolute_delta_pp": 0.7287449392712552,
-              "relative_delta_pct": 19.014084507042256
+              "baseline": 0.05155195681511471,
+              "current": 0.06126855600539811,
+              "absolute_delta": 0.0097165991902834,
+              "absolute_delta_pp": 0.9716599190283399,
+              "relative_delta_pct": 18.848167539267013
             },
             {
               "name": "Recall@100",
-              "baseline": 0.02319469201214716,
-              "current": 0.026752250835630695,
-              "absolute_delta": 0.0035575588234835337,
-              "absolute_delta_pp": 0.35575588234835337,
-              "relative_delta_pct": 15.337814451773815
+              "baseline": 0.029887281094674863,
+              "current": 0.03442816917626838,
+              "absolute_delta": 0.00454088808159352,
+              "absolute_delta_pp": 0.454088808159352,
+              "relative_delta_pct": 15.193379642695527
             },
             {
               "name": "known_positive_NDCG@10",
-              "baseline": 0.002548425237756525,
-              "current": 0.003236697834438843,
-              "absolute_delta": 0.0006882725966823179,
-              "absolute_delta_pp": 0.06882725966823179,
-              "relative_delta_pct": 27.00776096881815
+              "baseline": 0.003563216693483791,
+              "current": 0.0039024105248754593,
+              "absolute_delta": 0.0003391938313916684,
+              "absolute_delta_pp": 0.03391938313916684,
+              "relative_delta_pct": 9.519315286436745
             },
             {
               "name": "MRR@100",
-              "baseline": 0.005561775410866889,
-              "current": 0.006225164933763815,
-              "absolute_delta": 0.0006633895228969258,
-              "absolute_delta_pp": 0.06633895228969258,
-              "relative_delta_pct": 11.927657517431584
+              "baseline": 0.006837761640721134,
+              "current": 0.007768130041490722,
+              "absolute_delta": 0.0009303684007695885,
+              "absolute_delta_pp": 0.09303684007695885,
+              "relative_delta_pct": 13.606329814554178
+            }
+          ]
+        },
+        "learned_fusion": {
+          "scope": "full_catalog_known_click",
+          "baseline_name": "Trained dual content adapter + exact FlatIP + 2:1:1 fusion",
+          "current_name": "Trained dual content adapter + exact FlatIP + learned fusion",
+          "metrics": [
+            {
+              "name": "HitRate@50",
+              "baseline": 0.06126855600539811,
+              "current": 0.06054880791722897,
+              "absolute_delta": -0.0007197480881691379,
+              "absolute_delta_pp": -0.07197480881691379,
+              "relative_delta_pct": -1.1747430249632846,
+              "ci95_delta": [
+                -0.005154942884056129,
+                0.003915426679493289
+              ]
+            },
+            {
+              "name": "Recall@100",
+              "baseline": 0.03442816917626838,
+              "current": 0.03827350675776022,
+              "absolute_delta": 0.003845337581491838,
+              "absolute_delta_pp": 0.3845337581491838,
+              "relative_delta_pct": 11.169160816551523,
+              "ci95_delta": [
+                0.0016896491418251116,
+                0.006052152615555592
+              ]
+            },
+            {
+              "name": "known_positive_NDCG@10",
+              "baseline": 0.0039024105248754593,
+              "current": 0.003779775156070707,
+              "absolute_delta": -0.0001226353688047522,
+              "absolute_delta_pp": -0.01226353688047522,
+              "relative_delta_pct": -3.142554275697736,
+              "ci95_delta": [
+                -0.0008649060647140961,
+                0.0006847008919691625
+              ]
+            },
+            {
+              "name": "MRR@100",
+              "baseline": 0.007768130041490722,
+              "current": 0.007619025240105905,
+              "absolute_delta": -0.00014910480138481674,
+              "absolute_delta_pp": -0.014910480138481674,
+              "relative_delta_pct": -1.919442653359639,
+              "ci95_delta": [
+                -0.0013467014866282935,
+                0.0010886358119718686
+              ]
             }
           ]
         }
@@ -1257,52 +1319,10 @@
             }
           },
           {
-            "id": "residual_f1",
-            "label": "DSSM residual + history filter",
-            "status": "accepted",
-            "changed": "Same learned weights and CF graph; train-only PCA residual representation; fixed 256-dimensional ANN",
-            "metrics": {
-              "HitRate@50": 0.03832658569500675,
-              "Recall@100": 0.023194692012147168,
-              "known_positive_NDCG@10": 0.002548425237756525,
-              "MRR@100": 0.005561775410866889
-            },
-            "comparison": {
-              "HitRate@50": {
-                "baseline": 0.022762033288349078,
-                "current": 0.03832658569500675,
-                "absolute_delta": 0.015564552406657672,
-                "absolute_delta_pp": 1.5564552406657672,
-                "relative_delta_pct": 68.37944664031622
-              },
-              "Recall@100": {
-                "baseline": 0.010468837728634469,
-                "current": 0.023194692012147168,
-                "absolute_delta": 0.0127258542835127,
-                "absolute_delta_pp": 1.2725854283512699,
-                "relative_delta_pct": 121.5593804525675
-              },
-              "known_positive_NDCG@10": {
-                "baseline": 0.0016306093888105813,
-                "current": 0.002548425237756525,
-                "absolute_delta": 0.0009178158489459437,
-                "absolute_delta_pp": 0.09178158489459437,
-                "relative_delta_pct": 56.286677560186746
-              },
-              "MRR@100": {
-                "baseline": 0.003682917126909296,
-                "current": 0.005561775410866889,
-                "absolute_delta": 0.0018788582839575929,
-                "absolute_delta_pp": 0.1878858283957593,
-                "relative_delta_pct": 51.01549177497596
-              }
-            }
-          },
-          {
-            "id": "residual_fusion_selected",
-            "label": "Residual DSSM + validation-selected fusion",
-            "status": "accepted",
-            "changed": "Same residual model and CF graph; validation selected ANN2/Swing1/UserCF1 from eight fixed trials",
+            "id": "adapter_original_baseline",
+            "label": "Previous residual DSSM + PQ + 2:1:1 fusion",
+            "status": "diagnostic",
+            "changed": "Frozen full-test regression; same cohort and past-only CF; index precision and learned merge are explicit",
             "metrics": {
               "HitRate@50": 0.0456140350877193,
               "Recall@100": 0.026752250835630695,
@@ -1339,6 +1359,132 @@
                 "relative_delta_pct": 69.02810243216015
               }
             }
+          },
+          {
+            "id": "adapter_original_flat211",
+            "label": "Previous residual DSSM + exact FlatIP + 2:1:1 fusion",
+            "status": "diagnostic",
+            "changed": "Frozen full-test regression; same cohort and past-only CF; index precision and learned merge are explicit",
+            "metrics": {
+              "HitRate@50": 0.05155195681511471,
+              "Recall@100": 0.029887281094674863,
+              "known_positive_NDCG@10": 0.003563216693483791,
+              "MRR@100": 0.006837761640721134
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.05155195681511471,
+                "absolute_delta": 0.02878992352676563,
+                "absolute_delta_pp": 2.878992352676563,
+                "relative_delta_pct": 126.48221343873516
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.029887281094674863,
+                "absolute_delta": 0.019418443366040393,
+                "absolute_delta_pp": 1.9418443366040392,
+                "relative_delta_pct": 185.4880538737063
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.003563216693483791,
+                "absolute_delta": 0.0019326073046732097,
+                "absolute_delta_pp": 0.19326073046732095,
+                "relative_delta_pct": 118.52055543988467
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.006837761640721134,
+                "absolute_delta": 0.0031548445138118377,
+                "absolute_delta_pp": 0.31548445138118375,
+                "relative_delta_pct": 85.6615667716472
+              }
+            }
+          },
+          {
+            "id": "adapter_dual128_rrf",
+            "label": "Trained dual content adapter + exact FlatIP + 2:1:1 fusion",
+            "status": "diagnostic",
+            "changed": "Frozen full-test regression; same cohort and past-only CF; index precision and learned merge are explicit",
+            "metrics": {
+              "HitRate@50": 0.06126855600539811,
+              "Recall@100": 0.03442816917626838,
+              "known_positive_NDCG@10": 0.0039024105248754593,
+              "MRR@100": 0.007768130041490722
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.06126855600539811,
+                "absolute_delta": 0.03850652271704903,
+                "absolute_delta_pp": 3.850652271704903,
+                "relative_delta_pct": 169.16996047430828
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.03442816917626838,
+                "absolute_delta": 0.023959331447633916,
+                "absolute_delta_pp": 2.395933144763392,
+                "relative_delta_pct": 228.86333773328167
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.0039024105248754593,
+                "absolute_delta": 0.002271801136064878,
+                "absolute_delta_pp": 0.2271801136064878,
+                "relative_delta_pct": 139.32221607788009
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.007768130041490722,
+                "absolute_delta": 0.004085212914581426,
+                "absolute_delta_pp": 0.4085212914581426,
+                "relative_delta_pct": 110.92329188546626
+              }
+            }
+          },
+          {
+            "id": "adapter_dual128",
+            "label": "Trained dual content adapter + exact FlatIP + learned fusion",
+            "status": "accepted",
+            "changed": "Frozen full-test regression; same cohort and past-only CF; index precision and learned merge are explicit",
+            "metrics": {
+              "HitRate@50": 0.06054880791722897,
+              "Recall@100": 0.03827350675776022,
+              "known_positive_NDCG@10": 0.003779775156070707,
+              "MRR@100": 0.007619025240105905
+            },
+            "comparison": {
+              "HitRate@50": {
+                "baseline": 0.022762033288349078,
+                "current": 0.06054880791722897,
+                "absolute_delta": 0.03778677462887989,
+                "absolute_delta_pp": 3.778677462887989,
+                "relative_delta_pct": 166.0079051383399
+              },
+              "Recall@100": {
+                "baseline": 0.010468837728634469,
+                "current": 0.03827350675776022,
+                "absolute_delta": 0.027804669029125754,
+                "absolute_delta_pp": 2.7804669029125755,
+                "relative_delta_pct": 265.5946127913909
+              },
+              "known_positive_NDCG@10": {
+                "baseline": 0.0016306093888105813,
+                "current": 0.003779775156070707,
+                "absolute_delta": 0.002149165767260126,
+                "absolute_delta_pp": 0.21491657672601258,
+                "relative_delta_pct": 131.8013855438301
+              },
+              "MRR@100": {
+                "baseline": 0.003682917126909296,
+                "current": 0.007619025240105905,
+                "absolute_delta": 0.003936108113196609,
+                "absolute_delta_pp": 0.3936108113196609,
+                "relative_delta_pct": 106.87474025514636
+              }
+            }
           }
         ],
         "warning": "All rows retain the complete official test cohort. Rejected diagnostics are not served. A/B/C share extra training duration; graph refit data-volume effects are reported separately. Historical test was previously observed. Canonical Search stages share one regenerated input pool; the frozen baseline retains its recorded numerical contract."
@@ -1351,9 +1497,9 @@
         "sha256": "cc9a3ab7a9ab3351a0606272c728e701a7d8e2d4a28fa5b666824253f9a19bd0",
         "bytes": 9650
       },
-      "outputs/deploy/search/hard/bundles/northstar_fix_20261031_v1/bundle_runtime_v5.json": {
-        "sha256": "2f0dd2437ababf714f2be93e2ecea819d7f6969c0b3589cadbbfbf5831f4c7c9",
-        "bytes": 14392
+      "outputs/deploy/search/hard/active_bundle.json": {
+        "sha256": "c8bca45ca0ebbc46fc867b2859324d517d4c9bd58fbfafef3592e1b0f4b8fed6",
+        "bytes": 14614
       },
       "outputs/evaluation/northstar_fix_20261031/search_request_fp32_v2/deployment_v1/numerical_release.json": {
         "sha256": "9962a0cae71151c2f182971a85ffa6a9e8d4923f4a3509db2620df54e7cc5e68",
@@ -1499,119 +1645,219 @@
         "sha256": "ab82ce6d255fc9eeab7ba265a36953edfe32b5b62666b5b231b99a045f8a960b",
         "bytes": 16557
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/bundle_runtime_fusion_v3.json": {
-        "sha256": "6299952a9cca55bf6d67d93169a3ff1fe6eeddf4baada948300d08d476ffff72",
-        "bytes": 14460
+      "outputs/deploy/rec/hard/active_bundle.json": {
+        "sha256": "592bc26addeac4f59fd570bdae29a4e73638fd4bf1d1964788dc6a9b3e79765a",
+        "bytes": 17082
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/release.json": {
-        "sha256": "d2e20986655729ce4d299b6d4adc133b350b6eaa5e727787e75672d3ad462621",
-        "bytes": 5219
+      ".qilin/rec_optimization_20261101/final_recipe_v1/release_evidence_v2.json": {
+        "sha256": "b728221184d72db1181c91a54890ef5232c6bce4b8c46b487edf2a5e7099e49a",
+        "bytes": 9469
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/selection.json": {
-        "sha256": "7ae4490598072ba7e87bc7f70aee63b3fb731ea3586465b636cf57e802817609",
-        "bytes": 4394
+      ".qilin/rec_optimization_20261101/final_recipe_v1/selection.json": {
+        "sha256": "0a4987f36ec8d7e1cb6f983b974ee4ea81947141dfceeb52212f6e34b648a161",
+        "bytes": 3952
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/test/metrics.json": {
-        "sha256": "d6dd0b78b8e8d8e814d26d4e0526a0b7b303416c25159034f98e8600fd56a946",
-        "bytes": 3763
+      ".qilin/rec_optimization_20261101/final_recipe_v1/release_test/metrics.json": {
+        "sha256": "cea846b99304a15c9240610335c74e0934c006d568bd8f2c7726f100f9a2bb94",
+        "bytes": 13395
       },
-      ".qilin/rec_residual_test_independent_verification.json": {
-        "sha256": "148665f27026eb9f6e6c4680cfb1fef9d50efcfea6bd661d6ea2671d24733585",
-        "bytes": 11016
+      ".qilin/rec_optimization_20261101/final_recipe_v1/release_verification.json": {
+        "sha256": "d72710aaa5917117b188eea0af9dd45f34697af2429995fd55fc50277d4fd5eb",
+        "bytes": 1430
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/deployment_v2/selected_dssm.json": {
-        "sha256": "3e78a3f3618dae01a76b8dcccb1db37d17ff7c3bd2b9bb05b860379e03166966",
-        "bytes": 700
+      ".qilin/rec_optimization_20261101/final_recipe_v1/selected_dssm.json": {
+        "sha256": "5050b36fe131f02560c7fb141d036a68a160ec8f47b197e60c5653732cabff36",
+        "bytes": 909
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/deployment_v2/selected_index.json": {
-        "sha256": "1cb3abce1890c8abf050e6353bcde0e19a51fec78d44403a89cf3a538857dec2",
-        "bytes": 536
+      ".qilin/rec_optimization_20261101/dual128_release_v1/dssm_rec_residual.meta.json": {
+        "sha256": "a928eb598ffa3e6eafa3eebbc33fc261ebc8acf2162f5e8f35a352b7d932d180",
+        "bytes": 95631
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/allpast/winner_selected.parquet": {
-        "sha256": "75c25fa4fac2f20bc84989d34bcba26b0e794b39ae11fc46ddb4df4b78241d61",
-        "bytes": 45702835
+      ".qilin/rec_optimization_20261101/final_recipe_v1/selected_index.json": {
+        "sha256": "7ee5e156df51dcd0d33abfc5c96d3fa728d9ba25c85c88596816aa6507532784",
+        "bytes": 437
       },
-      ".qilin/rec_residual_lineage_verification.json": {
-        "sha256": "96b42d2e056d8adf9f0aaad6adc66012a094fc057ecd970298d7e8170736cc12",
-        "bytes": 1839
-      },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/plan.json": {
-        "sha256": "8f97a4e76a4b1d25a1ef1f9dd77b6b098f5763224a59344b8e36b97ab2d09fd8",
-        "bytes": 7693
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/dual128.parquet": {
+        "sha256": "639fded3b14a18eb5bf5b6455fd4004c66128b601aa3fd50ea5d09b1725d2db8",
+        "bytes": 75069498
       },
       "datasets/recommendation_test/train-00000-of-00001.parquet": {
         "sha256": "849d5cce5b2244a535568f72230cc98e4fabb23634b30c98365d8a64cdf0c5f0",
         "bytes": 10284114
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/graph.npz": {
+      ".qilin/rec_optimization_20261101/dual128_release_v1/dssm_rec_residual.pt": {
+        "sha256": "e6852fbac3547ffd7a13ae94d0c8af9e5a6ff867023236e490db49242e9426c5",
+        "bytes": 263656203
+      },
+      ".qilin/rec_image_signal_20261101/tower128_v1/dual_tower/epoch_3/item_vectors.bin": {
+        "sha256": "3d4a8ac043daaacb22faa7590638002dd403268791fb29ce4c2489df14579e43",
+        "bytes": 2031552512
+      },
+      ".qilin/rec_image_signal_20261101/tower128_v1/plan.json": {
+        "sha256": "33fde44602e9b55f3195948e9c738e5dcf4bac95334049c0cb7634fd9e21570b",
+        "bytes": 8806
+      },
+      ".qilin/rec_image_signal_20261101/tower128_v1/data_contract.json": {
+        "sha256": "60f186e0924917df37575b800a5caf2104a08f7008a0259edcb02f6ca4efab91",
+        "bytes": 1084
+      },
+      ".qilin/rec_image_signal_20261101/tower128_v1/training_summary.json": {
+        "sha256": "05ae15ca770585dd68e7a4f0bcc3f4a9019c4b102e084af4a3f3f8fb2a9b71fe",
+        "bytes": 1890
+      },
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/metrics.json": {
+        "sha256": "6770b7a9e59516c6c2c952b526c30568d7c6c70deee03354173e7f105d093caf",
+        "bytes": 13681
+      },
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/independent_acceptance.json": {
+        "sha256": "5ba4f3063991a959860efc3c8583d53cce09a887908edf2c2208ded8f0b1f116",
+        "bytes": 3447
+      },
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/generation_complete.json": {
+        "sha256": "1dc446d070a2b6825e2bcb331108e3df1c9a139a7847431b6f84db448920361d",
+        "bytes": 3762
+      },
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/supplement_source_closure_v3.json": {
+        "sha256": "97c4f5cf93196b36b1f89fa94217c6050ea062dab7cba57d018af874b389d1d5",
+        "bytes": 35768
+      },
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/root_source_closure_review_v3.json": {
+        "sha256": "3cd01aecd6a9d0c1b6023b7f950468b721fef0c75f0b7b10d84bc3c652705b5b",
+        "bytes": 932
+      },
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/finalize_generation_recovery.py": {
+        "sha256": "624196491abe91ffdcae3a633d5b9e7bf5b2a36e3d7b82393663d01545522c8d",
+        "bytes": 3408
+      },
+      ".qilin/rec_optimization_20261101/official_test_runtime_replay_v2/diagnostic_stage_artifacts.json": {
+        "sha256": "47bde757589814d2d0c3970125d0731db7e5138c067cbeda2eef7a24befe65e2",
+        "bytes": 5885
+      },
+      ".qilin/rec_optimization_20261101/final_recipe_v1/posttest_acceptance.json": {
+        "sha256": "381ebf5346d9cd897673a40526db44a78e7550ddfed6616af29240b0b4b3ba8f",
+        "bytes": 2962
+      },
+      ".qilin/rec_optimization_20261101/final_recipe_v1/validation_acceptance.json": {
+        "sha256": "812f6650d417d393c30660db09dfa9bfd782b3c54da63ae5b5f3cc6a73d55500",
+        "bytes": 2772
+      },
+      ".qilin/rec_optimization_20261101/final_model_selection_policy_v2.json": {
+        "sha256": "0d7b10b51d27908a626ca48ebedb26238c9830b899d6f74fcaf301219209ceb6",
+        "bytes": 5959
+      },
+      ".qilin/rec_optimization_20261101/test_release_guard_v1.json": {
+        "sha256": "298ffeeaa7962842e9de1890910576bc2b33e5c58c3cb342cc8a0d627f589cd1",
+        "bytes": 1748
+      },
+      ".qilin/rec_image_signal_20261101/tower128_v1/dual_tower/epoch_3/towers.pt": {
+        "sha256": "282f1b6630ea02a85a69cc3e87046ad44155f7e4af9cc42588af63b638e92308",
+        "bytes": 530815
+      },
+      ".qilin/rec_optimization_20261101/dual128_release_v1/release_manifest.json": {
+        "sha256": "f69a1185e70c86e2c30b6e1f25ef8378be6bcc74d106c1dbfba86a08464f320f",
+        "bytes": 3634
+      },
+      ".qilin/rec_optimization_20261101/learned_fusion_support_v1/prospective_all_past/cf_graph/graph.npz": {
         "sha256": "75b51b113c722c25110979dc15a18d97b6f35db616f18962795241d18d710b42",
         "bytes": 1701221
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/users.npy": {
+      ".qilin/rec_optimization_20261101/learned_fusion_support_v1/prospective_all_past/cf_graph/users.npy": {
         "sha256": "dd8f6ac3e125d24f5530f8a2bc72f851cc9ab95e0a3d83c3a1d8c43fa1e36048",
         "bytes": 74360
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/items.npy": {
+      ".qilin/rec_optimization_20261101/learned_fusion_support_v1/prospective_all_past/cf_graph/items.npy": {
         "sha256": "80e13cadd8ebdb946caaebb06e9762a109ed80fb0810543e6bf129988b54f2b9",
         "bytes": 3128104
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_v3/refit_cf_pretest/swing.npz": {
+      ".qilin/rec_optimization_20261101/learned_fusion_support_v1/prospective_all_past/cf_graph/swing.npz": {
         "sha256": "a4dc574750071a2a83dd6671726180f64d429b02ffd4297c8cf34113d162cec4",
         "bytes": 1246675
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/test/allpast_selected.parquet": {
-        "sha256": "beb6da0788301e1cb8501f0a1d5d55e3d8fccdde297353c251a8b738eac9fff7",
-        "bytes": 41043676
+      ".qilin/rec_signal_audit_20261101_v2/learned_fusion_v1/model.txt": {
+        "sha256": "3fb8e3f9bbb1a011d93f5efaa5e97e88723bba15ce59af9b0a589e776ab7fd16",
+        "bytes": 714926
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/selection.json": {
-        "sha256": "6c9a52d75ffb49253bc9bbd58dd74ca746e7455127f10f80f0761dfec274b435",
-        "bytes": 7609
+      ".qilin/rec_optimization_20261101/learned_fusion_support_v1/prospective_all_past/support.json": {
+        "sha256": "7a4e374b5a93c6f2907699ac63d5e7cec9bfde071a8339d05c31825f56e0c1f4",
+        "bytes": 10958409
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/plan.json": {
-        "sha256": "b97c38f22d8839044d958c0f94ec66eecf98284cce53143f672c6c34102cec80",
-        "bytes": 4758
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/pca/item_vectors.bin": {
+        "sha256": "30b50e9b23d64c10976f3b8fb94da2378a65c06c46a0462b105ea3fb3c5b2a79",
+        "bytes": 1015776256
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/metrics.json": {
-        "sha256": "3f93a40c679c071375ff38df5a85f3e89e80a4abc90cb9a3123d6379525db5f0",
-        "bytes": 5402
+      "outputs/evaluation/northstar_fix_20261031/rec_v3/dssm/item_ids.npy": {
+        "sha256": "9ce5070ae484c75479508a173ee7a779e2214455d776a9e65dbe23b72c7dc9c2",
+        "bytes": 15871632
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/test/independent_proof.json": {
-        "sha256": "fcb948146f02256ede6be3a0e747eea6a848ba60b76587fe63fc156f47058ddc",
-        "bytes": 5581
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/pca/mean.npy": {
+        "sha256": "bab55a4f883d6e8a4758b1beb5d911377cf0543d8998159155b35f1848d5017a",
+        "bytes": 3200
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/validation_independent_proof.json": {
-        "sha256": "433a084f72d64e68722ff53dc1ab0105f2d75aa16dd8a69e9e5ff631df4cda0a",
-        "bytes": 494
+      "outputs/evaluation/northstar_fix_20261031/rec_residual_20261031_v2/pca/components.npy": {
+        "sha256": "8a192697005b16e8f22f864928aa53c42f409f777f34d0587b94eb25348787f5",
+        "bytes": 393344
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/root_test_approval.json": {
-        "sha256": "b4280620dac2f688a51185083262739c54badf92bea104bb03ef23d5c6ff2259",
-        "bytes": 250
+      ".qilin/rec_signal_audit_20261101_v2/learned_fusion_v1/plan.json": {
+        "sha256": "edc3e658c8c5774a85535c6c3575a548d8a84ffbc776e867a7bdb3beb0053963",
+        "bytes": 4522
       },
-      "scripts/select_residual_fusion.py": {
-        "sha256": "45bc44eb0dcb8d78d968a19a0cd76639c31942b49445563ff77d5ce048ef9984",
-        "bytes": 16950
+      ".qilin/rec_optimization_20261101/final_recipe_v1/main_runtime_equivalence.json": {
+        "sha256": "c66afc47292e2748adf32bbee41a1cde61579cabf2e98bdd8ecfaccc7cabd83b",
+        "bytes": 12486
       },
-      "src/recall/weighted_context_fusion.py": {
-        "sha256": "715c5e8a30cb9c844b4b8e6eb38d7262e34c8ed629cfebfd242820b2a5b62a88",
-        "bytes": 2474
+      ".qilin/rec_optimization_20261101/paged_metadata_equivalence_v1/equivalence.json": {
+        "sha256": "b83e99f06d2995722e14b34dd21f15cbc108f3279bb1a450e174d3f53ff266d0",
+        "bytes": 15983
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/index/dssm_rec_hard_ivfpq_meta.json": {
-        "sha256": "dd7ba98efa76e379b3710a3ac8d48883c4f63c8f9fadeaa34f420325b0a89f56",
-        "bytes": 499
+      ".qilin/rec_optimization_20261101/final_suite_after_paging.log": {
+        "sha256": "3103d2b55618b9f3edd82fd077716aa265bca4f5613c8cfafb72713e41d0a979",
+        "bytes": 13832
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/graph.npz": {
+      ".qilin/rec_optimization_20261101/final_recipe_v1/validation_snapshot.json": {
+        "sha256": "f4d87bb1f09f35b4698eb0de95085126fe0aba78f3bcbc116cc177280358eabd",
+        "bytes": 920028
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/learned_fusion/model.txt": {
+        "sha256": "3fb8e3f9bbb1a011d93f5efaa5e97e88723bba15ce59af9b0a589e776ab7fd16",
+        "bytes": 714926
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/learned_fusion/support.json": {
+        "sha256": "7a4e374b5a93c6f2907699ac63d5e7cec9bfde071a8339d05c31825f56e0c1f4",
+        "bytes": 10958409
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/learned_fusion/item_pca.bin": {
+        "sha256": "30b50e9b23d64c10976f3b8fb94da2378a65c06c46a0462b105ea3fb3c5b2a79",
+        "bytes": 1015776256
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/learned_fusion/item_pca_ids.npy": {
+        "sha256": "9ce5070ae484c75479508a173ee7a779e2214455d776a9e65dbe23b72c7dc9c2",
+        "bytes": 15871632
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/learned_fusion/mean.npy": {
+        "sha256": "bab55a4f883d6e8a4758b1beb5d911377cf0543d8998159155b35f1848d5017a",
+        "bytes": 3200
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/learned_fusion/components.npy": {
+        "sha256": "8a192697005b16e8f22f864928aa53c42f409f777f34d0587b94eb25348787f5",
+        "bytes": 393344
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/index/dssm_rec_hard_ivfpq_meta.json": {
+        "sha256": "65caf0a7e0f3a69bc5fb5e55dc6546353e7fe1eef6ad9bf2d4b2bb7d1a5cfd8b",
+        "bytes": 623
+      },
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/cf/graph.npz": {
         "sha256": "75b51b113c722c25110979dc15a18d97b6f35db616f18962795241d18d710b42",
         "bytes": 1701221
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/users.npy": {
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/cf/users.npy": {
         "sha256": "dd8f6ac3e125d24f5530f8a2bc72f851cc9ab95e0a3d83c3a1d8c43fa1e36048",
         "bytes": 74360
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/items.npy": {
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/cf/items.npy": {
         "sha256": "80e13cadd8ebdb946caaebb06e9762a109ed80fb0810543e6bf129988b54f2b9",
         "bytes": 3128104
       },
-      "outputs/deploy/rec/hard/bundles/northstar_fix_20261031_residual_v1/recall/cf/swing.npz": {
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/recall/cf/swing.npz": {
         "sha256": "a4dc574750071a2a83dd6671726180f64d429b02ffd4297c8cf34113d162cec4",
         "bytes": 1246675
       },
@@ -1639,7 +1885,7 @@
         "sha256": "46bdc6fdb04a2788e6ae4c489c7823d7bbedee91d2210171ab65e94ec6d852bc",
         "bytes": 717947
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/rank/gbdt.txt": {
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/rank/gbdt.txt": {
         "sha256": "46bdc6fdb04a2788e6ae4c489c7823d7bbedee91d2210171ab65e94ec6d852bc",
         "bytes": 717947
       },
@@ -1647,7 +1893,7 @@
         "sha256": "6b3560323cf5a46ce59680beffdfa91811eb9fde9874f954e8502770a08c5d0f",
         "bytes": 7113253
       },
-      "outputs/evaluation/northstar_fix_20261031/rec_residual_fusion_20261031_v1/deployment_v1/rank/dien.pt": {
+      "outputs/deploy/rec/hard/bundles/rec_content_adapter_20261101_candidate_v1/rank/dien.pt": {
         "sha256": "6b3560323cf5a46ce59680beffdfa91811eb9fde9874f954e8502770a08c5d0f",
         "bytes": 7113253
       },
@@ -1668,12 +1914,16 @@
         "bytes": 7343
       },
       "scripts/evaluation_comparisons.py": {
-        "sha256": "90bd0f1e95f971a11f172bf2ef76d43326ab9c32e0fad2c51e4f0d40e3f8f95c",
-        "bytes": 9640
+        "sha256": "f8f1c12e02af53fe6602c7279f2b758b8c1a1752af52f7e86fdb696d67044c4e",
+        "bytes": 11451
+      },
+      "scripts/evaluation_coverage.py": {
+        "sha256": "3b6b49e913d321a147e6a8ff97f6f2cead60676e3a7f16f485851cf2e4547031",
+        "bytes": 3423
       },
       "scripts/sync_evaluation_metrics.py": {
-        "sha256": "679c703980f7dca1975737e4259a7485a14918bd8b4d891cf6b43c08cf82e36e",
-        "bytes": 36771
+        "sha256": "c7a8b5bf96eacf37e7d6cd07c8f067c406edd2e2cc9b4d3d41c957106ad7bce2",
+        "bytes": 46476
       }
     },
     "producer": "scripts/sync_evaluation_metrics.py",
