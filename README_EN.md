@@ -43,8 +43,20 @@ Qilin is organized around the common serving path of **data preprocessing → fe
 
 ### 0.2 Results
 
-- Online serving
-  - APIs return total and per-stage latency
+- Online service (local sequential HTTP client benchmark)
+  - Environment: WSL2, Ryzen 7 9700X (8 vCPUs), RTX 5070 Ti 16GB; one Uvicorn worker, four compute threads, 20 items per page. Each scene received 32 warm-up requests, followed by 200 sequential cache-hit requests and 200 sequential fresh-inference requests.
+  - Client timings below include the complete HTTP response and JSON decoding (ms), excluding image downloads. Cache state, model bundle and non-degraded responses were checked per request.
+
+  | Scene | Mode | Samples | P50 | P95 | P99 | HTTP error rate |
+  | --- | --- | ---: | ---: | ---: | ---: | ---: |
+  | Search | Cache hit | 200 | 16.4 | 20.5 | 24.3 | 0/200 (0%) |
+  | Search | Fresh inference (feed/stage cache miss) | 200 | 223.6 | 496.6 | 654.8 | 0/200 (0%) |
+  | Recommendation | Cache hit | 200 | 13.7 | 21.7 | 27.9 | 0/200 (0%) |
+  | Recommendation | Fresh inference (feed/stage cache miss) | 200 | 228.9 | 369.4 | 425.1 | 0/200 (0%) |
+
+  - Separate process-cold diagnostic: 10 fresh processes per scene. First HTTP request P50/P95/P99 after the API starts listening: **9.13/18.27/19.00 s** for Search and **15.69/29.42/30.24 s** for Recommendation, with 0/10 errors each. Process-to-listener boot P50 was separately measured at 2.96/4.13 s.
+  - OS file caches were not flushed; cold tail percentiles from 10 restarts are descriptive only. The GPU was shared. Recommendation is currently recall-only, excluding disabled learned pre-ranking/ranking. These are local measurements of the current version, not a production SLO or a stable 150ms claim.
+
 - Search offline metrics
   - End-to-end (full test, known clicks): `HitRate@10 = 0.5523`, `Recall@100 = 0.6371`, `MRR@100 = 0.2905`, `known_positive_NDCG@10 = 0.2225`; Recall@100 relative lift vs frozen baseline +4.17%
   - Ranking (logged-exposure diagnostic): `NDCG@10 = 0.5468`, `AUC = 0.5813`, `GAUC = 0.5671`
