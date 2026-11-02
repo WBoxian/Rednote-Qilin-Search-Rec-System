@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse, hashlib, json
 from pathlib import Path
 import duckdb
-import numpy as np
 import pandas as pd
 
 ROOT=Path(__file__).resolve().parents[1]

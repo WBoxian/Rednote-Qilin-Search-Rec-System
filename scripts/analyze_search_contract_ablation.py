@@ -1,7 +1,7 @@
 """Validation-only sensitivity of a frozen Search model to its serving contract."""
 from pathlib import Path
 import argparse,json
-import faiss,numpy as np,pandas as pd,torch
+import faiss, pandas as pd, torch
 from evaluate_search_index import inputs,DEFAULT,ROOT
 from optimize_rec_retrieval import raw_model_frame,encode_requests,retrieve_index,metrics,write_json
 from recall import dssm_trainer as trainer

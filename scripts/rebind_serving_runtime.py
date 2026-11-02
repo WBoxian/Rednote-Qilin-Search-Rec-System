@@ -2,7 +2,7 @@
 from __future__ import annotations
 import argparse,copy,json,subprocess
 from pathlib import Path
-from backend.online.bundle import bundle_identity,file_sha256,resolve_asset,required_asset_names,validate_manifest,verify_asset
+from backend.online.bundle import bundle_identity, file_sha256, resolve_asset, validate_manifest, verify_asset
 
 ROOT=Path(__file__).resolve().parents[1]
 

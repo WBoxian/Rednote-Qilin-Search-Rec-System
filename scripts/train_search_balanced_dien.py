@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 from training.dien_ranker import DIENRanker
 from train_rank_stack import contexts,request_batches,score_dien,metrics,group_minmax,digest,write_json
 ROOT=Path(__file__).resolve().parents[1]

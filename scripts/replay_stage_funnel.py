@@ -1,5 +1,5 @@
 """全候选固定漏斗重放：只量化已知点击正例留存，不把未曝光物品当负例。"""
-import argparse, gc, hashlib, json, os, time
+import argparse, json, os, time
 from pathlib import Path
 import duckdb, numpy as np, pandas as pd, torch
 from backend.online.pipeline import SceneServingState

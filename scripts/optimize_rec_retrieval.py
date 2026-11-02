@@ -19,7 +19,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 from scipy import sparse
-from training.history import HISTORY_ORDER, recent_history_ids
+from training.history import HISTORY_ORDER
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "outputs/evaluation/optimization_20261031/rec"

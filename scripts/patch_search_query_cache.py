@@ -1,5 +1,5 @@
 """Repair only five normalized search-query cache misses; derive a new full result without editing originals."""
-import argparse,copy,json,hashlib,time
+import argparse, copy, json
 from pathlib import Path
 import duckdb,numpy as np,pandas as pd,torch
 from backend.online.pipeline import SceneServingState

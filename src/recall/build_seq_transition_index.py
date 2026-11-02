@@ -26,14 +26,6 @@ MAX_HIST_LEN = 20
 DEFAULT_TOPK = 200
 
 
-def _to_hist_list(raw) -> list[int]:
-    if isinstance(raw, np.ndarray):
-        return [int(x) for x in raw.tolist() if int(x) >= 0]
-    if isinstance(raw, list):
-        return [int(x) for x in raw if int(x) >= 0]
-    return []
-
-
 def build_seq_transition_for_scene(
     scene: str = "rec",
     split: str = "train",

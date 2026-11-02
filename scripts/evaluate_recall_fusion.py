@@ -1,4 +1,4 @@
-import argparse, ast, json, hashlib, time
+import argparse, ast, json, hashlib
 import pandas as pd
 from pathlib import Path
 import duckdb, numpy as np

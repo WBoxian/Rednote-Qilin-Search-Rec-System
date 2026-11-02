@@ -9,7 +9,6 @@ import argparse
 import hashlib
 import json
 import math
-import time
 from pathlib import Path
 
 import duckdb
@@ -20,7 +19,7 @@ import pyarrow.parquet as pq
 from backend.offline.evaluate_full_test import confidence, sha256
 from backend.online.item_features import get_item_feature_store
 from backend.online.ranking.stack import shared_mapped_vectors
-from training.rank_stack import RequestContext, group_minmax
+from training.rank_stack import RequestContext
 
 ROOT = Path(__file__).resolve().parents[1]
 EPS = 1e-12

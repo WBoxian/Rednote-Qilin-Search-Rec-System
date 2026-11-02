@@ -1,6 +1,6 @@
 """Search lexical ranking: train-only temporal selection, legal feature ablations."""
 from __future__ import annotations
-import argparse,hashlib,json,time
+import argparse, json, time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import duckdb
@@ -9,8 +9,7 @@ import numpy as np
 import pandas as pd
 from backend.online.preranking.service import build_search_item_features,SEARCH_ITEM_FEATURES
 from backend.online.search_query import normalize_query_text,segment_query_terms,build_search_query_resources
-from backend.online.item_features import get_item_feature_store
-from train_rank_stack import fit_tree,tree_predict,metrics,contexts,digest,write_json
+from train_rank_stack import fit_tree, tree_predict, metrics, digest, write_json
 ROOT=Path(__file__).resolve().parents[1]
 BASE=ROOT/'outputs/evaluation/optimization_20261031/search_rank'
 DEFAULT=ROOT/'outputs/evaluation/optimization_20261031/search_rank_lexical'
