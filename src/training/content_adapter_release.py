@@ -155,6 +155,77 @@ def _training_steps(heads, summary, plan, hashes):
     return identity, epoch, steps
 
 
+def _pretraining_steps(heads, summary, plan, identity, fine_tuning_steps, plan_path, register):
+    """Bind optional pretraining blocks without relabeling them as fine-tuning epochs."""
+    fields = ("pretrained_checkpoint_path", "pretrained_checkpoint_sha256",
+              "pretraining_successful_updates", "total_successful_updates")
+    config = plan.get("pretraining")
+    if config is None:
+        if any(key in heads for key in fields) or summary.get("pretraining_trials"):
+            raise ValueError("Pretrained heads require a bound pretraining plan")
+        return [], {}
+    if not isinstance(config, Mapping):
+        raise ValueError("Pretraining plan must be an object")
+    _no_test_read(config)
+    expected = _positive(config.get("steps"), "Planned pretraining steps")
+    blocks = _positive(config.get("logical_blocks"), "Pretraining logical blocks")
+    arm = heads.get("experiment_arm")
+    if not isinstance(arm, str) or not arm:
+        raise ValueError("Pretrained heads require an experiment_arm")
+    if summary.get("optimizer_reset_between_phases") is not True:
+        raise ValueError("Pretraining must bind the optimizer reset before fine-tuning")
+    records = summary.get("pretraining_trials")
+    if not isinstance(records, list) or any(not isinstance(row, Mapping) for row in records):
+        raise ValueError("Pretraining requires logical-block records")
+    selected = {}
+    for row in records:
+        if (_identity(row, "Pretraining record") != identity
+                or row.get("experiment_arm") != arm):
+            continue
+        block = _positive(row.get("block"), "Pretraining block")
+        if block in selected:
+            raise ValueError("Duplicate pretraining block")
+        selected[block] = row
+    if set(selected) != set(range(1, blocks + 1)):
+        raise ValueError("Pretraining blocks must be continuous and complete")
+    steps = []
+    for block in range(1, blocks + 1):
+        row = selected[block]
+        counts = [_positive(row[key], key) for key in ("updates", "batches") if key in row]
+        if not counts or len(set(counts)) != 1:
+            raise ValueError("Pretraining block updates/batches disagree")
+        _sha_value(row.get("weights_sha256"), "Pretraining weights")
+        steps.append(counts[0])
+    total = sum(steps)
+    if total != expected or _positive(heads.get("pretraining_successful_updates"),
+                                     "Recorded pretraining updates") != total:
+        raise ValueError("Pretraining updates differ from the frozen plan")
+    if _positive(heads.get("total_successful_updates"), "Total updates") != total + sum(fine_tuning_steps):
+        raise ValueError("Total updates omit or double-count a training stage")
+    paths = config.get("checkpoint_paths")
+    if not isinstance(paths, Mapping) or not isinstance(paths.get(arm), str):
+        raise ValueError("Pretraining checkpoint path must be declared in the plan")
+    declared = heads.get("pretrained_checkpoint_path")
+    if not isinstance(declared, str) or not declared:
+        raise ValueError("Actual heads must bind their pretraining checkpoint path")
+    def resolve(value):
+        path = Path(value)
+        return (path if path.is_absolute() else plan_path.parent / path).resolve()
+    checkpoint = resolve(declared)
+    if checkpoint != resolve(paths[arm]):
+        raise ValueError("Actual pretraining path differs from the frozen plan")
+    actual_sha = register("pretraining_checkpoint", checkpoint)
+    if (_sha_value(heads.get("pretrained_checkpoint_sha256"), "Pretraining checkpoint") != actual_sha
+            or _sha_value(selected[blocks]["weights_sha256"], "Last pretraining block") != actual_sha):
+        raise ValueError("Pretraining checkpoint and training records disagree")
+    return steps, {
+        "content_pretraining_checkpoint_sha256": actual_sha,
+        "content_pretraining_steps_by_block": steps,
+        "content_pretraining_gradient_updates": total,
+        "content_finetuning_gradient_updates": sum(fine_tuning_steps),
+    }
+
+
 def _heads(payload):
     expected = {"net.0.weight", "net.0.bias", "net.2.weight", "net.2.bias"}
     result = {}
@@ -274,6 +345,8 @@ def export_content_adapter_release(*, base_checkpoint, original_learned_checkpoi
     summary = _json(paths["training_summary"])
     _no_test_read(contract)
     identity, epoch, steps = _training_steps(heads, summary, plan, hashes)
+    pretraining_steps, pretraining_meta = _pretraining_steps(
+        heads, summary, plan, identity, steps, paths["training_plan"], register)
     input_dim, mapped = _heads(heads)
     _pca_sources(plan, paths["training_plan"], base, register)
     model = AdaptedResidualDSSMModel(
@@ -291,10 +364,13 @@ def export_content_adapter_release(*, base_checkpoint, original_learned_checkpoi
     model.eval()
     _same({key: model.state_dict()[key] for key in state}, state, "Preserved base tensors")
     _same({key: model.state_dict()[key] for key in mapped}, mapped, "Actual adapter tensors")
-    total_steps = sum(steps)  # One optimizer step updates both towers, never multiply by two.
+    # Each optimizer update affects both towers and is counted once.
+    total_steps = sum(steps) + sum(pretraining_steps)
+    update_scope = ("content_adapter_pretraining_and_finetuning" if pretraining_steps
+                    else "content_adapter_stage_only")
     release_meta = {
         **dict(meta), "gradient_updates": total_steps,
-        "gradient_update_scope": "content_adapter_stage_only", "packaging_gradient_updates": 0,
+        "gradient_update_scope": update_scope, "packaging_gradient_updates": 0,
         "base_recorded_gradient_updates": meta.get("gradient_updates"),
         "frozen_learned_checkpoint_sha256": hashes["original_learned_checkpoint"],
         "actual_training_checkpoint_sha256": hashes["towers_checkpoint"],
@@ -303,6 +379,7 @@ def export_content_adapter_release(*, base_checkpoint, original_learned_checkpoi
         "content_training_summary_sha256": hashes["training_summary"],
         "content_training_identity": identity, "content_training_epoch": epoch,
         "content_training_steps_by_epoch": steps,
+        **pretraining_meta,
     }
     # Validate the same complete family contract the shared factory will load.
     model_from_checkpoint({"state_dict": model.state_dict(),
@@ -347,8 +424,9 @@ def export_content_adapter_release(*, base_checkpoint, original_learned_checkpoi
             "version": 1, "status": "packaged_not_deployed", "model_family": CONTENT_MODEL_FAMILY,
             "architecture": model.content_metadata(), "retrieval_dim": 256, "learned_weight": .25,
             "training_identity": identity, "epoch": epoch,
-            "gradient_updates": total_steps, "gradient_update_scope": "content_adapter_stage_only",
+            "gradient_updates": total_steps, "gradient_update_scope": update_scope,
             "optimizer_steps_by_epoch": steps, "packaging_gradient_updates": 0,
+            **pretraining_meta,
             "sources": sources, "exported_files": exports,
             "exported_full_checkpoint_sha256": saved_meta["exported_full_checkpoint_sha256"],
             "input_hashes_verified_unchanged": True, "training_performed_by_exporter": False,

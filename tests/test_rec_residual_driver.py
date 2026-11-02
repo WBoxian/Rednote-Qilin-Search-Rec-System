@@ -304,5 +304,122 @@ class ContentAdapterReleaseTests(unittest.TestCase):
             self.assertEqual(sentinel.read_text(), 'keep')
 
 
+
+
+def _staged_release_fixture(root):
+    """Real two-block pretraining, optimizer reset, and two fine-tuning updates."""
+    from training.rec_content_adapter import ContentAdapter
+    fixture = _TrainedReleaseFixture(root)
+    arm = "toy_stage"
+    pretrained = fixture.root / "pretraining_block_2.pt"
+    fixture.plan["pretraining"] = dict(steps=2, logical_blocks=2,
+        checkpoint_paths={arm: str(pretrained)})
+    _release_json(fixture.plan_path, fixture.plan)
+    torch.manual_seed(7)
+    query, item = ContentAdapter(), ContentAdapter()
+    q = torch.nn.functional.normalize(torch.randn(8, 128), dim=1)
+    targets = torch.nn.functional.normalize(torch.randn(8, 128), dim=1)
+    def step(optimizer):
+        optimizer.zero_grad()
+        loss = torch.nn.functional.cross_entropy(query(q) @ item(targets).T / .07, torch.arange(8))
+        loss.backward()
+        optimizer.step()
+    def state(**values):
+        return dict(query={k: v.detach().clone() for k, v in query.state_dict().items()},
+            item={k: v.detach().clone() for k, v in item.state_dict().items()},
+            variant="dual_tower", experiment_arm=arm,
+            training_plan_sha256=_release_sha(fixture.plan_path),
+            data_contract_sha256=_release_sha(fixture.contract_path), **values)
+    optimizer = torch.optim.AdamW(list(query.parameters()) + list(item.parameters()), lr=.001)
+    pretraining = []
+    for block in (1, 2):
+        step(optimizer)
+        path = fixture.root / f"pretraining_block_{block}.pt"
+        torch.save(state(phase="pretraining", block=block), path)
+        pretraining.append(dict(variant="dual_tower", experiment_arm=arm, block=block,
+            updates=1, batches=1, weights_sha256=_release_sha(path)))
+    optimizer = torch.optim.AdamW(list(query.parameters()) + list(item.parameters()), lr=.001)
+    assert not optimizer.state
+    trials = []
+    for epoch in (1, 2):
+        step(optimizer)
+        fixture.heads = state(phase="finetuning", epoch=epoch,
+            pretrained_checkpoint_path=str(pretrained),
+            pretrained_checkpoint_sha256=_release_sha(pretrained),
+            pretraining_successful_updates=2, total_successful_updates=2 + epoch)
+        path = fixture.root / f"finetuning_epoch_{epoch}.pt"
+        torch.save(fixture.heads, path)
+        trials.append(dict(variant="dual_tower", experiment_arm=arm, epoch=epoch,
+            updates=1, batches=1, weights_sha256=_release_sha(path)))
+    fixture.summary = dict(official_test_read=False, trials=trials,
+        pretraining_trials=pretraining, optimizer_reset_between_phases=True)
+    fixture.refresh()
+    return fixture
+
+
+class StagedContentAdapterReleaseTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.old_threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+
+    @classmethod
+    def tearDownClass(cls):
+        torch.set_num_threads(cls.old_threads)
+
+    def test_pretraining_and_finetuning_count_once_with_real_epoch_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _staged_release_fixture(tmp)
+            path = export_content_adapter_release(**fixture.arguments())
+            manifest = json.loads(path.read_text())
+            self.assertEqual(manifest["gradient_updates"], 4)
+            self.assertEqual(manifest["epoch"], 2)
+            self.assertEqual(manifest["optimizer_steps_by_epoch"], [1, 1])
+            self.assertEqual(manifest["content_pretraining_steps_by_block"], [1, 1])
+            self.assertEqual(manifest["content_finetuning_gradient_updates"], 2)
+            self.assertEqual(manifest["gradient_update_scope"], "content_adapter_pretraining_and_finetuning")
+            self.assertEqual(manifest["sources"]["pretraining_checkpoint"]["sha256"],
+                fixture.heads["pretrained_checkpoint_sha256"])
+            model = model_from_checkpoint(path.parent / "dssm_rec_residual.pt")
+            self.assertEqual(model.checkpoint_meta["gradient_updates"], 4)
+            self.assertEqual(model.checkpoint_meta["content_training_epoch"], 2)
+            self.assertEqual(model.checkpoint_meta["content_pretraining_gradient_updates"], 2)
+            self.assertEqual(manifest["packaging_gradient_updates"], 0)
+
+    def test_staged_lineage_rejects_bad_blocks_counts_reset_and_paths(self):
+        for mutation in ("gap", "duplicate", "conflicting", "total", "pretraining_count", "reset", "path", "arm"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                fixture = _staged_release_fixture(tmp)
+                rows = fixture.summary["pretraining_trials"]
+                if mutation == "gap": rows.pop(0)
+                elif mutation == "duplicate": rows.append(dict(rows[0]))
+                elif mutation == "conflicting": rows[0]["batches"] = 2
+                elif mutation == "total": fixture.heads["total_successful_updates"] = 5
+                elif mutation == "pretraining_count": fixture.heads["pretraining_successful_updates"] = 3
+                elif mutation == "reset": fixture.summary["optimizer_reset_between_phases"] = False
+                elif mutation == "path": fixture.heads["pretrained_checkpoint_path"] = str(fixture.original)
+                else: rows[0]["experiment_arm"] = "another_arm"
+                fixture.refresh()
+                with self.assertRaises(ValueError): export_content_adapter_release(**fixture.arguments())
+                self.assertFalse(fixture.arguments()["destination"].exists())
+
+    def test_changed_pretraining_checkpoint_rejected_before_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _staged_release_fixture(tmp)
+            path = Path(fixture.heads["pretrained_checkpoint_path"])
+            path.write_bytes(path.read_bytes() + b"changed")
+            with self.assertRaises(ValueError): export_content_adapter_release(**fixture.arguments())
+            self.assertFalse(fixture.arguments()["destination"].exists())
+
+    def test_pretraining_cannot_be_silently_dropped_by_legacy_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _staged_release_fixture(tmp)
+            fixture.plan.pop("pretraining")
+            fixture.refresh()
+            with self.assertRaisesRegex(ValueError, "bound pretraining plan"):
+                export_content_adapter_release(**fixture.arguments())
+            self.assertFalse(fixture.arguments()["destination"].exists())
+
+
 if __name__ == '__main__':
     unittest.main()
