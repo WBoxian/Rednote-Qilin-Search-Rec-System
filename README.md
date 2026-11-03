@@ -257,9 +257,9 @@ uv run python src/backend/online/api/main.py
 
 精排采用 DIEN 路线，负责对粗排候选做更细的用户兴趣建模，并结合序列行为进一步重排。
 
-## 5. Redis 的作用
+## 5. Redis
 
-### 5.1 Redis 在项目里存什么
+### 5.1 Redis 缓存
 
 - `qilin:user:{user_idx}:profile`：用户画像缓存
 - `qilin:user:{user_idx}:{scene}:requests`：最近请求序列

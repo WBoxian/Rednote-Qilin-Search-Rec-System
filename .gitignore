@@ -42,5 +42,9 @@ src/backend/online/deploy/
 *.pth
 *.pt
 
+# Test scripts
+tests/
+scripts/
+
 *storybook.log
 storybook-static
