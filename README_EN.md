@@ -213,4 +213,6 @@ outputs/serving_cache/{scene}/{tag}/
 
 [![Star History Chart](https://api.star-history.com/svg?repos=WBoxian/Rednote-Qilin-Search-Rec-System&type=Date)](https://star-history.com/#WBoxian/Rednote-Qilin-Search-Rec-System&Date)
 
+## 8. License
 
+This project is licensed under the [MIT License](LICENSE).
