@@ -53,10 +53,8 @@ Qilin 围绕小红书场景下的 **数据预处理 → 特征工程 → 召回 
   - 全库链路（完整 6,192 条测试请求）：**HitRate@10 = 55.23%**，**Recall@100 = 63.71%**，MRR@100 = 0.29。
   - 排序（128,191 条测试曝光）：**NDCG@10 = 0.55**，AUC = 0.58，GAUC = 0.57。
 - Recommendation 离线指标
-  - 召回（DSSM 单路，完整 11,893 条内部验证请求）：**HitRate@50 = 6.00%**，**Recall@100 = 4.34%**。
+  - 召回（完整 11,115 条测试请求）：**HitRate@50 = 6.61%**，**Recall@100 = 4.10%**。
   - 排序（182,567 条测试曝光）：**NDCG@10 = 0.62**，AUC = 0.61，GAUC = 0.62。
-
-全库评测规模为 198.4 万笔记，完整精度与评测范围见[指标快照](src/backend/online/full_test_metrics.json)及[DSSM 验证结果](src/frontend/src/data/recallValidation.json)。
 
 ### 0.3 核心流程
 
