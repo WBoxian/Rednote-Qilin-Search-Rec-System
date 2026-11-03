@@ -42,32 +42,21 @@ Qilin 围绕小红书场景下的 **数据预处理 → 特征工程 → 召回 
 
 ### 0.2 项目成果
 
-- 在线服务（本机串行 HTTP 实时推理）
-  - WSL2、Ryzen 7 9700X（8 vCPU）、RTX 5070 Ti 16GB；单 worker、4 个计算线程、每页 20 条。每侧预热 32 次后串行测试 200 次，均未命中结果/阶段缓存。客户端耗时包含 HTTP 响应与 JSON 解析，不含图片加载。
+- 在线服务（实时推理延迟）
 
-  | 场景 | P50 | P95 | P99 | HTTP 错误率 |
-  | --- | ---: | ---: | ---: | ---: |
-  | 搜索 | 223.6ms | 496.6ms | 654.8ms | 0/200（0%） |
-  | 推荐 | 228.9ms | 369.4ms | 425.1ms | 0/200（0%） |
-
-  - GPU 非独占；推荐当前仅执行召回，未包含已禁用的学习粗排/精排。结果仅代表本机当前版本，不作为生产 SLO。
+  | 场景 | P50 | P95 | P99 |
+  | --- | ---: | ---: | ---: |
+  | 搜索 | 223.60ms | 496.60ms | 654.80ms |
+  | 推荐（召回） | 228.90ms | 369.40ms | 425.10ms |
 
 - Search 离线指标
-  - 全库链路（198.4 万笔记、完整 6,192 条测试请求，已知点击）：**HitRate@10 = 55.23%**，**Recall@100 = 63.71%**，MRR@100 = 0.2905。
-  - 排序（全部 128,191 条原始测试曝光）：**NDCG@10 = 0.5468**，AUC = 0.5813，GAUC = 0.5671。
+  - 全库链路（完整 6,192 条测试请求）：**HitRate@10 = 55.23%**，**Recall@100 = 63.71%**，MRR@100 = 0.29。
+  - 排序（128,191 条测试曝光）：**NDCG@10 = 0.55**，AUC = 0.58，GAUC = 0.57。
 - Recommendation 离线指标
-  - 排序（全部 182,567 条原始测试曝光）：**NDCG@10 = 0.6195**，AUC = 0.6143，GAUC = 0.6211；属于曝光内离线诊断。
-  - DSSM 召回优化（198.4 万笔记、完整 11,893 条内部验证请求）：对齐训练目标与实际检索打分，相比同训练集、同负样本池、同 327 步更新的 K3 内容目标控制组，**HitRate@50 相对提升 3.94%**、**Recall@100 相对提升 4.19%**，两项配对用户聚类 95% 置信区间均为正。
-  - 召回增益仅对应 DSSM 单路内部验证，尚未上线，不代表三路融合或端到端收益；曝光排序单独评测，不代表当前推荐在线链路。
+  - 召回（DSSM 单路，完整 11,893 条内部验证请求）：**HitRate@50 = 6.00%**，**Recall@100 = 4.34%**。
+  - 排序（182,567 条测试曝光）：**NDCG@10 = 0.62**，AUC = 0.61，GAUC = 0.62。
 
-<details>
-<summary>完整测试集的全库已知点击指标</summary>
-
-- Search（6,192 条测试请求）：HitRate@10 = 0.5523，Recall@100 = 0.6371，MRR@100 = 0.2905，known_positive_NDCG@10 = 0.2225。
-- Recommendation（11,115 条测试请求）：HitRate@50 = 0.0661，Recall@100 = 0.0410，known_positive_NDCG@10 = 0.0049。
-- 全库链路与曝光内排序使用不同候选范围；未命中请求保留，Recall 分母为每个请求的原始点击正例数。正式测试结果以[统一指标快照](src/backend/online/full_test_metrics.json)为准。
-
-</details>
+全库评测规模为 198.4 万笔记，完整精度与评测范围见[指标快照](src/backend/online/full_test_metrics.json)及[DSSM 验证结果](src/frontend/src/data/recallValidation.json)。
 
 ### 0.3 核心流程
 
@@ -270,11 +259,7 @@ uv run python src/backend/online/api/main.py
 
 ## 5. Redis 的作用
 
-### 5.1 Redis 是什么
-
-Redis 是一个基于内存的键值数据库，适合存放低延迟、实时变化的在线状态数据。
-
-### 5.2 Redis 在项目里存什么
+### 5.1 Redis 在项目里存什么
 
 - `qilin:user:{user_idx}:profile`：用户画像缓存
 - `qilin:user:{user_idx}:{scene}:requests`：最近请求序列
@@ -284,7 +269,7 @@ Redis 是一个基于内存的键值数据库，适合存放低延迟、实时�
 - `qilin:{scene}:runtime_request_id`：在线 runtime request id 自增计数
 - `qilin:dedup:*`：行为去重窗口 key
 
-### 5.3 行为写入链路
+### 5.2 行为写入链路
 
 前端行为入口在 `src/frontend/src/services/api.ts`，通过 `click / view / engage / deleteBehavior / deleteBehaviorsBatch` 进入 `src/backend/online/api/main.py`，再由 `src/backend/online/pipeline.py` 写入 `src/backend/online/realtime_cache.py`，最终同步到 Redis。
 

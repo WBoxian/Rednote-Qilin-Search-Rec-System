@@ -43,32 +43,21 @@ Qilin is organized around the common serving path of **data preprocessing → fe
 
 ### 0.2 Results
 
-- Online service (local sequential fresh-inference HTTP)
-  - WSL2, Ryzen 7 9700X (8 vCPUs), RTX 5070 Ti 16GB; one worker, four compute threads, 20 items per page. Each scene received 32 warmups followed by 200 sequential requests with no feed/stage cache hits. Client timings include the complete HTTP response and JSON decoding, excluding image downloads.
+- Online service (fresh-inference latency)
 
-  | Scene | P50 | P95 | P99 | HTTP error rate |
-  | --- | ---: | ---: | ---: | ---: |
-  | Search | 223.6ms | 496.6ms | 654.8ms | 0/200 (0%) |
-  | Recommendation | 228.9ms | 369.4ms | 425.1ms | 0/200 (0%) |
-
-  - The GPU was shared. Recommendation currently runs recall only, excluding disabled learned pre-ranking/ranking. These are local measurements of the current version, not a production SLO.
+  | Scene | P50 | P95 | P99 |
+  | --- | ---: | ---: | ---: |
+  | Search | 223.60ms | 496.60ms | 654.80ms |
+  | Recommendation (recall) | 228.90ms | 369.40ms | 425.10ms |
 
 - Search offline metrics
-  - Full-catalog pipeline (1,983,938 notes; all 6,192 test requests; known clicks): **HitRate@10 = 55.23%**, **Recall@100 = 63.71%**, MRR@100 = 0.2905.
-  - Ranking over all 128,191 original test impressions: **NDCG@10 = 0.5468**, AUC = 0.5813, GAUC = 0.5671.
+  - Full-catalog pipeline (all 6,192 test requests): **HitRate@10 = 55.23%**, **Recall@100 = 63.71%**, MRR@100 = 0.29.
+  - Ranking over 128,191 test impressions: **NDCG@10 = 0.55**, AUC = 0.58, GAUC = 0.57.
 - Recommendation offline metrics
-  - Ranking over all 182,567 original test impressions: **NDCG@10 = 0.6195**, AUC = 0.6143, GAUC = 0.6211; this is a logged-impression offline diagnostic.
-  - DSSM recall optimization (1,983,938 notes; all 11,893 internal validation requests): aligning the training objective with retrieval scores improved **HitRate@50 by 3.94%** and **Recall@100 by 4.19%**, relative to the K3 content-objective control using the same training set, negative pools, and 327 optimizer updates. Both paired user-cluster 95% confidence intervals were positive.
-  - These recall gains apply only to DSSM-only internal validation and are not deployed; they are not three-route fusion or end-to-end gains. Logged-impression ranking is evaluated separately and does not describe the current online Recommendation pipeline.
+  - Recall (DSSM only; all 11,893 internal validation requests): **HitRate@50 = 6.00%**, **Recall@100 = 4.34%**.
+  - Ranking over 182,567 test impressions: **NDCG@10 = 0.62**, AUC = 0.61, GAUC = 0.62.
 
-<details>
-<summary>Full-catalog known-click metrics on the complete test sets</summary>
-
-- Search (6,192 test requests): HitRate@10 = 0.5523, Recall@100 = 0.6371, MRR@100 = 0.2905, known_positive_NDCG@10 = 0.2225.
-- Recommendation (11,115 test requests): HitRate@50 = 0.0661, Recall@100 = 0.0410, known_positive_NDCG@10 = 0.0049.
-- Full-catalog and logged-impression evaluations have different candidate scopes. Missed requests remain included, and Recall uses each request's original clicked-positive count as its denominator. The [shared metrics snapshot](src/backend/online/full_test_metrics.json) is the source of truth for test results.
-
-</details>
+Full-catalog evaluation covers 1,983,938 notes. Full precision and evaluation scopes are available in the [metrics snapshot](src/backend/online/full_test_metrics.json) and [DSSM validation results](src/frontend/src/data/recallValidation.json).
 
 ### 0.3 Pipeline
 
@@ -191,11 +180,7 @@ DIEN performs finer user-interest modeling on top of preranking candidates.
 
 ## 5. Redis in This Project
 
-### 5.1 What Redis Does
-
-Redis is used as the real-time online state layer rather than a place to store offline model files.
-
-### 5.2 What Gets Stored
+### 5.1 What Gets Stored
 
 - user profiles
 - recent requests
@@ -205,7 +190,7 @@ Redis is used as the real-time online state layer rather than a place to store o
 - runtime request ids
 - deduplication keys
 
-### 5.3 Behavior Write Path
+### 5.2 Behavior Write Path
 
 Frontend behavior calls flow through `api.ts` → `main.py` → `pipeline.py` → `realtime_cache.py` and are finally persisted into Redis.
 
