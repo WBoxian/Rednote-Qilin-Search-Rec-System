@@ -31,7 +31,7 @@ export const SearchMetrics: Story = {
     await userEvent.click(canvas.getByRole('button', { name: '关闭' }));
     await userEvent.click(canvas.getByRole('button', { name: '推荐' }));
     await expect(await canvas.findByRole('heading', { name: '推荐召回' })).toBeVisible();
-    await expect(canvas.getByText('6.00%')).toBeVisible();
+    await expect(canvas.getByText('6.61%')).toBeVisible();
     await expect(canvas.getAllByText('0.62')).toHaveLength(2);
     await userEvent.click(canvas.getByRole('button', { name: '搜索' }));
     await expect(await canvas.findByText('55.23%')).toBeVisible();
@@ -41,9 +41,9 @@ export const RecommendationMetrics: Story = {
   parameters: { scene: 'rec' },
   play: async ({ canvas, userEvent }) => {
     await expect(await canvas.findByRole('heading', { name: '推荐召回' })).toBeVisible();
-    await expect(canvas.getByText('6.00%')).toBeVisible();
-    await expect(canvas.getByText('4.34%')).toBeVisible();
-    await expect(canvas.getByText(/内部验证.*11,893.*DSSM 单路/)).toBeVisible();
+    await expect(canvas.getByText('6.61%')).toBeVisible();
+    await expect(canvas.getByText('4.10%')).toBeVisible();
+    await expect(canvas.getByText(/全量测试.*11,115.*已知点击/)).toBeVisible();
     await expect(canvas.getAllByText('0.62')).toHaveLength(2);
     await expect(canvas.getByText('0.61')).toBeVisible();
     await expect(canvas.queryByText('+3.94%')).not.toBeInTheDocument();
@@ -52,8 +52,8 @@ export const RecommendationMetrics: Story = {
     await expect(canvas.queryByText('阶段消融与实验结果')).not.toBeInTheDocument();
     await expect(canvas.queryByText('粗排 · GBDT')).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: /HitRate@50/ }));
-    await expect(await canvas.findByRole('heading', { name: /DSSM召回.*内部验证.*HitRate@50/ })).toBeVisible();
-    await expect(canvas.getByText('当前指标：6.00%。')).toBeVisible();
+    await expect(await canvas.findByRole('heading', { name: /推荐召回.*全量测试.*HitRate@50/ })).toBeVisible();
+    await expect(canvas.getByText('按全部原始测试请求计算；未命中与空候选计 0。')).toBeVisible();
     await expect(canvas.queryByText(/相对提升/)).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: '关闭' }));
   },

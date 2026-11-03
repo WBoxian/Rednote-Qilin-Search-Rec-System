@@ -43,27 +43,20 @@ class ProductMetricsTests(unittest.TestCase):
         self.assertEqual(load_metrics_snapshot("rec", "hard")["recall"]["test"]["Recall@500"], expected)
 
     def test_readme_values_match_shared_snapshot(self):
-        import json
-        validation = json.loads((ROOT / "src/frontend/src/data/recallValidation.json").read_text())
-        self.assertFalse(validation["deployed"])
         for filename in ("README.md", "README_EN.md"):
             text = (ROOT / filename).read_text()
-            search = load_metrics_snapshot("search", "hard")["pipeline"]["test"]
-            for key in ("HitRate@10", "Recall@100"):
-                self.assertIn(f"{key} = {search[key] * 100:.2f}%", text)
-            self.assertIn(f"MRR@100 = {search['MRR@100']:.2f}", text)
-            for row in validation["metrics"]:
-                self.assertIn(f"{row['key']} = {row['current'] * 100:.2f}%", text)
-            self.assertIn(f"{validation['requests']:,}", text)
-            self.assertIn("内部验证" if filename == "README.md" else "internal validation", text)
-            for scene in ("search", "rec"):
+            for scene, hit_rate in (("search", "HitRate@10"), ("rec", "HitRate@50")):
                 snapshot = load_metrics_snapshot(scene, "hard")
+                recall = snapshot["pipeline"]["test"] if scene == "search" else snapshot["recall"]["test"]
+                for key in (hit_rate, "Recall@100"):
+                    self.assertIn(f"{key} = {recall[key] * 100:.2f}%", text)
+                self.assertIn(f"{snapshot['label_coverage']['all_requests']:,}", text)
+                if scene == "search":
+                    self.assertIn(f"MRR@100 = {recall['MRR@100']:.2f}", text)
                 ranking = snapshot["ranking"]["ranking"]["test"]
                 for key in ("NDCG@10", "AUC", "GAUC"):
                     self.assertIn(f"{key} = {ranking[key]:.2f}", text)
                 self.assertEqual(self.endpoint(scene=scene, tag="hard", sample_n=1000, include_val=1)["metrics"]["label_coverage"], snapshot["label_coverage"])
-            self.assertIn("src/backend/online/full_test_metrics.json", text)
-            self.assertIn("src/frontend/src/data/recallValidation.json", text)
 
 if __name__ == "__main__":
     unittest.main()

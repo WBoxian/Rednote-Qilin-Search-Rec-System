@@ -2,7 +2,6 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import TopBar from '../components/TopBar.vue';
 import { metricLabel } from '../services/evaluation';
-import recallValidation from '../data/recallValidation.json';
 import { api, getScene, getUserId, setScene } from '../services/api';
 
 const metricsByScene = ref<Record<string, any>>({});
@@ -28,8 +27,9 @@ const pageTitle = '评测中心';
 const activeSnapshot = computed(() => metricsByScene.value[currentScene.value]);
 const splitLabel = computed(() => activeSnapshot.value?.protocol?.full_test || activeSnapshot.value?.protocol?.held_out ? '全量测试' : '离线诊断');
 const searchResult = computed(() => activeSnapshot.value?.pipeline?.test || {});
+const recallResult = computed(() => metric(currentScene.value, 'recall'));
 const rankingResult = computed(() => metric(currentScene.value, 'ranking'));
-const searchRequests = computed(() => activeSnapshot.value?.label_coverage?.all_requests);
+const testRequests = computed(() => activeSnapshot.value?.label_coverage?.all_requests);
 const exposureRows = computed(() => rankingResult.value?.rows);
 
 const copy = {
@@ -64,6 +64,8 @@ const searchMetricDefs = [
   { key: 'MRR@100', percent: false },
 ] as const;
 
+const recMetricDefs = [{ key: 'HitRate@50' }, { key: 'Recall@100' }] as const;
+
 const rankingMetricDefs = [
   { key: 'NDCG@10', label: 'NDCG@10' },
   { key: 'AUC', label: 'AUC' },
@@ -72,7 +74,7 @@ const rankingMetricDefs = [
 
 const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
   'HitRate@10': { lines: ['HitRate@10 = 均值(前10条中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
-  'HitRate@50': { lines: ['HitRate@50 = 均值(前50条中至少命中一个已知点击物品)'], desc: ['按全部内部验证请求计算；未命中与空候选计 0。'] },
+  'HitRate@50': { lines: ['HitRate@50 = 均值(前50条中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
   'Recall@100': {
     lines: [
       'Recall@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>100</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
@@ -129,20 +131,6 @@ function fmtCount(value: unknown) {
 function fmtPercent(value: unknown) {
   const n = Number(value);
   return value != null && value !== '' && Number.isFinite(n) && n >= 0 ? (n * 100).toFixed(2) + '%' : '—';
-}
-
-function openRecallFormula(item: typeof recallValidation.metrics[number]) {
-  const formula = formulaDefs[item.key];
-  if (!formula) return;
-  formulaModal.value = {
-    title: 'DSSM召回 · 内部验证 · ' + item.key,
-    lines: formula.lines,
-    desc: [
-      fmtCount(recallValidation.requests) + ' 条完整内部验证请求，198.4 万笔记全库。',
-      '当前指标：' + fmtPercent(item.current) + '。',
-      '按请求统计原始点击正例，未命中与空候选保留。',
-    ],
-  };
 }
 
 function behaviorTime(row: any) {
@@ -553,7 +541,7 @@ onUnmounted(stopValidationProgress);
       <section class="metrics-grid" aria-label="精选离线指标">
         <div v-if="currentScene === 'search'" class="panel shell-panel">
           <h3 class="section-title">搜索全库链路</h3>
-          <div class="split-meta">{{ splitLabel }} · {{ fmtCount(searchRequests) }} 个请求 · 已知点击</div>
+          <div class="split-meta">{{ splitLabel }} · {{ fmtCount(testRequests) }} 个请求 · 已知点击</div>
           <div class="metric-row recall-row">
             <button
               v-for="item in searchMetricDefs"
@@ -568,16 +556,16 @@ onUnmounted(stopValidationProgress);
         </div>
         <div v-else class="panel shell-panel">
           <h3 class="section-title">推荐召回</h3>
-          <div class="split-meta">内部验证 · {{ fmtCount(recallValidation.requests) }} 个请求 · DSSM 单路</div>
+          <div class="split-meta">{{ splitLabel }} · {{ fmtCount(testRequests) }} 个请求 · 已知点击</div>
           <div class="metric-row validation-row">
             <button
-              v-for="item in recallValidation.metrics"
+              v-for="item in recMetricDefs"
               :key="item.key"
               class="metric-item metric-button metric-row-item"
-              @click="openRecallFormula(item)"
+              @click="openMetricFormula('推荐召回', item.key, splitLabel)"
             >
               <div class="meta">{{ metricLabel(item.key) }}</div>
-              <div class="metric-value">{{ fmtPercent(item.current) }}</div>
+              <div class="metric-value">{{ fmtPercent(recallResult[item.key]) }}</div>
             </button>
           </div>
         </div>
