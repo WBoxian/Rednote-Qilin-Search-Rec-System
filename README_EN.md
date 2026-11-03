@@ -54,7 +54,7 @@ Qilin is organized around the common serving path of **data preprocessing → fe
   - Full-catalog pipeline (all 6,192 test requests): **HitRate@10 = 55.23%**, **Recall@100 = 63.71%**, MRR@100 = 0.29.
   - Ranking over 128,191 test impressions: **NDCG@10 = 0.55**, AUC = 0.58, GAUC = 0.57.
 - Recommendation offline metrics
-  - Recall (DSSM only; all 11,893 internal validation requests): **HitRate@50 = 6.00%**, **Recall@100 = 4.34%**.
+  - DSSM recall (11,893 validation requests): **HitRate@50 = 6.00%**, **Recall@100 = 4.34%**.
   - Ranking over 182,567 test impressions: **NDCG@10 = 0.62**, AUC = 0.61, GAUC = 0.62.
 
 Full-catalog evaluation covers 1,983,938 notes. Full precision and evaluation scopes are available in the [metrics snapshot](src/backend/online/full_test_metrics.json) and [DSSM validation results](src/frontend/src/data/recallValidation.json).
@@ -178,9 +178,9 @@ GBDT-based preranking compresses the recall pool and uses fast query / user / no
 
 DIEN performs finer user-interest modeling on top of preranking candidates.
 
-## 5. Redis in This Project
+## 5. Redis
 
-### 5.1 What Gets Stored
+### 5.1 Redis Cache
 
 - user profiles
 - recent requests
