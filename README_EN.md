@@ -54,11 +54,21 @@ Qilin is organized around the common serving path of **data preprocessing → fe
   - The GPU was shared. Recommendation currently runs recall only, excluding disabled learned pre-ranking/ranking. These are local measurements of the current version, not a production SLO.
 
 - Search offline metrics
-  - End-to-end (full test, known clicks): `HitRate@10 = 0.5523`, `Recall@100 = 0.6371`, `MRR@100 = 0.2905`, `known_positive_NDCG@10 = 0.2225`; Recall@100 relative lift vs frozen baseline +4.17%
-  - Ranking (logged-exposure diagnostic): `NDCG@10 = 0.5468`, `AUC = 0.5813`, `GAUC = 0.5671`
+  - Full-catalog pipeline (1,983,938 notes; all 6,192 test requests; known clicks): **HitRate@10 = 55.23%**, **Recall@100 = 63.71%**, MRR@100 = 0.2905.
+  - Ranking over all 128,191 original test impressions: **NDCG@10 = 0.5468**, AUC = 0.5813, GAUC = 0.5671.
 - Recommendation offline metrics
-  - End-to-end (full test, known clicks): `HitRate@50 = 0.0661`, `Recall@100 = 0.0410`, `known_positive_NDCG@10 = 0.0049`; Recall@100 relative lift vs previous global single-interest DSSM/FlatIP/learned fusion +7.09%
-  - Ranking (logged-exposure diagnostic): `NDCG@10 = 0.6195`, `AUC = 0.6143`, `GAUC = 0.6211`
+  - Ranking over all 182,567 original test impressions: **NDCG@10 = 0.6195**, AUC = 0.6143, GAUC = 0.6211; this is a logged-impression offline diagnostic.
+  - DSSM recall optimization (1,983,938 notes; all 11,893 internal validation requests): aligning the training objective with retrieval scores improved **HitRate@50 by 3.94%** and **Recall@100 by 4.19%**, relative to the K3 content-objective control using the same training set, negative pools, and 327 optimizer updates. Both paired user-cluster 95% confidence intervals were positive.
+  - These recall gains apply only to DSSM-only internal validation and are not deployed; they are not three-route fusion or end-to-end gains. Logged-impression ranking is evaluated separately and does not describe the current online Recommendation pipeline.
+
+<details>
+<summary>Full-catalog known-click metrics on the complete test sets</summary>
+
+- Search (6,192 test requests): HitRate@10 = 0.5523, Recall@100 = 0.6371, MRR@100 = 0.2905, known_positive_NDCG@10 = 0.2225.
+- Recommendation (11,115 test requests): HitRate@50 = 0.0661, Recall@100 = 0.0410, known_positive_NDCG@10 = 0.0049.
+- Full-catalog and logged-impression evaluations have different candidate scopes. Missed requests remain included, and Recall uses each request's original clicked-positive count as its denominator. The [shared metrics snapshot](src/backend/online/full_test_metrics.json) is the source of truth for test results.
+
+</details>
 
 ### 0.3 Pipeline
 
