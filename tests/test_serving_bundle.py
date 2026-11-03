@@ -22,6 +22,19 @@ import backend.online.bundle as bundle_module
 from training.history import HISTORY_ORDER
 
 
+def rewrite_with_restored_mtime(path, content, before):
+    """Make the ctime-based invalidation observable even on coarse WSL clocks."""
+    deadline = time.monotonic() + 2
+    while True:
+        path.write_bytes(content)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        if path.stat().st_ctime_ns != before.st_ctime_ns:
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError("Filesystem ctime did not advance after mutation")
+        time.sleep(.002)
+
+
 def fixture(root, scene="search"):
     folder = "search_train" if scene == "search" else "recommendation_train"
     for name in (f"datasets/{folder}/train.parquet", "datasets/notes/notes.parquet", "datasets/user_feat/users.parquet"):
@@ -535,8 +548,7 @@ class ServingBundleTests(unittest.TestCase):
             path = root/manifest["rank_dir"]/"dien.pt"
             original = path.stat()
             content = path.read_bytes()
-            path.write_bytes(bytes([content[0]^1])+content[1:])
-            os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+            rewrite_with_restored_mtime(path, bytes([content[0]^1])+content[1:], original)
             self.assertEqual(path.stat().st_mtime_ns, original.st_mtime_ns)
             with self.assertRaisesRegex(ValueError, "asset mismatch"):
                 validate_manifest(manifest, "search", root)
@@ -630,9 +642,7 @@ class ParallelAssetIntegrityTests(unittest.TestCase):
             expected = file_sha256(path)
             verify_asset(path, expected)
             before = path.stat()
-            time.sleep(.002)
-            path.write_bytes(b'new!')
-            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+            rewrite_with_restored_mtime(path, b'new!', before)
             self.assertEqual(path.stat().st_size, before.st_size)
             self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
             with self.assertRaisesRegex(ValueError, 'asset mismatch'):
@@ -646,9 +656,7 @@ class ParallelAssetIntegrityTests(unittest.TestCase):
             before = path.stat()
             def mutate_after_read(value):
                 result = original(value)
-                time.sleep(.002)
-                value.write_bytes(b'new!')
-                os.utime(value, ns=(before.st_atime_ns, before.st_mtime_ns))
+                rewrite_with_restored_mtime(value, b'new!', before)
                 return result
             with patch.object(bundle_module, 'file_sha256', side_effect=mutate_after_read):
                 with self.assertRaisesRegex(ValueError, 'asset mismatch'):
