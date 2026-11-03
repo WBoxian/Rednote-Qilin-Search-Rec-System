@@ -48,7 +48,7 @@ Qilin is organized around the common serving path of **data preprocessing → fe
   | Scene | P50 | P95 | P99 |
   | --- | ---: | ---: | ---: |
   | Search | 223.60ms | 496.60ms | 654.80ms |
-  | Recommendation (recall) | 228.90ms | 369.40ms | 425.10ms |
+  | Recommendation | 228.90ms | 369.40ms | 425.10ms |
 
 - Search offline metrics
   - Recall (6,192 test requests): **HitRate@10 = 55.23%**, **Recall@100 = 63.71%**, MRR@100 = 0.29.
@@ -56,6 +56,8 @@ Qilin is organized around the common serving path of **data preprocessing → fe
 - Recommendation offline metrics
   - Recall (11,115 test requests): **HitRate@50 = 6.61%**, **Recall@100 = 4.10%**.
   - Ranking over 182,567 test impressions: **NDCG@10 = 0.62**, AUC = 0.61, GAUC = 0.62.
+
+**Test requests** are individual search or recommendation requests; **test impressions** are individual note exposure records within those requests.
 
 ### 0.3 Pipeline
 
