@@ -18,7 +18,7 @@ export const SearchMetrics: Story = {
     await expect(await canvas.findByRole('heading', { name: '搜索全库链路' })).toBeVisible();
     await expect(canvas.getByText('55.23%')).toBeVisible();
     await expect(canvas.getByText('63.71%')).toBeVisible();
-    await expect(canvas.getByText('0.5468')).toBeVisible();
+    await expect(canvas.getByText('0.55')).toBeVisible();
     await expect(canvas.queryByText('最终结果与基线提升')).not.toBeInTheDocument();
     await expect(canvas.queryByText('完整测试请求与曝光，统一指标口径')).not.toBeInTheDocument();
     await expect(canvas.queryByText('阶段消融与实验结果')).not.toBeInTheDocument();
@@ -30,9 +30,9 @@ export const SearchMetrics: Story = {
     await expect(await canvas.findByRole('heading', { name: /全库链路.*HitRate@10/ })).toBeVisible();
     await userEvent.click(canvas.getByRole('button', { name: '关闭' }));
     await userEvent.click(canvas.getByRole('button', { name: '推荐' }));
-    await expect(await canvas.findByRole('heading', { name: 'DSSM召回优化' })).toBeVisible();
-    await expect(canvas.getByText('+3.94%')).toBeVisible();
-    await expect(canvas.getByText('0.6195')).toBeVisible();
+    await expect(await canvas.findByRole('heading', { name: '推荐召回' })).toBeVisible();
+    await expect(canvas.getByText('6.00%')).toBeVisible();
+    await expect(canvas.getAllByText('0.62')).toHaveLength(2);
     await userEvent.click(canvas.getByRole('button', { name: '搜索' }));
     await expect(await canvas.findByText('55.23%')).toBeVisible();
   },
@@ -40,19 +40,21 @@ export const SearchMetrics: Story = {
 export const RecommendationMetrics: Story = {
   parameters: { scene: 'rec' },
   play: async ({ canvas, userEvent }) => {
-    await expect(await canvas.findByRole('heading', { name: 'DSSM召回优化' })).toBeVisible();
-    await expect(canvas.getByText('+3.94%')).toBeVisible();
-    await expect(canvas.getByText('+4.19%')).toBeVisible();
-    await expect(canvas.getByText(/内部验证.*11,893.*DSSM 单路.*未上线/)).toBeVisible();
-    await expect(canvas.getByText('0.6195')).toBeVisible();
-    await expect(canvas.getByText('0.6143')).toBeVisible();
-    await expect(canvas.getByText('0.6211')).toBeVisible();
+    await expect(await canvas.findByRole('heading', { name: '推荐召回' })).toBeVisible();
+    await expect(canvas.getByText('6.00%')).toBeVisible();
+    await expect(canvas.getByText('4.34%')).toBeVisible();
+    await expect(canvas.getByText(/内部验证.*11,893.*DSSM 单路/)).toBeVisible();
+    await expect(canvas.getAllByText('0.62')).toHaveLength(2);
+    await expect(canvas.getByText('0.61')).toBeVisible();
+    await expect(canvas.queryByText('+3.94%')).not.toBeInTheDocument();
+    await expect(canvas.queryByText('0.6195')).not.toBeInTheDocument();
     await expect(canvas.queryByText('0.0661')).not.toBeInTheDocument();
     await expect(canvas.queryByText('阶段消融与实验结果')).not.toBeInTheDocument();
     await expect(canvas.queryByText('粗排 · GBDT')).not.toBeInTheDocument();
-    await userEvent.click(canvas.getByRole('button', { name: /HitRate@50.*相对提升/ }));
+    await userEvent.click(canvas.getByRole('button', { name: /HitRate@50/ }));
     await expect(await canvas.findByRole('heading', { name: /DSSM召回.*内部验证.*HitRate@50/ })).toBeVisible();
-    await expect(canvas.getByText(/控制组 0.057681；新模型 0.059951/)).toBeVisible();
+    await expect(canvas.getByText('当前指标：6.00%。')).toBeVisible();
+    await expect(canvas.queryByText(/相对提升/)).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole('button', { name: '关闭' }));
   },
 };

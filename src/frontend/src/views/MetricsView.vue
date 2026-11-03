@@ -72,6 +72,7 @@ const rankingMetricDefs = [
 
 const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
   'HitRate@10': { lines: ['HitRate@10 = 均值(前10条中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
+  'HitRate@50': { lines: ['HitRate@50 = 均值(前50条中至少命中一个已知点击物品)'], desc: ['按全部内部验证请求计算；未命中与空候选计 0。'] },
   'Recall@100': {
     lines: [
       'Recall@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>100</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
@@ -101,9 +102,10 @@ const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
       'w(u) = <span class="formula-frac"><span>|Impressions<sub>u</sub>|</span><span>Σ<sub>v</sub> |Impressions<sub>v</sub>|</span></span>',
     ],
     desc: ['按用户曝光样本数加权，仅纳入同时存在正负样本的用户。'],
-  },};
+  },
+};
 
-function fmtNum(v: any, digits = 4) {
+function fmtNum(v: any, digits = 2) {
   if (v == null || v === '') return '—';
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0) return '—';
@@ -126,18 +128,19 @@ function fmtCount(value: unknown) {
 
 function fmtPercent(value: unknown) {
   const n = Number(value);
-  return value != null && Number.isFinite(n) && n >= 0 ? (n * 100).toFixed(2) + '%' : '—';
+  return value != null && value !== '' && Number.isFinite(n) && n >= 0 ? (n * 100).toFixed(2) + '%' : '—';
 }
 
-function openRecallLift(item: typeof recallValidation.metrics[number]) {
+function openRecallFormula(item: typeof recallValidation.metrics[number]) {
+  const formula = formulaDefs[item.key];
+  if (!formula) return;
   formulaModal.value = {
     title: 'DSSM召回 · 内部验证 · ' + item.key,
-    lines: ['相对提升 = (新模型指标 − 控制组指标) / 控制组指标 × 100%'],
+    lines: formula.lines,
     desc: [
       fmtCount(recallValidation.requests) + ' 条完整内部验证请求，198.4 万笔记全库。',
-      '控制组 ' + fmtNum(item.baseline, 6) + '；新模型 ' + fmtNum(item.current, 6) + '。',
-      '同训练集、同负样本池、同327步更新；两项配对用户聚类95%置信区间均为正。',
-      '仅对应DSSM单路内部验证，尚未上线。',
+      '当前指标：' + fmtPercent(item.current) + '。',
+      '按请求统计原始点击正例，未命中与空候选保留。',
     ],
   };
 }
@@ -564,20 +567,19 @@ onUnmounted(stopValidationProgress);
           </div>
         </div>
         <div v-else class="panel shell-panel">
-          <h3 class="section-title">DSSM召回优化</h3>
-          <div class="split-meta">内部验证 · {{ fmtCount(recallValidation.requests) }} 个请求 · DSSM 单路 · 未上线</div>
-          <div class="metric-row lift-row">
+          <h3 class="section-title">推荐召回</h3>
+          <div class="split-meta">内部验证 · {{ fmtCount(recallValidation.requests) }} 个请求 · DSSM 单路</div>
+          <div class="metric-row validation-row">
             <button
               v-for="item in recallValidation.metrics"
               :key="item.key"
               class="metric-item metric-button metric-row-item"
-              @click="openRecallLift(item)"
+              @click="openRecallFormula(item)"
             >
-              <div class="meta">{{ metricLabel(item.key) }}相对提升</div>
-              <div class="metric-value">+{{ item.relative_lift_pct.toFixed(2) }}%</div>
+              <div class="meta">{{ metricLabel(item.key) }}</div>
+              <div class="metric-value">{{ fmtPercent(item.current) }}</div>
             </button>
           </div>
-          <p class="split-meta metric-note">同训练集、负样本池及327步更新的K3内容目标控制组。</p>
         </div>
 
         <div class="panel shell-panel">
@@ -801,11 +803,9 @@ onUnmounted(stopValidationProgress);
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.lift-row {
+.validation-row {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-
-.metric-note { margin-bottom: 0; }
 
 .compact-row {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1209,7 +1209,7 @@ onUnmounted(stopValidationProgress);
   .metric-row,
   .recall-row,
   .compact-row,
-  .lift-row {
+  .validation-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1226,7 +1226,7 @@ onUnmounted(stopValidationProgress);
   .metric-row,
   .recall-row,
   .compact-row,
-  .lift-row,
+  .validation-row,
   .source-behavior-grid {
     grid-template-columns: 1fr;
   }
