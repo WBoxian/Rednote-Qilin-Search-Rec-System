@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import TopBar from '../components/TopBar.vue';
-import { deltaClass, metricLabel, signed, statusLabel, evaluationText, type AblationRow, type ComparisonGroup } from '../services/evaluation';
+import { metricLabel } from '../services/evaluation';
+import recallValidation from '../data/recallValidation.json';
 import { api, getScene, getUserId, setScene } from '../services/api';
 
 const metricsByScene = ref<Record<string, any>>({});
@@ -24,17 +25,12 @@ const detailLoading = ref(false);
 const detailError = ref('');
 const formulaModal = ref<{ title: string; lines: string[]; desc: string[] } | null>(null);
 const pageTitle = '评测中心';
-const activeSplit = ref<'test' | 'validation'>('test');
 const activeSnapshot = computed(() => metricsByScene.value[currentScene.value]);
-const isFullTestSnapshot = computed(() => activeSnapshot.value?.protocol?.full_test === true);
-const isHeldOut = computed(() => activeSnapshot.value?.protocol?.held_out === true);
-const splitLabel = computed(() => isFullTestSnapshot.value ? '全量测试集' : isHeldOut.value ? (activeSplit.value === 'test' ? '测试集' : '验证集') : (activeSnapshot.value?.protocol ? '训练诊断' : '离线快照'));
-const partition = computed(() => activeSnapshot.value?.partition);
-const endToEnd = computed<ComparisonGroup | undefined>(() => activeSnapshot.value?.comparisons?.end_to_end);
-const exposureComparison = computed<ComparisonGroup | undefined>(() => activeSnapshot.value?.comparisons?.logged_exposure);
-const ablationRows = computed<AblationRow[]>(() => activeSnapshot.value?.ablations?.rows || []);
-const ablationMetricKeys = computed(() => Array.from(new Set(ablationRows.value.flatMap(row => Object.keys(row.metrics)))).slice(0, 5));
-const splitTime = (value: any) => value == null ? '—' : new Date(Number(value) * 1000).toLocaleString('zh-CN', { hour12: false });
+const splitLabel = computed(() => activeSnapshot.value?.protocol?.full_test || activeSnapshot.value?.protocol?.held_out ? '全量测试' : '离线诊断');
+const searchResult = computed(() => activeSnapshot.value?.pipeline?.test || {});
+const rankingResult = computed(() => metric(currentScene.value, 'ranking'));
+const searchRequests = computed(() => activeSnapshot.value?.label_coverage?.all_requests);
+const exposureRows = computed(() => rankingResult.value?.rows);
 
 const copy = {
   loading: '加载中...',
@@ -62,19 +58,11 @@ function stopValidationProgress() {
   return;
 }
 
-const sharedRecallMetricDefs = [
-  { key: 'HitRate@500', label: 'HitRate@500' },
-  { key: 'Recall@100', label: 'Recall@100' },
-  { key: 'Recall@500', label: 'Recall@500' },
-  { key: 'MRR@100', label: 'MRR@100' },
-  { key: 'MedianFirstHitRank', label: 'MedianFirstHitRank（Top500 命中请求）', digits: 1 },
-
+const searchMetricDefs = [
+  { key: 'HitRate@10', percent: true },
+  { key: 'Recall@100', percent: true },
+  { key: 'MRR@100', percent: false },
 ] as const;
-
-const recallMetricDefsByScene = {
-  search: [{ key: 'HitRate@10', label: 'HitRate@10' }, { key: 'MRR@10', label: 'MRR@10' }, ...sharedRecallMetricDefs],
-  rec: [{ key: 'HitRate@50', label: 'HitRate@50' }, ...sharedRecallMetricDefs],
-} as const;
 
 const rankingMetricDefs = [
   { key: 'NDCG@10', label: 'NDCG@10' },
@@ -84,74 +72,17 @@ const rankingMetricDefs = [
 
 const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
   'HitRate@10': { lines: ['HitRate@10 = 均值(前10条中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
-  'HitRate@50': { lines: ['HitRate@50 = 均值(前50条中至少命中一个已知点击物品)'], desc: ['按全部原始测试请求计算；未命中与空候选计 0。'] },
-  'MRR@10': { lines: ['MRR@10 = mean(首个命中排名 ≤ 10 时取排名倒数，否则取 0)'], desc: ['分母保留全部原始测试请求。'] },
   'Recall@100': {
     lines: [
       'Recall@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>100</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
     ],
     desc: ['衡量前 100 个候选覆盖了多少已知点击物品；按全部原始测试请求取平均。'],
   },
-  'HitRate@100': {
-    lines: [
-      'HitRate@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> 𝟙(Top<sub>100</sub>(q) ∩ Rel(q) ≠ ∅)',
-    ],
-    desc: ['衡量一个请求在前 100 个召回候选里是否至少命中 1 个已知点击物品。'],
-  },
-  'HitRate@500': {
-    lines: [
-      'HitRate@500 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> 𝟙(Top<sub>500</sub>(q) ∩ Rel(q) ≠ ∅)',
-    ],
-    desc: ['衡量粗排入口的 500 个候选里，是否至少命中 1 个已知点击物品。'],
-  },
-  'Recall@500': {
-    lines: [
-      'Recall@500 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>500</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
-    ],
-    desc: ['衡量进入粗排的 500 个候选对已知点击物品的覆盖程度。'],
-  },
-  'Recall@300': {
-    lines: [
-      'Recall@300 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>300</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
-    ],
-    desc: ['观察放宽到 300 个候选后，召回覆盖是否明显抬升。'],
-  },
-  'Recall@1000': {
-    lines: [
-      'Recall@1000 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>1000</sub>(q) ∩ Rel(q)|</span><span>|Rel(q)|</span></span>',
-    ],
-    desc: ['衡量召回池上限的覆盖能力，用于观察候选天花板。'],
-  },
   'MRR@100': {
     lines: [
       'MRR@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>1</span><span>rank<sub>first-hit</sub>(q)</span></span>',
     ],
     desc: ['衡量第一个已知点击物品进入前 100 候选后的位置，越靠前越好。'],
-  },
-  MedianFirstHitRank: {
-    lines: [
-      'MedianFirstHitRank = median({ rank<sub>first-hit</sub>(q) | Top(q) ∩ Rel(q) ≠ ∅ })',
-    ],
-    desc: ['统计所有命中请求的首个相关结果名次中位数，越小越好。'],
-  },
-  'TailHitRate101_500@Pre100': {
-    lines: [
-      'TailHitRate101_500@Pre100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> 𝟙(∃ i, 101 ≤ rank<sub>recall</sub>(i) ≤ 500, rank<sub>pre</sub>(i) ≤ 100, i ∈ Rel(q))',
-    ],
-    desc: ['衡量召回尾部 101-500 的候选是否真的被粗排救回到了前 100，并命中了已知点击物品。'],
-  },
-  'Precision@100': {
-    lines: [
-      'Precision@100 = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> <span class="formula-frac"><span>|Top<sub>100</sub>(q) ∩ Rel(q)|</span><span>100</span></span>',
-    ],
-    desc: ['衡量前 100 个召回候选里相关结果的占比。'],
-  },
-  MAP: {
-    lines: [
-      'MAP = <span class="formula-frac"><span>1</span><span>|Q|</span></span> · Σ<sub>q∈Q</sub> AP(q)',
-      'AP(q) = <span class="formula-frac"><span>1</span><span>|Rel(q)|</span></span> · Σ<sub>k=1..K</sub> Precision@k(q) · 𝟙(item<sub>k</sub> ∈ Rel(q))',
-    ],
-    desc: ['综合考察相关结果是否持续出现在更靠前的位置。'],
   },
   'NDCG@10': {
     lines: [
@@ -170,8 +101,7 @@ const formulaDefs: Record<string, { lines: string[]; desc: string[] }> = {
       'w(u) = <span class="formula-frac"><span>|Impressions<sub>u</sub>|</span><span>Σ<sub>v</sub> |Impressions<sub>v</sub>|</span></span>',
     ],
     desc: ['按用户曝光样本数加权，仅纳入同时存在正负样本的用户。'],
-  },
-};
+  },};
 
 function fmtNum(v: any, digits = 4) {
   if (v == null || v === '') return '—';
@@ -184,24 +114,32 @@ function metric(scene: 'search' | 'rec', area: 'recall' | 'preranking' | 'rankin
   const snapshot = metricsByScene.value[scene];
   const bundle = area === 'recall' ? snapshot?.recall : snapshot?.ranking?.[area];
   if (snapshot?.protocol?.full_test) return bundle?.test || {};
-  if (snapshot?.protocol?.held_out) return bundle?.[activeSplit.value] || {};
+  if (snapshot?.protocol?.held_out) return bundle?.test || {};
   if (snapshot?.protocol) return bundle?.train_diagnostic || {};
   return bundle?.validation || bundle?.val || {};
 }
 
-const recallMetricRows = computed(() => {
-  const defs = recallMetricDefsByScene[currentScene.value] || [];
-  return [defs.slice(0, 4), defs.slice(4)];
-});
+function fmtCount(value: unknown) {
+  const n = Number(value);
+  return value != null && Number.isFinite(n) && n >= 0 ? n.toLocaleString('zh-CN') : '—';
+}
 
-function metricSampleMeta(scene: 'search' | 'rec', area: 'recall' | 'preranking' | 'ranking') {
-  const obj = metric(scene, area);
-  const sampled = Number(obj?.sampled_groups || 0);
-  const effective = Number(obj?.effective_groups || 0);
-  if (!Number.isFinite(sampled) || sampled <= 0) return '该阶段暂无可用评测';
-  if (!Number.isFinite(effective) || effective <= 0) return `${splitLabel.value} · ${sampled.toLocaleString()} 个请求`;
-  const exposureMeta = obj?.rows ? ` · ${Number(obj.rows).toLocaleString()} 条曝光` : '';
-  return `${splitLabel.value} · ${effective.toLocaleString()}/${sampled.toLocaleString()} 个请求${exposureMeta}`;
+function fmtPercent(value: unknown) {
+  const n = Number(value);
+  return value != null && Number.isFinite(n) && n >= 0 ? (n * 100).toFixed(2) + '%' : '—';
+}
+
+function openRecallLift(item: typeof recallValidation.metrics[number]) {
+  formulaModal.value = {
+    title: 'DSSM召回 · 内部验证 · ' + item.key,
+    lines: ['相对提升 = (新模型指标 − 控制组指标) / 控制组指标 × 100%'],
+    desc: [
+      fmtCount(recallValidation.requests) + ' 条完整内部验证请求，198.4 万笔记全库。',
+      '控制组 ' + fmtNum(item.baseline, 6) + '；新模型 ' + fmtNum(item.current, 6) + '。',
+      '同训练集、同负样本池、同327步更新；两项配对用户聚类95%置信区间均为正。',
+      '仅对应DSSM单路内部验证，尚未上线。',
+    ],
+  };
 }
 
 function behaviorTime(row: any) {
@@ -592,7 +530,7 @@ onUnmounted(stopValidationProgress);
   <main class="container">
     <section class="panel metrics-hero shell-panel">
       <div>
-        <div class="meta">召回 / 粗排 / 精排</div>
+        <div class="meta">搜索 / 推荐</div>
         <h2>离线评测中心</h2>
       </div>
       <div class="hero-actions">
@@ -609,148 +547,54 @@ onUnmounted(stopValidationProgress);
     </section>
 
     <template v-if="metricsByScene[currentScene]">
-      <section v-if="activeSnapshot?.protocol" class="panel protocol-panel" :class="{ 'protocol-warning': !isHeldOut }">
-        <div class="protocol-heading">
-          <div>
-            <span class="protocol-badge">{{ isFullTestSnapshot ? '全量测试集快照' : isHeldOut ? '时间隔离评测 · V2' : '历史训练诊断' }}</span>
-            <h3>{{ isFullTestSnapshot ? '完整测试请求与曝光，统一指标口径' : isHeldOut ? '验证集选择策略，测试集报告效果' : '此快照不能代表独立验证效果' }}</h3>
-            <p class="meta">{{ isHeldOut ? '按完整请求时间划分；未召回正样本计入漏召回，候选按物品去重。' : activeSnapshot?.protocol?.warning }}</p>
-          </div>
-          <div v-if="isHeldOut" class="split-control" aria-label="评测数据集">
-            <button class="btn-tab" :class="{ active: activeSplit === 'test' }" @click="activeSplit = 'test'">测试集</button>
-            <button class="btn-tab" :class="{ active: activeSplit === 'validation' }" @click="activeSplit = 'validation'">验证集</button>
+      <section class="metrics-grid" aria-label="精选离线指标">
+        <div v-if="currentScene === 'search'" class="panel shell-panel">
+          <h3 class="section-title">搜索全库链路</h3>
+          <div class="split-meta">{{ splitLabel }} · {{ fmtCount(searchRequests) }} 个请求 · 已知点击</div>
+          <div class="metric-row recall-row">
+            <button
+              v-for="item in searchMetricDefs"
+              :key="item.key"
+              class="metric-item metric-button metric-row-item"
+              @click="openMetricFormula('全库链路', item.key, splitLabel)"
+            >
+              <div class="meta">{{ metricLabel(item.key) }}</div>
+              <div class="metric-value">{{ item.percent ? fmtPercent(searchResult[item.key]) : fmtNum(searchResult[item.key]) }}</div>
+            </button>
           </div>
         </div>
-        <div v-if="partition" class="protocol-facts">
-          <div><span>训练请求</span><strong>{{ partition.partitions?.fit?.toLocaleString() }}</strong></div>
-          <div><span>验证请求</span><strong>{{ partition.partitions?.validation?.toLocaleString() }}</strong></div>
-          <div><span>测试请求</span><strong>{{ partition.test_requests?.toLocaleString() }}</strong></div>
-          <div><span>越界排除</span><strong>{{ partition.partitions?.excluded?.toLocaleString() }}</strong></div>
-        </div>
-        <p v-if="partition" class="meta protocol-note">训练截止 {{ splitTime(partition.fit_end_exclusive) }} · 测试开始 {{ splitTime(partition.test_start) }}</p>
-        <p v-if="currentScene === 'search' && isHeldOut" class="protocol-caveat">搜索召回为已有候选核验，模型训练血缘尚未完成时间隔离；排序为新训练的时间隔离基线。</p>
-      </section>
-
-      <section v-if="endToEnd?.metrics?.length" class="panel results-panel" aria-labelledby="results-title">
-        <div class="results-heading">
-          <div><span class="intro-eyebrow">最终结果</span><h3 id="results-title">最终结果与基线提升</h3></div>
-          <span class="scope-tag">全目录 · 已知点击</span>
-        </div>
-        <p class="meta">{{ evaluationText(endToEnd.baseline_name) }} → {{ evaluationText(endToEnd.current_name || '当前版本') }}。使用相同测试请求、标签与候选预算；下表为服务最终输出。</p>
-        <p v-if="activeSnapshot.pipeline?.serving_strategy === 'recall_only'" class="meta">当前服务：仅召回；粗排和精排未启用。下方曝光池排序结果保留为离线诊断。</p>
-        <div class="data-table-scroll">
-          <table class="table evaluation-table">
-            <thead><tr><th scope="col">指标</th><th scope="col">基线</th><th scope="col">当前</th><th scope="col">绝对提升</th><th scope="col">相对提升</th></tr></thead>
-            <tbody><tr v-for="row in endToEnd.metrics" :key="row.name">
-              <th scope="row">{{ metricLabel(row.name) }}</th>
-              <td>{{ fmtNum(row.baseline) }}</td><td class="current-result">{{ fmtNum(row.current) }}</td>
-              <td :class="deltaClass(row.absolute_delta)">{{ signed(row.absolute_delta_pp, 3, ' pp') }}</td>
-              <td :class="deltaClass(row.absolute_delta)">{{ signed(row.relative_delta_pct, 2, '%') }}</td>
-            </tr></tbody>
-          </table>
-        </div>
-        <p class="meta results-note">pp 为百分点。已知点击 NDCG 使用全部测试正例计算理想排序；未曝光内容缺少点击标签，因此此值衡量已知正例保留，不能解释为线上点击率。</p>
-      </section>
-
-      <section class="metrics-grid">
-        <div class="panel shell-panel">
-          <div class="section-title">召回指标</div>
-          <div class="split-title">{{ splitLabel }}</div>
-          <div class="split-meta">{{ metricSampleMeta(currentScene, 'recall') }}</div>
-          <div class="metric-stack">
-            <div v-for="(row, rowIdx) in recallMetricRows" :key="`recall-row-${rowIdx}`" class="metric-row recall-row">
-              <button
-                v-for="item in row"
-                :key="item.key"
-                class="metric-item metric-button metric-row-item"
-                @click="openMetricFormula('召回', item.key, splitLabel)"
-              >
-                <div class="meta">{{ metricLabel(item.key) }}</div>
-                <div class="metric-value">{{ fmtNum(metric(currentScene, 'recall')?.[item.key], (item as any).digits ?? 4) }}</div>
-              </button>
-            </div>
+        <div v-else class="panel shell-panel">
+          <h3 class="section-title">DSSM召回优化</h3>
+          <div class="split-meta">内部验证 · {{ fmtCount(recallValidation.requests) }} 个请求 · DSSM 单路 · 未上线</div>
+          <div class="metric-row lift-row">
+            <button
+              v-for="item in recallValidation.metrics"
+              :key="item.key"
+              class="metric-item metric-button metric-row-item"
+              @click="openRecallLift(item)"
+            >
+              <div class="meta">{{ metricLabel(item.key) }}相对提升</div>
+              <div class="metric-value">+{{ item.relative_lift_pct.toFixed(2) }}%</div>
+            </button>
           </div>
-
-          <div v-if="isHeldOut && metric(currentScene, 'recall')?.train_item_coverage != null" class="coverage-strip">
-            <span>模型输出目标覆盖 <strong>{{ (metric(currentScene, 'recall').train_item_coverage * 100).toFixed(1) }}%</strong></span>
-            <span>Top500 全未命中 <strong>{{ metric(currentScene, 'recall').missed_requests_at_500?.toLocaleString() }}</strong> 个请求</span>
-            <span v-if="activeSnapshot?.pipeline?.test">服务最终输出：{{ currentScene === 'search' ? 'HitRate@10' : 'HitRate@50' }} {{ fmtNum(activeSnapshot.pipeline.test[currentScene === 'search' ? 'HitRate@10' : 'HitRate@50']) }} · Recall@100 {{ fmtNum(activeSnapshot.pipeline.test['Recall@100']) }} · 已知点击 NDCG@10 {{ fmtNum(activeSnapshot.pipeline.test['known_positive_NDCG@10']) }}<template v-if="currentScene === 'search'"> · MRR@100 {{ fmtNum(activeSnapshot.pipeline.test['MRR@100']) }}</template><template v-if="activeSnapshot.pipeline.serving_strategy === 'recall_only'"> · 粗排/精排未启用</template></span>
-          </div>
+          <p class="split-meta metric-note">同训练集、负样本池及327步更新的K3内容目标控制组。</p>
         </div>
 
         <div class="panel shell-panel">
-          <div class="section-title">日志曝光池排序</div>
-          <p v-if="activeSnapshot.ranking?.inference_contract === 'frozen_logged_exposure_fp32'" class="split-meta">下方数值保留为冻结的日志曝光池诊断，尚未按当前服务口径重新评测，不代表端到端服务效果。</p>
-          <div class="rank-stage-list single-stage-list">
-            <div class="rank-stage">
-              <div class="rank-stage-title">粗排 · GBDT <span v-if="isHeldOut || isFullTestSnapshot" class="scope-tag">日志曝光条件评估</span></div>
-              <div class="split-meta">{{ metricSampleMeta(currentScene, 'preranking') }}</div>
-              <div class="metric-row compact-row">
-                <button
-                  v-for="item in rankingMetricDefs"
-                  :key="`pre-${item.key}`"
-                  class="metric-item metric-button metric-row-item"
-                  @click="openMetricFormula('粗排', item.key, splitLabel)"
-                >
-                  <div class="meta">{{ metricLabel(item.key) }}</div>
-                  <div class="metric-value">{{ fmtNum(metric(currentScene, 'preranking')?.[item.key]) }}</div>
-                </button>
-              </div>
-            </div>
-
-            <div class="rank-stage">
-              <div class="rank-stage-title">精排 · DIEN <span v-if="isHeldOut || isFullTestSnapshot" class="scope-tag">日志曝光条件评估</span></div>
-              <div class="split-meta">{{ metricSampleMeta(currentScene, 'ranking') }}</div>
-              <div class="metric-row compact-row">
-                <button
-                  v-for="item in rankingMetricDefs"
-                  :key="`rank-${item.key}`"
-                  class="metric-item metric-button metric-row-item"
-                  @click="openMetricFormula('精排', item.key, splitLabel)"
-                >
-                  <div class="meta">{{ metricLabel(item.key) }}</div>
-                  <div class="metric-value">{{ fmtNum(metric(currentScene, 'ranking')?.[item.key]) }}</div>
-                </button>
-              </div>
-            </div>
+          <h3 class="section-title">曝光内排序 · DIEN</h3>
+          <div class="split-meta">{{ splitLabel }}曝光 · {{ fmtCount(exposureRows) }} 条 · 离线评测</div>
+          <div class="metric-row compact-row">
+            <button
+              v-for="item in rankingMetricDefs"
+              :key="item.key"
+              class="metric-item metric-button metric-row-item"
+              @click="openMetricFormula('曝光内排序', item.key, splitLabel)"
+            >
+              <div class="meta">{{ metricLabel(item.key) }}</div>
+              <div class="metric-value">{{ fmtNum(rankingResult[item.key]) }}</div>
+            </button>
           </div>
         </div>
-      </section>
-
-      <p v-if="isHeldOut || isFullTestSnapshot" class="meta evaluation-footnote">首命中中位排名仅统计 Top500 内命中的请求。排序以日志曝光候选为范围，使用二值点击标签；无法直接与旧多级相关性指标比较。样例绑定当前模型与评测版本；候选首列显示对应真实点击序号，未命中显示 (-)；列表行序表示模型排序。</p>
-
-      <section v-if="exposureComparison?.metrics?.length" class="panel exposure-reference" aria-labelledby="exposure-reference-title">
-        <div class="results-heading"><h3 id="exposure-reference-title">排序指标如何理解</h3><span class="scope-tag">日志曝光条件评估</span></div>
-        <p class="meta">曝光候选池大小与点击密度影响 NDCG 的绝对值。请结合随机排序基线判断，跨项目比较须统一候选范围、标签和分母。</p>
-        <div class="data-table-scroll"><table class="table evaluation-table">
-          <thead><tr><th scope="col">指标</th><th scope="col">{{ evaluationText(exposureComparison.baseline_name) }}</th><th scope="col">当前模型</th><th scope="col">绝对提升</th></tr></thead>
-          <tbody><tr v-for="row in exposureComparison.metrics" :key="row.name">
-            <th scope="row">{{ metricLabel(row.name) }}</th><td>{{ fmtNum(row.baseline) }}</td><td>{{ fmtNum(row.current) }}</td>
-            <td :class="deltaClass(row.absolute_delta)">{{ signed(row.absolute_delta_pp, 3, ' pp') }}</td>
-          </tr></tbody>
-        </table></div>
-        <div v-if="exposureComparison.diagnostics" class="reference-facts">
-          <span v-if="exposureComparison.diagnostics.median_candidates != null">候选中位数 <strong>{{ exposureComparison.diagnostics.median_candidates }}</strong></span>
-          <span v-if="exposureComparison.diagnostics.requests_at_most_10_fraction != null">候选 ≤ 10 的请求 <strong>{{ (exposureComparison.diagnostics.requests_at_most_10_fraction * 100).toFixed(2) }}%</strong></span>
-          <span v-if="exposureComparison.diagnostics.original_position_NDCG_at10 != null">原曝光顺序 NDCG@10 <strong>{{ fmtNum(exposureComparison.diagnostics.original_position_NDCG_at10) }}</strong></span>
-        </div>
-        <p class="meta results-note">原曝光顺序受到位置偏差影响，仅作诊断，不能视作因果基线。AUC 衡量曝光样本的正负区分；GAUC 在有效用户内计算并按曝光数加权。三者均不等同于端到端推荐效果。</p>
-      </section>
-      <section v-if="ablationRows.length" class="panel ablation-panel">
-        <details>
-          <summary><span><span class="intro-eyebrow">消融实验</span><strong>阶段消融与实验结果</strong></span><span class="meta">{{ ablationRows.length }} 组 · 展开查看</span></summary>
-          <p v-if="activeSnapshot.ablations.baseline_name" class="meta">{{ evaluationText(activeSnapshot.ablations.baseline_name) }}。本表小字为相对该基线的绝对差值（pp）；上方最终结果单独标注其对照基线。</p>
-          <p class="meta">{{ evaluationText(activeSnapshot.ablations.warning || '固定数据划分与评测口径，验证集选择方案，测试集报告效果；未采用的实验保留真实结果。') }}</p>
-          <div class="data-table-scroll"><table class="table evaluation-table ablation-table">
-            <thead><tr><th scope="col">实验</th><th scope="col">状态</th><th v-for="key in ablationMetricKeys" :key="key" scope="col">{{ metricLabel(key) }}</th><th scope="col">改动与解释</th></tr></thead>
-            <tbody><tr v-for="row in ablationRows" :key="row.id">
-              <th scope="row">{{ evaluationText(row.label) }}</th><td><span class="experiment-status" :class="row.status">{{ statusLabel(row.status) }}</span></td>
-              <td v-for="key in ablationMetricKeys" :key="key">{{ fmtNum(row.metrics[key]) }}<small v-if="row.comparison?.[key]" :class="deltaClass(row.comparison[key].absolute_delta_pp)">{{ signed(row.comparison[key].absolute_delta_pp, 3, ' pp') }}</small></td>
-              <td class="ablation-description">{{ evaluationText(row.changed || '—') }}</td>
-            </tr></tbody>
-          </table></div>
-          <p class="meta results-note">表内提升以注明的同口径基线计算；诊断实验不代表线上已启用。曝光池排序结果与全目录已知点击结果分开展示。</p>
-        </details>
       </section>
 
       <section class="panel example-panel shell-panel">
@@ -952,14 +796,16 @@ onUnmounted(stopValidationProgress);
   gap: 10px;
 }
 
-.metric-stack {
-  display: grid;
-  gap: 10px;
-}
 
 .recall-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+
+.lift-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-note { margin-bottom: 0; }
 
 .compact-row {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -969,20 +815,9 @@ onUnmounted(stopValidationProgress);
   min-width: 0;
 }
 
-.rank-stage-list {
-  display: grid;
-  gap: 12px;
-}
 
-.rank-stage {
-  padding: 14px;
-  border-radius: 20px;
-  background: var(--bg);
-  border: 1px solid rgba(92, 108, 123, 0.12);
-}
 
-.rank-stage-title,
-.split-title,
+
 .section-title-small {
   font-size: 16px;
   font-weight: 700;
@@ -990,6 +825,7 @@ onUnmounted(stopValidationProgress);
 }
 
 .section-title {
+  margin: 0;
   font-size: 17px;
   font-weight: 800;
 }
@@ -1372,7 +1208,8 @@ onUnmounted(stopValidationProgress);
 
   .metric-row,
   .recall-row,
-  .compact-row {
+  .compact-row,
+  .lift-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1389,30 +1226,9 @@ onUnmounted(stopValidationProgress);
   .metric-row,
   .recall-row,
   .compact-row,
+  .lift-row,
   .source-behavior-grid {
     grid-template-columns: 1fr;
   }
 }
-
-.protocol-panel { border-top: 3px solid var(--accent); }
-.protocol-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
-.protocol-heading h3 { margin: 12px 0 6px; }
-.protocol-heading p { margin: 0; }
-.protocol-badge,.scope-tag { display: inline-flex; color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 4px 8px; font-size: 11px; font-weight: 600; }
-.protocol-warning { border-top-color: #c18b2e; }
-.protocol-warning .protocol-badge { color: #8b5a12; background: #fff6df; }
-.split-control { display: flex; gap: 5px; background: var(--bg); padding: 4px; border-radius: 10px; }
-.protocol-facts { display: grid; grid-template-columns: repeat(4,1fr); margin-top: 22px; border-top: 1px solid var(--line); padding-top: 20px; gap: 16px; }
-.protocol-facts div { display: grid; gap: 6px; }
-.protocol-facts span { color: var(--muted); font-size: 12px; }
-.protocol-facts strong { font-size: 23px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.protocol-note { margin: 18px 0 0; }
-.protocol-caveat { background: #fff8e8; color: #805b1f; padding: 10px 12px; border-radius: 6px; font-size: 12px; margin: 14px 0 0; }
-.scope-tag { vertical-align: middle; font-size: 10px; margin-left: 6px; }
-.evaluation-footnote { margin: 0 0 22px; }
-@media(max-width:800px) { .protocol-heading { flex-direction: column; } .protocol-facts { grid-template-columns: repeat(2,1fr); } }
-
-
-.coverage-strip { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--muted); font-size: 11px; }
-.coverage-strip strong { color: var(--text); font-weight: 600; }
 </style>
